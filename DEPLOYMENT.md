@@ -120,7 +120,7 @@ ssh -N -L 18090:127.0.0.1:18088 root@服务器公网IP
 ssh -N -L 18088:127.0.0.1:18088 root@服务器公网IP
 ```
 
-浏览器打开 `http://127.0.0.1:18088/install`，设置管理员账号、密码和确认密码。完成后自动登录；首次安装入口不能重复创建管理员。
+浏览器打开 `http://127.0.0.1:18088/install`，管理员账号默认填写 admin；设置密码、确认密码和后台入口路径（默认 /admin）。完成后进入新入口并关闭 /install，请收藏当前地址。可在后台“账号与入口”修改路径或密码，验证当前密码后保存，所有会话将退出。旧安装的账号与入口保持原样。
 
 如果电脑已有测试后台占用 18088，用其他本地端口：
 
@@ -137,10 +137,10 @@ ssh -N -L 18089:127.0.0.1:18088 root@服务器公网IP
 1. 在实际负责 DNS 解析的平台添加 A 记录：`console.fanke.xyz` 和 `*.fanke.xyz` 指向服务器公网 IPv4。域名购买平台和实际 DNS 解析平台可以不同。
 2. 在后台“域名与证书”添加 `fanke.xyz`，填写服务器 IP，并选择阿里云 DNS、DNSPod、Cloudflare 或手动解析。
 3. 在这个域名下添加证书：选择免费 Let's Encrypt 自动申请，勾选主域名和泛域名，填写对应 DNS API 凭据、邮箱并自行确认服务条款。也可以上传已有的完整证书链和私钥。
-4. 申请成功后，内置 HTTPS 入口立即加载证书，不需要重启。浏览器访问 `https://console.fanke.xyz/`；使用非标准端口时带上端口号。
+4. 申请成功后，内置 HTTPS 入口立即加载证书，不需要重启。浏览器访问 `https://console.fanke.xyz/admin`（将 /admin 换成安装时设置的入口路径）；使用非标准端口时带上端口号。
 5. 把 `.env` 的 `CONSOLE_HOST` 改为 `console.fanke.xyz`，执行 `docker compose up -d`，让这个域名专门提供管理后台。
 
-在设置 `CONSOLE_HOST` 之后，通过 SSH 隧道进入 HTTP 管理入口时也要保留这个域名。可在电脑 hosts 文件临时加入 `127.0.0.1 console.fanke.xyz`，访问 `http://console.fanke.xyz:18088/`；配置完成后移除临时 hosts 记录，恢复公网访问。
+在设置 `CONSOLE_HOST` 之后，通过 SSH 隧道进入 HTTP 管理入口时也要保留这个域名。可在电脑 hosts 文件临时加入 `127.0.0.1 console.fanke.xyz`，访问 `http://console.fanke.xyz:18088/admin`（使用自己的入口路径）；配置完成后移除临时 hosts 记录，恢复公网访问。
 
 阿里云使用 AccessKey ID / Secret，DNSPod 使用 DNSPod API 的 ID / Token，Cloudflare 使用可编辑目标区域 DNS 的 API Token。这些只用于证书 DNS 验证；DNS 的 A 记录需要你先创建。签发任务失败会显示原因并保留已有证书。
 
@@ -151,7 +151,7 @@ SSH 隧道把 HTTP 管理请求传到服务器回环地址，证书和 DNS 凭�
 ## 5. 路由器安装与映射
 
 1. 在设备工作台点击添加设备，选择一键安装或下载版本化的 `.run` 包。
-2. 服务端地址填可被路由器访问的地址，例如 `https://console.fanke.xyz`。不要填电脑的 `127.0.0.1`。
+2. 服务端地址填可被路由器访问的地址，例如 `https://console.fanke.xyz`，不包含 /admin 等后台路径。不要填电脑的 `127.0.0.1`。
 3. 在路由器执行后台生成的安装命令；或进入 iStore → 手动安装，上传安装包，随后在“服务 → RemoteGate”填写连接信息。
 4. 设备上线后，在设备下面添加访问域名。例如 `https://ceshi01.fanke.xyz:443/` 映射到路由器的 `http://127.0.0.1:80`，另一个域名映射到 `http://127.0.0.1:16601`。
 

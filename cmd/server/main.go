@@ -77,6 +77,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/auth/setup", a.authSetup)
 	mux.HandleFunc("/api/auth/login", a.authLogin)
 	mux.HandleFunc("/api/auth/logout", a.authLogout)
+	mux.HandleFunc("/api/admin/security", a.admin(a.securitySettings))
 	mux.HandleFunc("/api/admin/version", a.admin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			http.Error(w, "method not allowed", 405)
@@ -111,7 +112,12 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 	if a.consoleHost == "" && !ok {
 		showConsole = true
 	}
-	if showConsole && (r.URL.Path == "/" || r.URL.Path == "/install") {
+	entryMatch := r.URL.Path == "/" || r.URL.Path == "/install"
+	if a.auth != nil && a.auth.initialized() {
+		entry := a.auth.entryPath()
+		entryMatch = r.URL.Path == entry || (entry != "/" && r.URL.Path == entry+"/")
+	}
+	if showConsole && entryMatch {
 		data, _ := webFS.ReadFile("web/index.html")
 		guideJS, _ := webFS.ReadFile("web/install-guide.js")
 		certJS, _ := webFS.ReadFile("web/certificates.js")
@@ -120,6 +126,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideJS = append(guideJS, domainJS...)
 		authJS, _ := webFS.ReadFile("web/auth.js")
 		guideJS = append(guideJS, authJS...)
+		securityJS, _ := webFS.ReadFile("web/security.js")
+		guideJS = append(guideJS, securityJS...)
 		guideCSS, _ := webFS.ReadFile("web/install-guide.css")
 		consoleCSS, _ := webFS.ReadFile("web/console.css")
 		guideCSS = append(guideCSS, consoleCSS...)

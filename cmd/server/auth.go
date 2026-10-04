@@ -27,12 +27,16 @@ const sessionLifetime = 12 * time.Hour
 
 var usernamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$`)
 var errAdminExists = errors.New("管理员已经配置，不能重复初始化")
+var errCurrentPassword = errors.New("当前密码错误")
+var entryPattern = regexp.MustCompile(`^/[A-Za-z0-9][A-Za-z0-9_-]{2,63}$`)
 
 type adminRecord struct {
 	Version      int       `json:"version"`
 	Username     string    `json:"username"`
 	PasswordHash string    `json:"passwordHash"`
 	CreatedAt    time.Time `json:"createdAt"`
+	EntryPath    string    `json:"entryPath,omitempty"`
+	UpdatedAt    time.Time `json:"updatedAt,omitempty"`
 }
 type adminSession struct {
 	user    string
@@ -63,6 +67,12 @@ func openAdminManager(path, user, pass string) (*adminManager, error) {
 			return nil, errors.New("管理员密码哈希无效")
 		}
 		m.record = &record
+		if record.EntryPath != "" {
+			entry, e := normalizeAdminEntry(record.EntryPath)
+			if e != nil || entry != record.EntryPath {
+				return nil, errors.New("管理员入口配置无效，请恢复 data/admin.json 备份")
+			}
+		}
 		return m, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -95,6 +105,14 @@ func validateAdminInput(user, pass string) error {
 	return nil
 }
 func (m *adminManager) create(user, pass string, validate bool) error {
+	return m.createWithEntry(user, pass, "/", validate)
+}
+func (m *adminManager) createWithEntry(user, pass, entry string, validate bool) error {
+	var err error
+	entry, err = normalizeAdminEntry(entry)
+	if err != nil {
+		return err
+	}
 	if validate {
 		if err := validateAdminInput(user, pass); err != nil {
 			return err
@@ -112,7 +130,7 @@ func (m *adminManager) create(user, pass string, validate bool) error {
 	if err != nil {
 		return err
 	}
-	record := adminRecord{Version: 1, Username: user, PasswordHash: string(hash), CreatedAt: time.Now().UTC()}
+	record := adminRecord{Version: 1, Username: user, PasswordHash: string(hash), CreatedAt: time.Now().UTC(), EntryPath: entry}
 	if err = os.MkdirAll(filepath.Dir(m.path), 0700); err != nil {
 		return err
 	}
@@ -175,16 +193,37 @@ func (m *adminManager) sessionUser(r *http.Request) (string, bool) {
 	return s.user, true
 }
 func (m *adminManager) issueSession(w http.ResponseWriter, r *http.Request, user string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.issueSessionLocked(w, r, user)
+}
+func (m *adminManager) loginSession(w http.ResponseWriter, r *http.Request, user, pass string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.record == nil {
+		return false
+	}
+	entry := m.record.EntryPath
+	if entry != "" && entry != "/" && r.Header.Get("X-Admin-Entry") != entry {
+		return false
+	}
+	validUser := subtle.ConstantTimeCompare([]byte(user), []byte(m.record.Username)) == 1
+	validPassword := bcrypt.CompareHashAndPassword([]byte(m.record.PasswordHash), []byte(pass)) == nil
+	if !validUser || !validPassword {
+		return false
+	}
+	m.issueSessionLocked(w, r, user)
+	return true
+}
+func (m *adminManager) issueSessionLocked(w http.ResponseWriter, r *http.Request, user string) {
 	token := makeID() + makeID() + makeID()
 	expires := time.Now().Add(sessionLifetime)
-	m.mu.Lock()
 	for key, s := range m.sessions {
 		if time.Now().After(s.expires) {
 			delete(m.sessions, key)
 		}
 	}
 	m.sessions[sha256.Sum256([]byte(token))] = adminSession{user: user, expires: expires}
-	m.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: adminCookie, Value: token, Path: "/", HttpOnly: true, Secure: secureAuthRequest(r), SameSite: http.SameSiteStrictMode, MaxAge: int(sessionLifetime.Seconds()), Expires: expires})
 }
 func secureAuthRequest(r *http.Request) bool {
@@ -233,7 +272,11 @@ func (a *app) authStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, logged := a.auth.sessionUser(r)
-	writeJSON(w, map[string]any{"initialized": a.auth.initialized(), "authenticated": logged, "username": user, "build": buildinfo.Current()})
+	result := map[string]any{"initialized": a.auth.initialized(), "authenticated": logged, "username": user, "build": buildinfo.Current()}
+	if logged {
+		result["entryPath"] = a.auth.entryPath()
+	}
+	writeJSON(w, result)
 }
 func (a *app) authSetup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -249,6 +292,7 @@ func (a *app) authSetup(w http.ResponseWriter, r *http.Request) {
 		Username        string `json:"username"`
 		Password        string `json:"password"`
 		ConfirmPassword string `json:"confirmPassword"`
+		EntryPath       string `json:"entryPath"`
 	}
 	if !authJSON(w, r, &in) {
 		return
@@ -258,11 +302,22 @@ func (a *app) authSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := strings.TrimSpace(in.Username)
+	if user == "" {
+		user = "admin"
+	}
+	if in.EntryPath == "" {
+		in.EntryPath = "/admin"
+	}
+	entry, err := normalizeAdminEntry(in.EntryPath)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
 	if err := validateAdminInput(user, in.Password); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if err := a.auth.create(user, in.Password, true); err != nil {
+	if err := a.auth.createWithEntry(user, in.Password, entry, true); err != nil {
 		code := 500
 		message := "管理员配置保存失败，请检查数据目录的写入权限"
 		if errors.Is(err, errAdminExists) {
@@ -272,8 +327,12 @@ func (a *app) authSetup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, message, code)
 		return
 	}
-	a.auth.issueSession(w, r, user)
-	writeJSON(w, map[string]any{"initialized": true, "username": user})
+	r.Header.Set("X-Admin-Entry", entry)
+	if !a.auth.loginSession(w, r, user, in.Password) {
+		http.Error(w, "管理员设置已更新，请通过新入口登录", 409)
+		return
+	}
+	writeJSON(w, map[string]any{"initialized": true, "username": user, "entryPath": entry})
 }
 func (a *app) authLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -288,6 +347,11 @@ func (a *app) authLogin(w http.ResponseWriter, r *http.Request) {
 	if !authJSON(w, r, &in) {
 		return
 	}
+	entry := a.auth.entryPath()
+	if entry != "/" && r.Header.Get("X-Admin-Entry") != entry {
+		http.NotFound(w, r)
+		return
+	}
 	peer, _, _ := net.SplitHostPort(r.RemoteAddr)
 	now := time.Now()
 	a.auth.mu.Lock()
@@ -298,7 +362,7 @@ func (a *app) authLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "尝试次数过多，请一分钟后再试", 429)
 		return
 	}
-	if !a.auth.verify(strings.TrimSpace(in.Username), in.Password) {
+	if !a.auth.loginSession(w, r, strings.TrimSpace(in.Username), in.Password) {
 		a.auth.mu.Lock()
 		limit = a.auth.limits[peer]
 		if !now.Before(limit.until) {
@@ -318,8 +382,7 @@ func (a *app) authLogin(w http.ResponseWriter, r *http.Request) {
 	a.auth.mu.Lock()
 	delete(a.auth.limits, peer)
 	a.auth.mu.Unlock()
-	a.auth.issueSession(w, r, strings.TrimSpace(in.Username))
-	writeJSON(w, map[string]any{"username": strings.TrimSpace(in.Username)})
+	writeJSON(w, map[string]any{"username": strings.TrimSpace(in.Username), "entryPath": a.auth.entryPath()})
 }
 func (a *app) authLogout(w http.ResponseWriter, r *http.Request) {
 	var in struct{}

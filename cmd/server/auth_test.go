@@ -37,6 +37,9 @@ func authCall(a *app, path, body, origin string, cookie *http.Cookie) *httptest.
 	}
 	r := httptest.NewRequest(method, "http://console.localhost"+path, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
+	if a.auth != nil {
+		r.Header.Set("X-Admin-Entry", a.auth.entryPath())
+	}
 	if origin != "" {
 		r.Header.Set("Origin", origin)
 	}

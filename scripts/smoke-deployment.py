@@ -20,8 +20,9 @@ import urllib.request
 
 
 BASE = os.environ["SMOKE_BASE_URL"].rstrip("/")
-PASSWORD = "disposable-ci-password-123"
+PASSWORD = "updated-ci-password-456" if sys.argv[1] == "restart" else "disposable-ci-password-123"
 USER = "smoke-admin"
+ENTRY = "/smoke-final-entry" if sys.argv[1] == "restart" else "/smoke-admin-entry"
 cookies = http.cookiejar.CookieJar()
 client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
 
@@ -29,7 +30,7 @@ client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies)
 def call(path, body=None, expected=200):
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(BASE + path, data=data,
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json", "X-Admin-Entry": ENTRY})
     try:
         response = client.open(request, timeout=15)
     except urllib.error.HTTPError as error:
@@ -78,7 +79,10 @@ if phase == "setup":
     assert not status["initialized"], "This check requires an empty CI data directory"
     call("/api/admin/state", expected=409)
     assert b'id="setupForm"' in call("/install")
-    call("/api/auth/setup", {"username": USER, "password": PASSWORD, "confirmPassword": PASSWORD})
+    call("/api/auth/setup", {"username": USER, "password": PASSWORD, "confirmPassword": PASSWORD, "entryPath": ENTRY})
+    assert b'id="loginform"' in call(ENTRY)
+    call("/install", expected=404)
+    call("/", expected=404)
     assert call("/api/auth/status")["authenticated"]
     call("/api/auth/setup", {"username": "different", "password": PASSWORD, "confirmPassword": PASSWORD}, expected=409)
     domain = call("/api/admin/domains", {"baseDomain": "example.test", "dnsProvider": "manual"})
@@ -107,6 +111,7 @@ else:
     assert status["initialized"] and not status["authenticated"]
     call("/api/admin/state", expected=401)
     call("/api/auth/login", {"username": USER, "password": PASSWORD})
+    assert call("/api/admin/security")["entryPath"] == ENTRY
     domains = call("/api/admin/domains")
     assert len(domains) == 1 and domains[0]["baseDomain"] == "example.test"
     domain = domains[0]
@@ -116,6 +121,19 @@ path = "/api/admin/certificates?domainId=" + domain["id"]
 assert call(path)["installed"]
 certificate = call(path, {"action": "export"})["certificate"]
 verify_tls(certificate)
+if phase == "setup":
+    call("/api/admin/security", {"action": "password", "currentPassword": PASSWORD,
+                               "newPassword": "updated-ci-password-456", "confirmPassword": "updated-ci-password-456"})
+    call("/api/admin/state", expected=401)
+    call("/api/auth/login", {"username": USER, "password": PASSWORD}, expected=401)
+    PASSWORD = "updated-ci-password-456"
+    call("/api/auth/login", {"username": USER, "password": PASSWORD})
+    call("/api/admin/security", {"action": "entry", "entryPath": "/smoke-final-entry", "currentPassword": PASSWORD})
+    call("/api/admin/state", expected=401)
+    call(ENTRY, expected=404)
+    ENTRY = "/smoke-final-entry"
+    call("/api/auth/login", {"username": USER, "password": PASSWORD})
+    assert b'id="loginform"' in call(ENTRY)
 call("/api/auth/logout", {}, expected=204)
 call("/api/admin/state", expected=401)
 print("PASS:", phase, "administrator, persistence, package download, install ticket and native HTTPS")
