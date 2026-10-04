@@ -1,0 +1,19 @@
+<% if firstmap and messages then for _, msg in ipairs(messages) do %><div class="alert-message warning"><%=pcdata(msg)%></div><% end end %>
+<% if readable then
+ local c = require("uci").cursor():get_all("remotegate", "main") or {}
+ local running = luci.sys.call("pidof remotegate-agent >/dev/null 2>&1") == 0
+ local version = (require("nixio.fs").readfile("/usr/share/remotegate/version") or "未知"):gsub("%s+$", "")
+%>
+<style><% include("remotegate/style") %></style>
+<div class="cbi-map rg-shell" id="cbi-remotegate" <%=ifattr(not writable, "style", "opacity:.6;pointer-events:none")%>>
+ <div class="rg-heading"><span class="rg-logo">R</span><div><h2>RemoteGate <span>远程访问</span></h2><p>连接你的私有服务器，随时访问路由器与内网服务。</p></div><span class="rg-version">插件 <%=pcdata(version)%></span></div>
+ <section class="rg-status" aria-label="运行状态"><div class="rg-status-top"><div><span class="rg-status-label">运行状态</span><strong id="rg-state" class="<%=running and 'is-running' or ''%>"><i></i><%=running and '客户端运行中' or '客户端未运行'%></strong></div><button type="button" class="rg-button" id="rg-refresh">↻ 刷新状态</button></div><div class="rg-status-facts"><div><span>连接服务器</span><b id="rg-server"><%=pcdata(c.server or '尚未配置')%></b></div><div><span>设备 ID</span><b id="rg-device"><%=pcdata(c.device_id or '尚未绑定')%></b></div><div><span>隧道连接</span><b id="rg-connection">在服务端确认在线状态</b></div></div><p id="rg-status-note">客户端运行状态与隧道在线状态不同；可在管理后台查看设备是否在线。</p></section>
+ <details class="rg-guide" id="rg-guide"><summary><span><b>快速上手</b> <small>第一次连接？只需 3 步</small></span><span>查看步骤 <i>⌄</i></span></summary><div class="rg-steps"><div><em>01</em><b>添加设备</b><p>进入服务器管理后台，获取设备 ID 和令牌。</p></div><div><em>02</em><b>连接服务器</b><p>填写下方连接信息，启用服务并保存应用。</p></div><div><em>03</em><b>添加访问域名</b><p>在设备工作台创建映射，指向需要访问的内网端口。</p></div></div><div class="rg-guide-actions"><button type="button" class="rg-button" id="rg-start">开始填写连接信息 →</button><a id="rg-guide-console" class="rg-console" target="_blank" rel="noopener noreferrer" hidden>打开管理后台 ↗</a></div></details>
+ <div class="rg-config-heading"><div><h3>连接配置</h3><p>保存并应用后，客户端会使用新的连接信息。</p></div><nav class="rg-tabs" aria-label="配置分类"><button type="button" data-rg-tab="basic" aria-pressed="true">基础配置</button><button type="button" data-rg-tab="advanced" aria-pressed="false">高级设置</button></nav></div>
+ <div class="rg-basic" id="rg-basic"><% self:render_children() %></div>
+ <section class="rg-advanced" id="rg-advanced" hidden><h4>网络出口</h4><p>一般无需修改。仅在多出口或需要固定接口时指定。</p><div id="rg-advanced-fields"></div><details><summary>连接方式与排查说明</summary><p>客户端会主动连接服务器，无需在路由器开放公网入站端口。请使用可正常访问的服务端地址，并确认设备令牌有效。</p><p>客户端使用直连标记和路由保护脚本。OpenClash 启停是否影响连接，需要在实际网络环境中验证。</p><p>本地虚拟机测试：服务器地址填写 http://10.0.2.2:18088，不能填写路由器自身的 127.0.0.1。</p></details></section>
+ <div class="rg-footer-note"><span>⌁ 配置保存在这台路由器上</span><a id="rg-console" class="rg-console" target="_blank" rel="noopener noreferrer" hidden>打开管理后台 ↗</a></div>
+ <div id="rg-message" role="status" hidden></div>
+</div>
+<script data-status-url="<%=url('admin/services/remotegate/status')%>"><% include("remotegate/script") %></script>
+<% else %><div class="alert-message warning">没有读取 RemoteGate 配置的权限。</div><% end %>

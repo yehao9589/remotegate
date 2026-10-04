@@ -1,0 +1,7 @@
+services:
+  remotegate:
+    image: ${REMOTE_GATE_BUILD_IMAGE:-remotegate:local}
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile

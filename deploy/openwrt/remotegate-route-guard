@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+MARK_HEX=0xca6c
+MARK_DEC=51820
+
+install_bypass() {
+	if command -v nft >/dev/null 2>&1; then
+		for chain in openclash_output openclash_mangle_output; do
+			nft list chain inet fw4 "$chain" >/dev/null 2>&1 || continue
+			nft list chain inet fw4 "$chain" | grep -q 'remotegate-bypass' || \
+				nft insert rule inet fw4 "$chain" meta mark "$MARK_HEX" counter return comment 'remotegate-bypass'
+		done
+	fi
+	if command -v iptables >/dev/null 2>&1; then
+		for pair in 'nat openclash_output' 'mangle openclash_mangle_output'; do
+			set -- $pair; table="$1"; chain="$2"
+			iptables -t "$table" -S "$chain" >/dev/null 2>&1 || continue
+			iptables -t "$table" -C "$chain" -m mark --mark "$MARK_HEX" -j RETURN 2>/dev/null || \
+				iptables -t "$table" -I "$chain" 1 -m mark --mark "$MARK_HEX" -j RETURN
+		done
+	fi
+}
+
+remove_rules() {
+	if command -v nft >/dev/null 2>&1; then
+		for chain in openclash_output openclash_mangle_output; do
+			handle="$(nft -a list chain inet fw4 "$chain" 2>/dev/null | awk '/remotegate-bypass/ {print $NF; exit}')"
+			[ -z "$handle" ] || nft delete rule inet fw4 "$chain" handle "$handle"
+		done
+	fi
+	if command -v iptables >/dev/null 2>&1; then
+		iptables -t nat -D openclash_output -m mark --mark "$MARK_HEX" -j RETURN 2>/dev/null || true
+		iptables -t mangle -D openclash_mangle_output -m mark --mark "$MARK_HEX" -j RETURN 2>/dev/null || true
+	fi
+}
+
+case "${1:-refresh}" in
+	start|refresh) install_bypass ;;
+	stop) remove_rules ;;
+	*) echo "usage: $0 {start|refresh|stop}" >&2; exit 2 ;;
+esac

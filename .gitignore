@@ -1,0 +1,11 @@
+/data/
+/dist/
+/.env
+/.env.*
+!/.env.example
+/lab/
+*.exe
+*.pem
+*.key
+*.crt
+__pycache__/

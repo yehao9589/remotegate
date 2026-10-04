@@ -1,0 +1,21 @@
+services:
+  remotegate:
+    image: ${REMOTE_GATE_IMAGE:-ghcr.io/yehao9589/remotegate:latest}
+    restart: unless-stopped
+    # Linux server: keep the bootstrap console local, expose native HTTPS.
+    network_mode: host
+    environment:
+      CONSOLE_HOST: ${CONSOLE_HOST:-}
+      LISTEN_ADDR: ${LISTEN_ADDR:-127.0.0.1:18088}
+      HTTPS_LISTEN_ADDR: ${HTTPS_LISTEN_ADDR:-:443}
+      STATE_PATH: /data/state.json
+      HEALTHCHECK_URL: ${HEALTHCHECK_URL:-http://127.0.0.1:18088/healthz}
+      TZ: Asia/Shanghai
+    volumes:
+      - ${REMOTE_GATE_DATA_DIR:-./data}:/data
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
