@@ -18,7 +18,7 @@ RemoteGate 首个发布版本，支持使用自有服务器接入 iStoreOS / Ope
 ### 安装与更新
 
 - Docker 镜像：`ghcr.io/yehao9589/remotegate:v0.1.0`。`latest`、`stable` 为随构建/发布更新的标签；生产部署可以固定版本。
-- 路由器插件包：`RemoteGate-0.1.0-3-istore.run`，在 iStore → 手动安装上传；升级保留连接配置。
+- 路由器插件包：`RemoteGate-0.1.0-3-istore.run`，从管理后台下载后在 iStore → 手动安装上传，或执行后台生成的一键安装命令；升级保留连接配置。插件随服务端镜像提供，不作为 GitHub Release 附件单独发布。
 - 首次安装与宝塔编排步骤见 [DEPLOYMENT.md](https://github.com/yehao9589/remotegate/blob/main/DEPLOYMENT.md)。
 - 更新前备份整个 `data` 目录，包含管理员、已安装设备、映射、证书及 DNS 凭据。更新镜像后执行 `docker compose up -d`；不要删除数据目录。
 

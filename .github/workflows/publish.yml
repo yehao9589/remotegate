@@ -159,7 +159,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Collect the exact installer from the published image
+      - name: Validate bundled installers and prepare server deployment assets
         env:
           IMAGE: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
         run: |
@@ -181,5 +181,5 @@ jobs:
           else
             gh release create "$TAG" --verify-tag --draft --title "RemoteGate $TAG" --notes-file dist/release-notes.md
           fi
-          gh release upload "$TAG" dist/releases/* --clobber
+          gh release upload "$TAG" dist/releases/"$TAG"/* --clobber
           gh release edit "$TAG" --draft=false --latest

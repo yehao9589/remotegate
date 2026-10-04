@@ -101,7 +101,7 @@ ubus call network.interface.wan status | jsonfilter -e '@.l3_device'
 
 版本信息统一维护在 `internal/buildinfo/release.json`：`version` 是服务端与客户端版本，`packageRevision` 是 OpenWrt 插件包修订号。修改插件打包内容时递增修订号。`CHANGELOG.md` 记录各发布版本的变更、更新步骤与限制。
 
-发布流程：更新版本及更新记录，提交并推送，通过检查后推送对应 `v版本号` 标签。GitHub Actions 会核对标签与源码版本，完成真实容器测试，再发布 AMD64 / ARM64 镜像和 GitHub Release。安装包从该版本已发布的镜像提取，保证后台下载与 Release 附件一致。
+发布流程：更新版本及更新记录，提交并推送，通过检查后推送对应 `v版本号` 标签。GitHub Actions 会核对标签与源码版本，完成真实容器测试，再发布 AMD64 / ARM64 镜像和 GitHub Release。Release 附件只提供服务端 Compose 部署包和校验文件；路由器插件内置在服务端镜像中，通过管理后台下载或后台生成的一键安装命令获取，不单独发布到 GitHub Release。
 
 ```sh
 git tag v0.1.0
