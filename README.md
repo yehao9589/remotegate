@@ -1,5 +1,7 @@
 # RemoteGate
 
+**[部署指南：宝塔容器编排填写示例、首次安装与 HTTPS 配置](DEPLOYMENT.md#宝塔容器编排)** · [版本下载](https://github.com/yehao9589/remotegate/releases)
+
 RemoteGate 是一个面向 iStoreOS/OpenWrt 的自建远程访问 MVP。路由器上的 Agent 主动连接国内服务器；浏览器访问不同域名时，服务端把 HTTP 请求通过这条长连接转给对应设备和内网地址。
 
 ```text

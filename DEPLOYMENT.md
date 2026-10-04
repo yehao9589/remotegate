@@ -47,7 +47,70 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 ### 宝塔容器编排
 
-把项目克隆到例如 `/www/RemoteGate`；在宝塔 Docker 的容器编排里导入该目录下的 `docker-compose.yml`，把 `.env.example` 复制为 `.env`，拉取镜像并启动。编排工作目录应是项目目录，让 `./data` 指向 `/www/RemoteGate/data`。也可在编排编辑器把数据挂载改成 `/www/RemoteGate/data:/data`。
+在宝塔 → Docker → 容器编排 → 添加容器编排中，可直接粘贴下面两段内容，不需要先克隆代码，也不需要数据库。
+
+| 窗口字段 | 填写内容 |
+| --- | --- |
+| 编排名称 | `RemoteGate` |
+| 来源 | 选择“编辑” |
+| compose 内容 | 粘贴下面的 YAML |
+| .env 内容 | 粘贴下面的环境配置 |
+| 同时存为模板 | 可不勾选 |
+
+**compose 内容：**
+
+```yaml
+services:
+  remotegate:
+    image: ${REMOTE_GATE_IMAGE:-ghcr.io/yehao9589/remotegate:v0.1.0}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      CONSOLE_HOST: ${CONSOLE_HOST:-}
+      LISTEN_ADDR: 127.0.0.1:18088
+      HTTPS_LISTEN_ADDR: ${HTTPS_LISTEN_ADDR:-:8443}
+      STATE_PATH: /data/state.json
+      HEALTHCHECK_URL: http://127.0.0.1:18088/healthz
+      TZ: Asia/Shanghai
+    volumes:
+      - ${REMOTE_GATE_DATA_DIR:-/www/RemoteGate/data}:/data
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+```
+
+**.env 内容：**
+
+```dotenv
+REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:v0.1.0
+REMOTE_GATE_DATA_DIR=/www/RemoteGate/data
+HTTPS_LISTEN_ADDR=:8443
+CONSOLE_HOST=
+```
+
+- `REMOTE_GATE_IMAGE` 是服务端镜像版本。此示例固定为 v0.1.0；升级时修改版本后重新拉取并部署。希望跟随最新通过检查的构建时可使用 `:stable`。
+- `REMOTE_GATE_DATA_DIR` 是服务器上的数据目录，保存账号、设备、映射和证书。此处使用绝对路径，不依赖宝塔生成的编排工作目录；升级时保持这个路径。
+- `HTTPS_LISTEN_ADDR=:8443` 表示公网 HTTPS 使用 8443 端口，方便与宝塔已有网站共存。确认端口空闲，并在云安全组和服务器防火墙放行 TCP 8443。若要用标准 443 且它未被占用，可改为 `:443`。
+- `CONSOLE_HOST` 首次安装留空。配置好域名和证书后，再填管理后台域名，例如 `console.fanke.xyz`，只写域名，不写协议或端口。
+- 管理员账号、密码在首次安装网页设置，不填写在 `.env` 中。
+- 使用 host 网络，不要另加 `ports`。18088 仅供服务器本机和 SSH 隧道访问，不需要向公网开放。
+
+点击“确定”，等待镜像拉取并启动，确认容器状态为运行中。然后在**自己的电脑 PowerShell / 终端**执行以下命令（不是宝塔服务器终端）：
+
+```sh
+ssh -N -L 18090:127.0.0.1:18088 root@服务器公网IP
+```
+
+把 `服务器公网IP` 换成真实 IP，SSH 用户及端口按服务器实际设置；非 22 端口可加 `-p 你的SSH端口`。此命令连接成功后会一直等待，保持窗口打开。在电脑浏览器打开 `http://127.0.0.1:18090/install`，创建管理员账号。如果电脑的 18090 已被占用，换一个空闲的本地端口。
+
+这里的 `127.0.0.1:18090` 通过 SSH 访问服务器后台；你电脑上原有的 `localhost:18089/install` 是本地测试服务，不是这台云服务器。
+
+随后按下文“配置域名与 HTTPS”添加域名、配置 DNS 和申请证书。使用以上 8443 示例时，最终管理地址为 `https://console.fanke.xyz:8443/`，路由器的服务器地址也填写 `https://console.fanke.xyz:8443`。首次尚无证书时，公网 HTTPS 入口不能正常打开。
+
+如果已经克隆项目，也可以选择“文件”，导入项目目录下的 `docker-compose.yml`，把 `.env.example` 复制为 `.env`。此时确认工作目录与 `REMOTE_GATE_DATA_DIR` 设置正确；直接沿用 `./data` 时，数据会保存在编排工作目录下。
 
 ## 3. 首次安装
 
