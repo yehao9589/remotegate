@@ -30,13 +30,13 @@ docker compose ps
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
-也可以在 [GitHub Releases](https://github.com/yehao9589/remotegate/releases) 下载 `RemoteGate-v版本号-compose.tar.gz`，解压到安装目录，复制 `.env.example` 为 `.env`，再执行 `docker compose pull` 和 `docker compose up -d`。Release 编排包默认固定到该发布版本。
+也可以在 [GitHub Releases](https://github.com/yehao9589/remotegate/releases) 下载 `RemoteGate-v版本号-compose.tar.gz`，解压到安装目录，复制 `.env.example` 为 `.env`，再执行 `docker compose pull` 和 `docker compose up -d`。新生成的编排包默认使用 `stable`；历史下载包可能仍固定旧版本，使用前检查 `.env` 中的 `REMOTE_GATE_IMAGE`。
 
 ### 版本与镜像标签
 
 | 标签 | 用法 |
 | --- | --- |
-| `v0.1.0` 等固定版本 | 指定 GitHub Release 对应版本，适合需要控制升级的部署 |
+| `v版本号` 固定版本 | 可选，指定 GitHub Release 对应版本，适合需要控制升级的部署 |
 | `stable` | 跟随通过检查的主分支构建与版本发布，与 YehaoProxy 的发布约定一致 |
 | `latest` | 当前主分支或最近版本发布镜像 |
 | `sha-完整提交号` | 指定源码提交对应构建 |
@@ -62,7 +62,7 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```yaml
 services:
   remotegate:
-    image: ${REMOTE_GATE_IMAGE:-ghcr.io/yehao9589/remotegate:v0.1.0}
+    image: ${REMOTE_GATE_IMAGE:-ghcr.io/yehao9589/remotegate:stable}
     restart: unless-stopped
     network_mode: host
     environment:
@@ -85,13 +85,13 @@ services:
 **.env 内容：**
 
 ```dotenv
-REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:v0.1.0
+REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:stable
 REMOTE_GATE_DATA_DIR=/www/RemoteGate/data
 HTTPS_LISTEN_ADDR=:8443
 CONSOLE_HOST=
 ```
 
-- `REMOTE_GATE_IMAGE` 是服务端镜像版本。此示例固定为 v0.1.0；升级时修改版本后重新拉取并部署。希望跟随最新通过检查的构建时可使用 `:stable`。
+- `REMOTE_GATE_IMAGE` 是服务端镜像标签。默认 `:stable` 指向最新通过检查的构建；需要固定某次发布时才改成对应的 `:v版本号`。`.env` 的值会覆盖 compose 中的默认值，因此两个位置都应使用 `:stable`。
 - `REMOTE_GATE_DATA_DIR` 是服务器上的数据目录，保存账号、设备、映射和证书。此处使用绝对路径，不依赖宝塔生成的编排工作目录；升级时保持这个路径。
 - `HTTPS_LISTEN_ADDR=:8443` 表示公网 HTTPS 使用 8443 端口，方便与宝塔已有网站共存。确认端口空闲，并在云安全组和服务器防火墙放行 TCP 8443。若要用标准 443 且它未被占用，可改为 `:443`。
 - `CONSOLE_HOST` 首次安装留空。配置好域名和证书后，再填管理后台域名，例如 `console.fanke.xyz`，只写域名，不写协议或端口。
@@ -148,6 +148,21 @@ SSH 隧道把 HTTP 管理请求传到服务器回环地址，证书和 DNS 凭�
 
 如果已有 Nginx/Caddy/宝塔 HTTPS 入口，可以继续反向代理到 `127.0.0.1:18088`。保留原始 Host，并启用 `/api/agent/connect` 的 WebSocket 升级；此时 HTTPS 证书由该代理部署，后台内置证书更新不会自动更新外部代理的证书文件。
 
+### 宝塔提示“请求来源不匹配”
+
+这通常表示反向代理将浏览器访问的域名改成了上游地址。例如浏览器打开 `gate.fanke.xyz`，服务收到的 Host 却是 `127.0.0.1`。安装、登录和后台保存都会被来源校验拒绝。
+
+在宝塔 → 网站 → 对应站点 → 反向代理中，目标 URL 保持 `http://127.0.0.1:18088`，将“发送域名”改成实际访问的域名，例如 `gate.fanke.xyz`。使用自定义外部端口时也要保留端口。更通用的配置是编辑该反向代理配置，将已有的 Host 行替换为下面的内容，不能重复添加：
+
+```nginx
+proxy_set_header Host $http_host;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+保存后重新打开原来的安装地址。不要删除数据目录或关闭来源校验。如果页面没有“后台入口”字段，检查编排使用的镜像版本：该功能从 `v0.1.1` 开始提供，升级时保持原有数据目录并重新拉取镜像。
+
+服务器初始化和正常管理应通过宝塔配置有效证书的 HTTPS 站点进行；上述配置只修正请求转发，不会自动申请或启用站点证书。
+
 ## 5. 路由器安装与映射
 
 1. 在设备工作台点击添加设备，选择一键安装或下载版本化的 `.run` 包。
@@ -158,6 +173,12 @@ SSH 隧道把 HTTP 管理请求传到服务器回环地址，证书和 DNS 凭�
 路由器主动连接服务器，不需要路由器公网 IP 或端口转发。OpenClash 故障时的直连保护仍需用实际路由器配置验收。
 
 ## 6. 更新、备份与恢复
+
+### 宝塔界面更新
+
+在 Docker → 容器编排 → RemoteGate 中，确认 compose 的镜像默认值和 `.env` 的 `REMOTE_GATE_IMAGE` 都使用 `ghcr.io/yehao9589/remotegate:stable`。保存配置后，使用宝塔的“更新镜像”功能重新拉取并重新部署该编排，保留原数据目录。完成后在后台“安装包与版本”确认实际运行版本。
+
+`stable` 是会更新的标签，不代表已经运行的容器会自动升级。仅保存配置或重启原容器不会拉取新镜像；每次升级都需要重新拉取并重新部署。历史编排或下载包若仍写着 `:v0.1.0` 等固定标签，也要修改 `.env`，否则 compose 的默认值不会生效。
 
 更新镜像并重建服务：
 

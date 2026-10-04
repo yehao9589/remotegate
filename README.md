@@ -38,6 +38,8 @@ docker compose up -d
 
 编排使用 Linux host 网络，HTTP 安装入口只监听 `127.0.0.1:18088`，内置 HTTPS 默认监听 443。先通过 SSH 隧道进入后台并申请第一张证书，之后通过公网 HTTPS 访问。不需要数据库。完整安装、宝塔编排、端口调整与备份步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
+常规部署默认使用 `ghcr.io/yehao9589/remotegate:stable`，跟随最新通过检查的构建。宝塔 compose 与 `.env` 都使用 `:stable`；旧 `.env` 的固定版本会覆盖 compose 默认值。更新时需要重新拉取镜像并重新部署，单纯重启不会升级，数据目录保持不变。只有需要锁定版本时才使用 `:v版本号`。
+
 GHCR 拉取不便时，在源码目录运行：
 
 ```sh
