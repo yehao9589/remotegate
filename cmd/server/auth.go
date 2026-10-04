@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/local/remotegate/internal/buildinfo"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -232,7 +233,7 @@ func (a *app) authStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, logged := a.auth.sessionUser(r)
-	writeJSON(w, map[string]any{"initialized": a.auth.initialized(), "authenticated": logged, "username": user})
+	writeJSON(w, map[string]any{"initialized": a.auth.initialized(), "authenticated": logged, "username": user, "build": buildinfo.Current()})
 }
 func (a *app) authSetup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")

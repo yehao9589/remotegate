@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/local/remotegate/internal/buildinfo"
 	"github.com/local/remotegate/internal/config"
 	"github.com/local/remotegate/internal/hub"
 	"github.com/local/remotegate/internal/protocol"
@@ -43,6 +44,11 @@ type app struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		data, _ := json.Marshal(buildinfo.Current())
+		log.Print(string(data))
+		return
+	}
 	listen := env("LISTEN_ADDR", ":8080")
 	statePath := env("STATE_PATH", "./data/state.json")
 	auth, err := openAdminManager(filepath.Join(filepath.Dir(statePath), "admin.json"), os.Getenv("ADMIN_USERNAME"), os.Getenv("ADMIN_PASSWORD"))
@@ -58,7 +64,7 @@ func main() {
 	a.certManagers = make(map[string]*certificateManager)
 	a.startCertificateServices()
 	server := &http.Server{Addr: listen, Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 75 * time.Second}
-	log.Printf("RemoteGate server listening on %s", listen)
+	log.Printf("RemoteGate %s (%s) server listening on %s", buildinfo.Tag(), buildinfo.Commit, listen)
 	if !auth.initialized() {
 		log.Print("首次启动：请打开管理后台创建管理员账号")
 	}
@@ -71,6 +77,13 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/auth/setup", a.authSetup)
 	mux.HandleFunc("/api/auth/login", a.authLogin)
 	mux.HandleFunc("/api/auth/logout", a.authLogout)
+	mux.HandleFunc("/api/admin/version", a.admin(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		writeJSON(w, buildinfo.Current())
+	}))
 	mux.HandleFunc("/install", a.root)
 	mux.HandleFunc("/api/admin/certificates", a.admin(a.certificates))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -179,7 +192,7 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	if err := a.store.Activate(id, token, r.URL.Query().Get("version")); err != nil {
+	if err := a.store.ActivateWithPackage(id, token, r.URL.Query().Get("version"), r.URL.Query().Get("package_version")); err != nil {
 		_ = conn.Close()
 		log.Printf("device activation failed: %v", err)
 		return

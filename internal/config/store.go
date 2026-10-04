@@ -20,11 +20,12 @@ import (
 )
 
 type Device struct {
-	Version   string    `json:"version,omitempty"`
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	TokenHash string    `json:"tokenHash"`
-	CreatedAt time.Time `json:"createdAt"`
+	PackageVersion string    `json:"packageVersion,omitempty"`
+	Version        string    `json:"version,omitempty"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	TokenHash      string    `json:"tokenHash"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 type Mapping struct {
@@ -147,17 +148,21 @@ func (s *Store) Authenticate(deviceID, token string) (Device, bool) {
 
 // Activate commits enrollment only after an authenticated WebSocket upgrade.
 func (s *Store) Activate(id, token, version string) error {
+	return s.ActivateWithPackage(id, token, version, "")
+}
+func (s *Store) ActivateWithPackage(id, token, version, packageVersion string) error {
+	if len(version) > 128 || len(packageVersion) > 64 {
+		return errors.New("invalid device version")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(version) > 128 {
-		return errors.New("invalid version")
-	}
 	for i, d := range s.state.Devices {
 		if d.ID == id && d.TokenHash == hash(token) {
-			if d.Version == version {
+			if d.Version == version && d.PackageVersion == packageVersion {
 				return nil
 			}
 			s.state.Devices[i].Version = version
+			s.state.Devices[i].PackageVersion = packageVersion
 			if err := s.saveLocked(); err != nil {
 				s.state.Devices[i] = d
 				return err
@@ -170,6 +175,7 @@ func (s *Store) Activate(id, token, version string) error {
 		return errors.New("enrollment expired")
 	}
 	d.Version = version
+	d.PackageVersion = packageVersion
 	s.state.Devices = append(s.state.Devices, d)
 	if err := s.saveLocked(); err != nil {
 		s.state.Devices = s.state.Devices[:len(s.state.Devices)-1]

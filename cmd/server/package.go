@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/local/remotegate/internal/buildinfo"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,7 +15,7 @@ func (a *app) packageInfo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	result := map[string]any{"available": false, "name": filepath.Base(installerPath())}
+	result := map[string]any{"available": false, "name": filepath.Base(installerPath()), "server": buildinfo.Current()}
 	data, err := os.ReadFile(installerPath())
 	if err != nil {
 		writeJSON(w, result)

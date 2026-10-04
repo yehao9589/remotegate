@@ -1,6 +1,6 @@
 services:
   remotegate:
-    image: ${REMOTE_GATE_IMAGE:-ghcr.io/yehao9589/remotegate:latest}
+    image: ${REMOTE_GATE_IMAGE:-ghcr.io/yehao9589/remotegate:stable}
     restart: unless-stopped
     # Linux server: keep the bootstrap console local, expose native HTTPS.
     network_mode: host

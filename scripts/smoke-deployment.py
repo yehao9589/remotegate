@@ -42,7 +42,15 @@ def call(path, body=None, expected=200):
 
 def check_package():
     package = call("/api/admin/package")
-    assert package["available"] and "0.1.0-2" in package["name"]
+    release = call("/api/admin/version")
+    assert package["available"] and release["packageVersion"] in package["name"]
+    assert package["server"] == release
+    assert package["manifest"]["agentVersion"] == release["version"]
+    assert package["manifest"]["packageVersion"] == release["packageVersion"]
+    assert package["manifest"]["release"] == release
+    if os.environ.get("GITHUB_SHA"):
+        assert release["commit"] == os.environ["GITHUB_SHA"]
+        assert release["builtAt"] != "unknown"
     assert package["manifest"]["architectures"] == ["x86_64", "ARM64", "ARMv7"]
     download = call(package["download"])
     assert hashlib.sha256(download).hexdigest() == package["sha256"]

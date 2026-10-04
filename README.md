@@ -60,7 +60,7 @@ DNS 中可以将 `*.remote.example.com` 解析到服务器公网 IP。将 `CONSO
 
 ### iStore 手动安装包
 
-运行 `go run ./scripts/package-istore.go`，生成 `dist/RemoteGate-0.1.0-2-istore.run`，可在 iStore 的“手动安装”中上传。升级会保留 `/etc/config/remotegate` 中的连接配置。
+运行 `go run ./scripts/package-istore.go`，生成 `dist/RemoteGate-0.1.0-3-istore.run`，可在 iStore 的“手动安装”中上传。升级会保留 `/etc/config/remotegate` 中的连接配置。
 
 路由器“服务 → RemoteGate”页面包含运行状态、插件版本、折叠的三步接入说明、基础配置和高级设置。状态刷新只更新概览，不会覆盖未保存的表单。进程运行状态不等同于隧道在线状态，后者在服务端设备工作台确认。出口网卡默认留空。
 
@@ -96,6 +96,19 @@ ubus call network.interface.wan status | jsonfilter -e '@.l3_device'
 路由保护脚本使用 mark `51820` 和路由表 `51820`，并在检测到 OpenClash 输出链时把同一 mark 插到链首。部署前如已有同编号策略路由，请修改脚本和 Agent 配置。
 
 ## 开发运行
+
+### 版本发布
+
+版本信息统一维护在 `internal/buildinfo/release.json`：`version` 是服务端与客户端版本，`packageRevision` 是 OpenWrt 插件包修订号。修改插件打包内容时递增修订号。`CHANGELOG.md` 记录各发布版本的变更、更新步骤与限制。
+
+发布流程：更新版本及更新记录，提交并推送，通过检查后推送对应 `v版本号` 标签。GitHub Actions 会核对标签与源码版本，完成真实容器测试，再发布 AMD64 / ARM64 镜像和 GitHub Release。安装包从该版本已发布的镜像提取，保证后台下载与 Release 附件一致。
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+不能对已经发布的版本移动标签或覆盖附件；修复应发布新版本。后台“安装包与版本”可查看运行版本、构建提交、插件版本及发布记录。
 
 ```powershell
 $env:ADMIN_USERNAME='admin'

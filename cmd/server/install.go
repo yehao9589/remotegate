@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/local/remotegate/internal/buildinfo"
 	"mime"
 	"net/http"
 	"net/url"
@@ -27,7 +28,9 @@ var installs = struct {
 	items map[string]installTicket
 }{items: make(map[string]installTicket)}
 
-func installerPath() string      { return env("INSTALLER_PATH", "dist/RemoteGate-0.1.0-2-istore.run") }
+func installerPath() string {
+	return env("INSTALLER_PATH", filepath.Join("dist", buildinfo.PackageFilename()))
+}
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 func (a *app) createInstall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {

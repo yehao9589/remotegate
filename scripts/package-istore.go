@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/local/remotegate/internal/buildinfo"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,7 +74,7 @@ func main() {
 		source("usr/lib/lua/luci/view/remotegate/map.htm", "deploy/openwrt/luci/map.htm", 0644),
 		source("usr/lib/lua/luci/view/remotegate/style.htm", "deploy/openwrt/luci/page.css", 0644),
 		source("usr/lib/lua/luci/view/remotegate/script.htm", "deploy/openwrt/luci/page.js", 0644),
-		text("usr/share/remotegate/version", "0.1.0-2\n", 0644),
+		text("usr/share/remotegate/version", buildinfo.PackageVersion()+"\n", 0644),
 		text("usr/libexec/remotegate-config", `#!/usr/bin/lua
 local u = require("uci").cursor()
 local json = require "luci.jsonc"
@@ -110,7 +111,7 @@ reload_service() { /usr/libexec/remotegate-route-guard refresh; stop; start; }
 			panic(err)
 		}
 		data := archive(append(append([]entry{}, files...), entry{"usr/sbin/remotegate-agent", b, 0755}))
-		control := archive([]entry{text("control", fmt.Sprintf("Package: luci-app-remotegate\nVersion: 0.1.0-2\nArchitecture: all\nMaintainer: RemoteGate\nSection: net\nPriority: optional\nDepends: luci-base, luci-compat\nDescription: RemoteGate agent and LuCI configuration (%s)\n", arch), 0644), text("conffiles", "/etc/config/remotegate\n", 0644), text("postinst", `#!/bin/sh
+		control := archive([]entry{text("control", fmt.Sprintf("Package: luci-app-remotegate\nVersion: %s\nArchitecture: all\nMaintainer: RemoteGate\nSection: net\nPriority: optional\nDepends: luci-base, luci-compat\nDescription: RemoteGate agent and LuCI configuration (%s)\n", buildinfo.PackageVersion(), arch), 0644), text("conffiles", "/etc/config/remotegate\n", 0644), text("postinst", `#!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
 chmod 600 /etc/config/remotegate
 rm -f /tmp/luci-indexcache
@@ -154,16 +155,17 @@ exit 0
 __PAYLOAD__
 `
 	out := append([]byte(header), archive(payload)...)
-	if err := os.WriteFile("dist/RemoteGate-0.1.0-2-istore.run", out, 0755); err != nil {
+	output := filepath.Join("dist", buildinfo.PackageFilename())
+	if err := os.WriteFile(output, out, 0755); err != nil {
 		panic(err)
 	}
-	manifest := map[string]any{"sha256": fmt.Sprintf("%x", sha256.Sum256(out)), "packageVersion": "0.1.0-2", "agentVersion": "0.1.0", "packageName": "luci-app-remotegate", "architectures": []string{"x86_64", "ARM64", "ARMv7"}, "contents": []string{"RemoteGate 客户端", "新版 LuCI 路由器面板", "状态刷新与接入引导", "开机启动服务", "连接配置生成器", "直连路由保护脚本"}}
+	manifest := map[string]any{"sha256": fmt.Sprintf("%x", sha256.Sum256(out)), "packageVersion": buildinfo.PackageVersion(), "agentVersion": buildinfo.Version(), "release": buildinfo.Current(), "packageName": "luci-app-remotegate", "architectures": []string{"x86_64", "ARM64", "ARMv7"}, "contents": []string{"RemoteGate 客户端", "新版 LuCI 路由器面板", "状态刷新与接入引导", "版本上报", "开机启动服务", "连接配置生成器", "直连路由保护脚本"}}
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		panic(err)
 	}
-	if err = os.WriteFile("dist/RemoteGate-0.1.0-2-istore.run.json", raw, 0644); err != nil {
+	if err = os.WriteFile(output+".json", raw, 0644); err != nil {
 		panic(err)
 	}
-	fmt.Printf("Created dist/RemoteGate-0.1.0-2-istore.run (%d bytes)\n", len(out))
+	fmt.Printf("Created %s (%d bytes)\n", output, len(out))
 }

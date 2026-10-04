@@ -24,11 +24,24 @@ docker compose up -d
 docker compose ps
 ```
 
-镜像为 `ghcr.io/yehao9589/remotegate:latest`。如果服务器无法访问 GHCR，可从源码构建同一镜像：
+镜像为 `ghcr.io/yehao9589/remotegate:stable`。如果服务器无法访问 GHCR，可从源码构建同一镜像：
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
+
+也可以在 [GitHub Releases](https://github.com/yehao9589/remotegate/releases) 下载 `RemoteGate-v版本号-compose.tar.gz`，解压到安装目录，复制 `.env.example` 为 `.env`，再执行 `docker compose pull` 和 `docker compose up -d`。Release 编排包默认固定到该发布版本。
+
+### 版本与镜像标签
+
+| 标签 | 用法 |
+| --- | --- |
+| `v0.1.0` 等固定版本 | 指定 GitHub Release 对应版本，适合需要控制升级的部署 |
+| `stable` | 跟随通过检查的主分支构建与版本发布，与 YehaoProxy 的发布约定一致 |
+| `latest` | 当前主分支或最近版本发布镜像 |
+| `sha-完整提交号` | 指定源码提交对应构建 |
+
+后台“安装包与版本”显示服务端版本、构建提交、构建时间和可下载插件版本。客户端运行版本与插件修订号分别展示；旧插件未上报修订号时显示“未上报”。Release 附件包含安装包、各架构 IPK、编排压缩包和 SHA-256 校验文件。
 
 本地构建镜像自带安装包，不依赖宿主机的 `dist` 目录。首次构建需要下载 Go 依赖与基础镜像。
 

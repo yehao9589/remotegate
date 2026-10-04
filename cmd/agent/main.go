@@ -17,10 +17,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/local/remotegate/internal/buildinfo"
 	"github.com/local/remotegate/internal/protocol"
 )
-
-const version = "0.1.0"
 
 type Config struct {
 	ServerURL          string `json:"serverUrl"`
@@ -33,6 +32,10 @@ type Config struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		fmt.Printf("RemoteGate Agent %s (%s)\n", buildinfo.Tag(), buildinfo.Commit)
+		return
+	}
 	path := "/etc/remotegate/agent.json"
 	if len(os.Args) > 1 {
 		path = os.Args[1]
@@ -80,7 +83,13 @@ func run(ctx context.Context, cfg Config) error {
 	q := u.Query()
 	q.Set("device_id", cfg.DeviceID)
 	q.Set("token", cfg.Token)
-	q.Set("version", version)
+	q.Set("version", buildinfo.Version())
+	if installed, err := os.ReadFile("/usr/share/remotegate/version"); err == nil {
+		value := strings.TrimSpace(string(installed))
+		if len(value) > 0 && len(value) <= 64 {
+			q.Set("package_version", value)
+		}
+	}
 	u.RawQuery = q.Encode()
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.InsecureTLS}}
 	dialer.NetDialContext = boundDialer(cfg.Interface, cfg.Mark).DialContext
