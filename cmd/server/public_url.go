@@ -15,7 +15,7 @@ type publicURLKey struct{}
 
 var publicHostnamePattern = regexp.MustCompile(`^[a-z0-9.-]+$`)
 
-// PUBLIC_URL is an explicit external origin, never inferred from forwarded headers.
+// PUBLIC_URL identifies the external authority, never inferred from forwarded headers.
 func parsePublicURL(value string) (*url.URL, error) {
 	u, err := url.Parse(strings.TrimSpace(value))
 	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" {
@@ -72,13 +72,21 @@ func matchesPublicOrigin(r *http.Request) bool {
 		return false
 	}
 	actual, err := parsePublicURL(r.Header.Get("Origin"))
-	return err == nil && actual.String() == expected.String()
+	// Standard HTTP/HTTPS entrances on the configured host are both supported.
+	// For a custom port, keep that port exact across both protocols.
+	return err == nil && actual.Host == expected.Host
 }
 
 func (a *app) withPublicURL(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.publicURL != nil && loopbackPeer(r) {
-			r = r.WithContext(context.WithValue(r.Context(), publicURLKey{}, a.publicURL))
+		expected := a.publicURL
+		if expected == nil && a.consoleHost != "" {
+			// A configured console host is sufficient for a default local reverse proxy.
+			// HTTP and HTTPS default ports are normalized by parsePublicURL.
+			expected, _ = parsePublicURL("https://" + a.consoleHost)
+		}
+		if expected != nil && loopbackPeer(r) {
+			r = r.WithContext(context.WithValue(r.Context(), publicURLKey{}, expected))
 		}
 		next.ServeHTTP(w, r)
 	})

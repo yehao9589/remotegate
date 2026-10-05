@@ -1,6 +1,6 @@
 # RemoteGate
 
-**[部署指南：宝塔容器编排填写示例、首次安装与 HTTPS 配置](DEPLOYMENT.md#宝塔容器编排)** · [版本下载](https://github.com/yehao9589/remotegate/releases)
+**[部署方式导航](DEPLOYMENT.md)** · [宝塔界面部署](docs/deployment/baota.md) · [版本下载](https://github.com/yehao9589/remotegate/releases)
 
 RemoteGate 是一个面向 iStoreOS/OpenWrt 的自建远程访问 MVP。路由器上的 Agent 主动连接国内服务器；浏览器访问不同域名时，服务端把 HTTP 请求通过这条长连接转给对应设备和内网地址。
 
@@ -36,11 +36,11 @@ docker compose pull
 docker compose up -d
 ```
 
-编排使用 Linux host 网络，HTTP 安装入口只监听 `127.0.0.1:18088`，内置 HTTPS 默认监听 443。先通过 SSH 隧道进入后台并申请第一张证书，之后通过公网 HTTPS 访问。不需要数据库。完整安装、宝塔编排、端口调整与备份步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+编排使用 Linux host 网络，HTTP 只监听 `127.0.0.1:18088`，不需要数据库。已有宝塔/Nginx 反代时，直接通过域名安装和登录，不需要 SSH；没有反代时才通过 SSH 隧道初始化内置 HTTPS。选择对应的[安装教程](DEPLOYMENT.md)与[首次访问方案](docs/deployment/access.md)，不要混用步骤。
 
 常规部署默认使用 `ghcr.io/yehao9589/remotegate:stable`，跟随最新通过检查的构建。宝塔 compose 与 `.env` 都使用 `:stable`；旧 `.env` 的固定版本会覆盖 compose 默认值。更新时需要重新拉取镜像并重新部署，单纯重启不会升级，数据目录保持不变。只有需要锁定版本时才使用 `:v版本号`。
 
-从 v0.1.2 开始支持 `PUBLIC_URL`：填写后台实际访问的协议、域名和端口（不带后台路径），可兼容本机宝塔默认反代改写 Host 的配置。来源校验仍然启用，不自动信任外部客户端或转发请求头。使用方式见部署指南；旧版镜像需先升级。
+从 v0.1.3 开始，本机宝塔默认反代可直接使用 `CONSOLE_HOST`，同域名默认 HTTP/HTTPS 入口均可安装和登录；自定义外部端口用 `PUBLIC_URL` 指定，不带后台路径。切换协议无需反复改配置，登录 Cookie 跟随实际访问协议。来源校验仍然启用，不自动信任外部客户端或转发请求头。使用方式见部署指南；旧版镜像需先升级。
 
 GHCR 拉取不便时，在源码目录运行：
 
@@ -50,7 +50,7 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 首次安装账号默认填写 `admin`，可以设置密码和后台入口路径（默认 `/admin`）。完成后请收藏新地址，根路径和 `/install` 不再提供新的后台入口。在“账号与入口”中可修改入口或密码，保存时需验证当前密码，所有会话会退出。旧安装保留原账号与入口。
 
-首次打开后台（本机为 `http://127.0.0.1:18088/`），设置管理员账号、密码和确认密码。账号为 3–32 位字母、数字、下划线、点或短横线，密码至少 8 个字符且不超过 72 字节。创建后自动登录，后续访问显示登录页。也可直接访问 `/install`；完成后无法再次创建管理员。
+按所选访问方案打开安装页，设置管理员账号、密码和确认密码。账号为 3–32 位字母、数字、下划线、点或短横线，密码至少 8 个字符且不超过 72 字节。创建后自动登录，后续使用保存的后台路径；完成后无法再次通过 `/install` 创建管理员。
 
 账号保存在 `data/admin.json`，重启、重建容器或升级时保留整个 `data` 目录。登录会话有效期为 12 小时，服务重启后需要重新登录。旧二进制部署如果仍设置 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`，首次启动会迁移为哈希配置；已有 `admin.json` 时以保存的账号为准。
 
@@ -62,7 +62,7 @@ DNS 中可以将 `*.remote.example.com` 解析到服务器公网 IP。将 `CONSO
 
 1. 添加设备，保存页面仅显示一次的设备 ID 和 Token。
 2. 在设备卡片内添加域名映射，例如公网 `https://router.remote.example.com:443/` → 内网 `http://127.0.0.1:80`。公网协议和端口用于生成完整访问地址，必须与服务器实际监听端口或前置 Nginx/Caddy 配置一致。
-3. 构建对应架构的 Agent，把配置和二进制安装到路由器。
+3. 从后台获取一键安装命令，或下载插件在 iStore 手动安装。完整操作见[路由器接入教程](docs/deployment/router.md)。
 
 ## 构建 OpenWrt Agent
 

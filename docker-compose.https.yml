@@ -2,4 +2,4 @@ services:
   remotegate:
     environment:
       # Compatibility override. HTTPS is enabled in the base Compose file.
-      HTTPS_LISTEN_ADDR: ${HTTPS_LISTEN_ADDR:-:443}
+      HTTPS_LISTEN_ADDR: "${HTTPS_LISTEN_ADDR-:443}"

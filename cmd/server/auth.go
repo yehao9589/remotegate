@@ -21,7 +21,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const adminCookie = "remotegate_session"
+const adminCookie = "__Host-remotegate_session"
+const httpAdminCookie = "remotegate_session_http"
 const sessionLifetime = 12 * time.Hour
 
 var usernamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$`)
@@ -177,19 +178,24 @@ func (m *adminManager) verify(user, pass string) bool {
 	return match && valid
 }
 func (m *adminManager) sessionUser(r *http.Request) (string, bool) {
-	c, err := r.Cookie(adminCookie)
-	if err != nil {
-		return "", false
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := sha256.Sum256([]byte(c.Value))
-	s, ok := m.sessions[key]
-	if !ok || time.Now().After(s.expires) {
-		delete(m.sessions, key)
-		return "", false
+	// Prefer the HTTPS cookie. Separate names allow HTTP login after HTTPS
+	// without asking the browser to overwrite an existing Secure cookie.
+	for _, name := range []string{adminCookie, httpAdminCookie} {
+		c, err := r.Cookie(name)
+		if err != nil {
+			continue
+		}
+		key := sha256.Sum256([]byte(c.Value))
+		s, ok := m.sessions[key]
+		if !ok || time.Now().After(s.expires) {
+			delete(m.sessions, key)
+			continue
+		}
+		return s.user, true
 	}
-	return s.user, true
+	return "", false
 }
 func (m *adminManager) issueSession(w http.ResponseWriter, r *http.Request, user string) {
 	m.mu.Lock()
@@ -223,13 +229,30 @@ func (m *adminManager) issueSessionLocked(w http.ResponseWriter, r *http.Request
 		}
 	}
 	m.sessions[sha256.Sum256([]byte(token))] = adminSession{user: user, expires: expires}
-	http.SetCookie(w, &http.Cookie{Name: adminCookie, Value: token, Path: "/", HttpOnly: true, Secure: secureAuthRequest(r), SameSite: http.SameSiteStrictMode, MaxAge: int(sessionLifetime.Seconds()), Expires: expires})
+	secure := secureAuthRequest(r)
+	name := httpAdminCookie
+	if secure {
+		name = adminCookie
+	}
+	http.SetCookie(w, &http.Cookie{Name: name, Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: int(sessionLifetime.Seconds()), Expires: expires})
 }
 func secureAuthRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if matchesPublicOrigin(r) {
+		actual, _ := parsePublicURL(r.Header.Get("Origin"))
+		return actual.Scheme == "https"
+	}
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(host)
-	configuredHTTPS := publicURLForRequest(r) != nil && publicURLForRequest(r).Scheme == "https" && matchesPublicOrigin(r)
-	return r.TLS != nil || configuredHTTPS || (ip != nil && ip.IsLoopback() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+	return ip != nil && ip.IsLoopback() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func clearAdminCookies(w http.ResponseWriter) {
+	for _, name := range []string{adminCookie, httpAdminCookie} {
+		http.SetCookie(w, &http.Cookie{Name: name, Path: "/", Value: "", MaxAge: -1, HttpOnly: true, Secure: name == adminCookie, SameSite: http.SameSiteStrictMode})
+	}
 }
 func sameAuthOrigin(r *http.Request) bool {
 	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
@@ -400,12 +423,14 @@ func (a *app) authLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.auth != nil {
-		if c, e := r.Cookie(adminCookie); e == nil {
-			a.auth.mu.Lock()
-			delete(a.auth.sessions, sha256.Sum256([]byte(c.Value)))
-			a.auth.mu.Unlock()
+		a.auth.mu.Lock()
+		for _, name := range []string{adminCookie, httpAdminCookie} {
+			if c, e := r.Cookie(name); e == nil {
+				delete(a.auth.sessions, sha256.Sum256([]byte(c.Value)))
+			}
 		}
+		a.auth.mu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: adminCookie, Path: "/", Value: "", MaxAge: -1, HttpOnly: true, Secure: secureAuthRequest(r), SameSite: http.SameSiteStrictMode})
+	clearAdminCookies(w)
 	w.WriteHeader(204)
 }

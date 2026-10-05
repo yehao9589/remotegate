@@ -173,6 +173,6 @@ func (a *app) securitySettings(w http.ResponseWriter, r *http.Request) {
 	a.auth.mu.Lock()
 	delete(a.auth.limits, peer)
 	a.auth.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: adminCookie, Path: "/", Value: "", MaxAge: -1, HttpOnly: true, Secure: secureAuthRequest(r), SameSite: http.SameSiteStrictMode})
+	clearAdminCookies(w)
 	writeJSON(w, map[string]any{"entryPath": a.auth.entryPath(), "loginRequired": true})
 }

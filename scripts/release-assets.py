@@ -31,6 +31,8 @@ bundle = output / f"RemoteGate-{tag}-compose.tar.gz"
 with tarfile.open(bundle, "w:gz") as archive:
     for name in ("docker-compose.yml", "docker-compose.https.yml", "DEPLOYMENT.md", "README.md", "CHANGELOG.md"):
         archive.add(name, arcname=name)
+    for guide in sorted(Path("docs/deployment").rglob("*.md")):
+        archive.add(guide, arcname=guide.as_posix())
     environment = Path(".env.example").read_text(encoding="utf-8")
     environment = re.sub(r"(?m)^REMOTE_GATE_IMAGE=.*$", "REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:stable", environment)
     for name, content in ((".env.example", environment), ("VERSION.json", json.dumps(release, indent=2)+"\n")):
