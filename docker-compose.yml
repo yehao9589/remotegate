@@ -6,6 +6,7 @@ services:
     network_mode: host
     environment:
       CONSOLE_HOST: ${CONSOLE_HOST:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
       LISTEN_ADDR: ${LISTEN_ADDR:-127.0.0.1:18088}
       HTTPS_LISTEN_ADDR: ${HTTPS_LISTEN_ADDR:-:443}
       STATE_PATH: /data/state.json

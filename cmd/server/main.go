@@ -41,6 +41,7 @@ type app struct {
 	adminPass    string
 	auth         *adminManager
 	consoleHost  string
+	publicURL    *url.URL
 }
 
 func main() {
@@ -60,6 +61,12 @@ func main() {
 		log.Fatal(err)
 	}
 	a := &app{store: store, hub: hub.New(), auth: auth, consoleHost: strings.ToLower(os.Getenv("CONSOLE_HOST"))}
+	if value := strings.TrimSpace(os.Getenv("PUBLIC_URL")); value != "" {
+		a.publicURL, err = parsePublicURL(value)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 	a.certDir = filepath.Join(filepath.Dir(statePath), "certificates")
 	a.certManagers = make(map[string]*certificateManager)
 	a.startCertificateServices()
@@ -103,13 +110,17 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/admin/mappings", a.admin(a.mappings))
 	mux.HandleFunc("/api/admin/mappings/", a.admin(a.mappingByID))
 	mux.HandleFunc("/", a.root)
-	return mux
+	return a.withPublicURL(mux)
 }
 
 func (a *app) root(w http.ResponseWriter, r *http.Request) {
 	mapping, ok := a.store.MappingForHost(r.Host)
 	showConsole := a.consoleHost != "" && hostOnly(r.Host) == a.consoleHost
 	if a.consoleHost == "" && !ok {
+		showConsole = true
+	}
+	// A local proxy may replace the external console Host with its loopback upstream.
+	if publicURLForRequest(r) != nil && !ok && (hostOnly(r.Host) == "localhost" || netLoopbackHost(r.Host)) {
 		showConsole = true
 	}
 	entryMatch := r.URL.Path == "/" || r.URL.Path == "/install"

@@ -9,7 +9,6 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -229,14 +228,25 @@ func (m *adminManager) issueSessionLocked(w http.ResponseWriter, r *http.Request
 func secureAuthRequest(r *http.Request) bool {
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(host)
-	return r.TLS != nil || (ip != nil && ip.IsLoopback() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+	configuredHTTPS := publicURLForRequest(r) != nil && publicURLForRequest(r).Scheme == "https" && matchesPublicOrigin(r)
+	return r.TLS != nil || configuredHTTPS || (ip != nil && ip.IsLoopback() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
 }
 func sameAuthOrigin(r *http.Request) bool {
-	if origin := r.Header.Get("Origin"); origin != "" {
-		u, err := url.Parse(origin)
-		return err == nil && (u.Scheme == "http" || u.Scheme == "https") && strings.EqualFold(u.Host, r.Host)
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		return false
 	}
-	return r.Header.Get("Sec-Fetch-Site") != "cross-site"
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := parsePublicURL(origin)
+		if err != nil {
+			return false
+		}
+		if matchesPublicOrigin(r) {
+			return true
+		}
+		target, err := parsePublicURL(u.Scheme + "://" + r.Host)
+		return err == nil && u.Host == target.Host
+	}
+	return true
 }
 func authJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if r.Method != http.MethodPost {

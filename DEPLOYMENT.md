@@ -67,6 +67,7 @@ services:
     network_mode: host
     environment:
       CONSOLE_HOST: ${CONSOLE_HOST:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
       LISTEN_ADDR: 127.0.0.1:18088
       HTTPS_LISTEN_ADDR: ${HTTPS_LISTEN_ADDR:-:8443}
       STATE_PATH: /data/state.json
@@ -89,12 +90,14 @@ REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:stable
 REMOTE_GATE_DATA_DIR=/www/RemoteGate/data
 HTTPS_LISTEN_ADDR=:8443
 CONSOLE_HOST=
+PUBLIC_URL=
 ```
 
 - `REMOTE_GATE_IMAGE` 是服务端镜像标签。默认 `:stable` 指向最新通过检查的构建；需要固定某次发布时才改成对应的 `:v版本号`。`.env` 的值会覆盖 compose 中的默认值，因此两个位置都应使用 `:stable`。
 - `REMOTE_GATE_DATA_DIR` 是服务器上的数据目录，保存账号、设备、映射和证书。此处使用绝对路径，不依赖宝塔生成的编排工作目录；升级时保持这个路径。
 - `HTTPS_LISTEN_ADDR=:8443` 表示公网 HTTPS 使用 8443 端口，方便与宝塔已有网站共存。确认端口空闲，并在云安全组和服务器防火墙放行 TCP 8443。若要用标准 443 且它未被占用，可改为 `:443`。
 - `CONSOLE_HOST` 首次安装留空。配置好域名和证书后，再填管理后台域名，例如 `console.fanke.xyz`，只写域名，不写协议或端口。
+- `PUBLIC_URL` 用于兼容宝塔默认反代的 Host 改写。填写浏览器实际访问的完整地址，例如 `https://gate.fanke.xyz` 或 `https://gate.fanke.xyz:8443`，不带 `/admin` 等后台路径。仅对从服务器回环地址连接的本机反代生效，不会自动启用 HTTPS。
 - 管理员账号、密码在首次安装网页设置，不填写在 `.env` 中。
 - 使用 host 网络，不要另加 `ports`。18088 仅供服务器本机和 SSH 隧道访问，不需要向公网开放。
 
@@ -152,7 +155,9 @@ SSH 隧道把 HTTP 管理请求传到服务器回环地址，证书和 DNS 凭�
 
 这通常表示反向代理将浏览器访问的域名改成了上游地址。例如浏览器打开 `gate.fanke.xyz`，服务收到的 Host 却是 `127.0.0.1`。安装、登录和后台保存都会被来源校验拒绝。
 
-在宝塔 → 网站 → 对应站点 → 反向代理中，目标 URL 保持 `http://127.0.0.1:18088`，将“发送域名”改成实际访问的域名，例如 `gate.fanke.xyz`。使用自定义外部端口时也要保留端口。更通用的配置是编辑该反向代理配置，将已有的 Host 行替换为下面的内容，不能重复添加：
+**方法一：保留默认反代配置。** 在 compose 的 `environment` 中加入 `PUBLIC_URL: ${PUBLIC_URL:-}`，在 `.env` 中填写 `PUBLIC_URL=https://gate.fanke.xyz`（按实际访问协议、域名和端口填写，不带后台路径），重新创建容器。新版来源校验会识别这个明确配置的外部地址，同时继续拒绝其他来源。此方法仅支持服务器本机的反代；其他主机或 Docker bridge 来源不在默认信任范围内。
+
+**方法二：保留原始 Host。** 不设置 `PUBLIC_URL` 时，在宝塔 → 网站 → 对应站点 → 反向代理中，目标 URL 保持 `http://127.0.0.1:18088`，将“发送域名”改成实际访问的域名，例如 `gate.fanke.xyz`。使用自定义外部端口时也要保留端口。更通用的配置是编辑该反向代理配置，将已有的 Host 行替换为下面的内容，不能重复添加：
 
 ```nginx
 proxy_set_header Host $http_host;
@@ -162,6 +167,8 @@ proxy_set_header X-Forwarded-Proto $scheme;
 保存后重新打开原来的安装地址。不要删除数据目录或关闭来源校验。如果页面没有“后台入口”字段，检查编排使用的镜像版本：该功能从 `v0.1.1` 开始提供，升级时保持原有数据目录并重新拉取镜像。
 
 服务器初始化和正常管理应通过宝塔配置有效证书的 HTTPS 站点进行；上述配置只修正请求转发，不会自动申请或启用站点证书。
+
+`PUBLIC_URL` 兼容方式从 v0.1.2 开始提供，旧版镜像需先升级。对于设备的多个映射域名，代理仍需保留原始 Host，以便区分要转发的内网服务；`PUBLIC_URL` 只指定管理后台的外部地址。
 
 ## 5. 路由器安装与映射
 

@@ -63,6 +63,8 @@ jobs:
       HTTPS_LISTEN_ADDR: 127.0.0.1:443
       HEALTHCHECK_URL: http://127.0.0.1:18090/healthz
       SMOKE_BASE_URL: http://127.0.0.1:18090
+      PUBLIC_URL: http://console.smoke.test
+      SMOKE_PUBLIC_URL: http://console.smoke.test
       SMOKE_TLS_PORT: "443"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

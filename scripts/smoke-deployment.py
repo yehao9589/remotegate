@@ -20,6 +20,7 @@ import urllib.request
 
 
 BASE = os.environ["SMOKE_BASE_URL"].rstrip("/")
+ORIGIN = os.environ.get("SMOKE_PUBLIC_URL", BASE)
 PASSWORD = "updated-ci-password-456" if sys.argv[1] == "restart" else "disposable-ci-password-123"
 USER = "smoke-admin"
 ENTRY = "/smoke-final-entry" if sys.argv[1] == "restart" else "/smoke-admin-entry"
@@ -27,10 +28,15 @@ cookies = http.cookiejar.CookieJar()
 client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
 
 
-def call(path, body=None, expected=200):
+def call(path, body=None, expected=200, origin=ORIGIN):
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(BASE + path, data=data,
                                      headers={"Content-Type": "application/json", "X-Admin-Entry": ENTRY})
+    if os.environ.get("SMOKE_PUBLIC_URL"):
+        # Match Baota's default upstream Host without forwarding origin/protocol headers.
+        request.add_header("Host", "127.0.0.1")
+    if body is not None:
+        request.add_header("Origin", origin)
     try:
         response = client.open(request, timeout=15)
     except urllib.error.HTTPError as error:
@@ -79,6 +85,7 @@ if phase == "setup":
     assert not status["initialized"], "This check requires an empty CI data directory"
     call("/api/admin/state", expected=409)
     assert b'id="setupForm"' in call("/install")
+    call("/api/auth/setup", {}, expected=403, origin="https://evil.example")
     call("/api/auth/setup", {"username": USER, "password": PASSWORD, "confirmPassword": PASSWORD, "entryPath": ENTRY})
     assert b'id="loginform"' in call(ENTRY)
     call("/install", expected=404)
