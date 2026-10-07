@@ -142,9 +142,9 @@ go test ./...
 - 自动 DNS 验证支持阿里云 DNS、腾讯云 DNSPod 和 Cloudflare。其他平台可手动管理解析并上传 PEM 证书。
 - 证书来源支持 ACME 自动申请、上传 PEM 完整证书链与未加密私钥，以及读取服务端绝对路径。导入时检查密钥匹配、有效期、服务器用途和所属域名；支持具体子域名证书，不再强制泛域名。路径导入是读取快照，外部文件更新后需重新读取。
 - ACME 支持 Let's Encrypt 和 ZeroSSL（需该账户的 EAB Key ID / HMAC Key）。证书范围可选主域名、泛域名或同一主域名下的多个具体域名。支持 RSA 2048、RSA 4096、ECDSA P-256。每个主域名当前维护一张活动证书，可在同一张证书中填写多个名称。
-- 在域名卡片展开“解析与证书”，点击“添加证书”，填写当前 DNS 平台的凭据和联系邮箱，确认条款后选择“保存并申请”；“仅保存配置”不会发起签发。DNSPod 使用 ID,Token，阿里云使用 AccessKey ID / Secret，Cloudflare 使用 DNS API Token（可选独立 Zone Token）。切换平台必须重新填写凭据。
+- 在域名行点击“证书”，选择自动申请、上传或服务器路径。自动申请填写当前 DNS 平台的凭据和联系邮箱，确认条款后选择“保存并申请”。“仅保存配置”不会发起签发；修改覆盖范围、颁发机构或授权后显示“新配置待申请”，原证书继续服务，但自动续期暂停，直到显式发起新配置申请。只改续期参数不会暂停原有续期。DNSPod 使用 ID,Token，阿里云使用 AccessKey ID / Secret，Cloudflare 使用 DNS API Token（可选独立 Zone Token）；不同平台的授权不混用，弹窗内切换时保留各自草稿。
 - DNS 验证仅创建 TXT 记录，按本次返回的 RecordId 清理，不删除其他 TXT 记录。需 `alidns:AddDomainRecord` 和 `alidns:DeleteDomainRecord` 权限；请按实际域名资源限制 RAM 授权。
-- 自动续期每小时检查，剩余不足 30 天申请替换证书，失败至少间隔 12 小时重试。上传证书不会自动续期。任务结果显示在后台，失败保留原证书。
+- 自动续期每小时检查，默认提前 30 天申请替换证书，失败间隔 12 小时重试。域名下展开“续期设置”可分别修改为提前 1–90 天、失败间隔 1–168 小时，保存并持久化；开关自动续期不会重置参数。有效期不长于提前天数的证书，在有效期经过约 2/3 后进入续期窗口，避免反复签发。上传与路径证书不会自动向 CA 续期。任务结果显示在后台，失败保留原证书，成功后热更新。
 
 ### 启用内置 HTTPS
 
@@ -156,7 +156,7 @@ Docker 部署：
 docker compose up -d
 ```
 
-HTTPS 已在基础编排中启用；确认服务器 443 未被其他服务占用并已放行。修改 `.env` 的 `HTTPS_LISTEN_ADDR` 可以使用其他端口。HTTP 管理端口只监听服务器本机。`CONSOLE_HOST` 设置为控制台域名，例如 `console.fanke.xyz`。证书不会自动改变 DNS、开放云安全组或配置外部 Nginx/Caddy。若已有外部反向代理终止 TLS，需要继续由该代理管理其证书，或改为使用内置 HTTPS。旧 `docker-compose.https.yml` 保留为兼容覆盖文件。
+HTTPS 已在基础编排中启用；确认服务器 443 未被其他服务占用并已放行。修改 `.env` 的 `HTTPS_LISTEN_ADDR` 可以使用其他端口。HTTP 管理端口只监听服务器本机。`CONSOLE_HOST` 设置为控制台域名，例如 `console.example.com`。证书不会自动改变 DNS、开放云安全组或配置外部 Nginx/Caddy。若已有外部反向代理终止 TLS，需要继续由该代理管理其证书，或改为使用内置 HTTPS。旧 `docker-compose.https.yml` 保留为兼容覆盖文件。
 
 证书、私钥、DNS 授权保存在状态目录旁的 `certificates/`，按域名散列文件名分别保存。ACME 账户按 CA、邮箱和域名隔离。Linux 文件权限 0600、目录 0700；Windows 应限制此目录 ACL。秘密字段不通过状态 API 返回；后台写入只接受 HTTPS 或本机回环连接。请保护数据目录、主机及备份。此实现不接受公网明文 HTTP 上传凭据，也不盲目信任 X-Forwarded-Proto。
 

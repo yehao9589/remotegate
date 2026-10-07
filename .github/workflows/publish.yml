@@ -51,6 +51,10 @@ jobs:
           go test -race ./...
           go vet ./...
           for file in cmd/server/web/*.js deploy/openwrt/luci/page.js; do node --check "$file"; done
+          node scripts/check-console.cjs
+          node --test scripts/test-mapping-editor.cjs
+          node --test scripts/test-auth.cjs
+          node --test scripts/test-clipboard.cjs
 
   container-test:
     needs: checks

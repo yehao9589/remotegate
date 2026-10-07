@@ -30,7 +30,7 @@ func normalizeDomain(d DomainSettings) (DomainSettings, error) {
 	d.BaseDomain = strings.ToLower(strings.TrimSpace(d.BaseDomain))
 	d.ServerIP = strings.TrimSpace(d.ServerIP)
 	if d.BaseDomain == "" || len(d.BaseDomain) > 253 || !domainPattern.MatchString(d.BaseDomain) || net.ParseIP(d.BaseDomain) != nil {
-		return d, errors.New("请填写主域名，例如 fanke.xyz，不含协议、端口或星号")
+		return d, errors.New("请填写主域名，例如 example.com，不含协议、端口或星号")
 	}
 	if d.ServerIP != "" && net.ParseIP(d.ServerIP) == nil {
 		return d, errors.New("请填写有效的服务器公网 IP")

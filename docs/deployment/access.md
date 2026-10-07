@@ -12,9 +12,9 @@
 ## 方案 A：已有宝塔/Nginx 反代
 
 1. 反代目标指向服务器本机 `http://127.0.0.1:18088`，公网使用站点已有的 HTTPS。
-2. 使用 v0.1.3 或更新版本，compose 的 `environment` 传入 `CONSOLE_HOST`，`.env` 填写 `CONSOLE_HOST=gate.fanke.xyz`。默认外部 80/443 端口下 `PUBLIC_URL` 留空；自定义端口时填写完整外部地址，例如 `PUBLIC_URL=https://gate.fanke.xyz:8443`。仅使用反代时关闭 RemoteGate 内置 HTTPS。
-3. 容器重新部署后，直接打开 `https://gate.fanke.xyz/install` 创建管理员。
-4. 完成后使用保存的后台路径，例如 `https://gate.fanke.xyz/admin`。
+2. 使用 v0.1.3 或更新版本，compose 的 `environment` 传入 `CONSOLE_HOST`，`.env` 填写 `CONSOLE_HOST=gate.example.com`。默认外部 80/443 端口下 `PUBLIC_URL` 留空；自定义端口时填写完整外部地址，例如 `PUBLIC_URL=https://gate.example.com:8443`。仅使用反代时关闭 RemoteGate 内置 HTTPS。
+3. 容器重新部署后，直接打开 `https://gate.example.com/install` 创建管理员。
+4. 完成后使用保存的后台路径，例如 `https://gate.example.com/admin`。
 
 这条方案不用在自己的电脑执行 PowerShell 或 SSH。完整可复制配置见[宝塔教程](baota.md)。如果已有站点已能访问后台，沿用实际访问地址即可；同一域名默认 HTTP/HTTPS 切换不用改配置。自定义外部端口或域名变化时修改相应设置并重新部署。
 
@@ -51,11 +51,11 @@ http://127.0.0.1:18090/install
 ### B3. 创建账号与申请内置证书
 
 1. 创建管理员，保存后台入口；经隧道访问的后台地址例如 `http://127.0.0.1:18090/admin`。
-2. 在 DNS 中把后台域名 `gate.fanke.xyz` 指向服务器公网 IP。
-3. 在后台“域名与证书”添加 `fanke.xyz`，选择实际负责 DNS 解析的平台。域名购买平台与 DNS 平台可以不同。
+2. 在 DNS 中把后台域名 `gate.example.com` 指向服务器公网 IP。
+3. 在后台“域名与证书”添加 `example.com`，选择实际负责 DNS 解析的平台。域名购买平台与 DNS 平台可以不同。
 4. 在域名下添加证书：使用免费 Let's Encrypt 自动申请并填写 DNS 凭据，或上传已有证书与私钥；确认服务条款后提交。证书需要覆盖后台域名及要使用的映射域名。
-5. 证书安装成功后，内置 HTTPS 会加载证书；放行其实际公网端口，再访问 `https://gate.fanke.xyz/admin`。用 8443 时访问 `https://gate.fanke.xyz:8443/admin`。
-6. 公网 HTTPS 已验证可用后，再将 `CONSOLE_HOST` 设置为 `gate.fanke.xyz`，重新部署；正常访问 HTTPS 后可关闭 SSH 窗口。直接使用内置 HTTPS 不需要 `PUBLIC_URL`。
+5. 证书安装成功后，内置 HTTPS 会加载证书；放行其实际公网端口，再访问 `https://gate.example.com/admin`。用 8443 时访问 `https://gate.example.com:8443/admin`。
+6. 公网 HTTPS 已验证可用后，再将 `CONSOLE_HOST` 设置为 `gate.example.com`，重新部署；正常访问 HTTPS 后可关闭 SSH 窗口。直接使用内置 HTTPS 不需要 `PUBLIC_URL`。
 
 本方案的 DNS 凭据按实际服务商填写：阿里云为 AccessKey ID/Secret，DNSPod 为 DNSPod API ID/Token，Cloudflare 为可编辑目标区域 DNS 的 API Token。DNS A 记录需要自行创建；证书签发不会替你建立服务的公网 A 记录。
 
@@ -70,18 +70,18 @@ http://127.0.0.1:18090/install
 - 后台“账号与入口”可验证当前密码后修改入口或密码，修改会退出全部会话。
 - 旧安装保留原账号与入口；不要为重新进入安装页而删除数据。
 
-路由器填写的服务器地址不含后台路径。例如后台为 `https://gate.fanke.xyz/my-panel`，路由器仍填 `https://gate.fanke.xyz`。
+路由器填写的服务器地址不含后台路径。例如后台为 `https://gate.example.com/my-panel`，路由器仍填 `https://gate.example.com`。
 
 ## 设备映射的 HTTPS 入口
 
-管理后台能访问，只代表后台域名接通了。`ceshi01.fanke.xyz` 等映射域名还需 DNS 和实际入口。选择一条方式：
+管理后台能访问，只代表后台域名接通了。`ceshi01.example.com` 等映射域名还需 DNS 和实际入口。选择一条方式：
 
 ### 使用 RemoteGate 内置 HTTPS
 
 - 在后台添加映射域名对应的主域，并配置覆盖子域名的证书。
 - 设置 `HTTPS_LISTEN_ADDR=:8443` 等空闲端口，重新部署，放行该端口。
-- 将映射的公网协议/端口填为 HTTPS/8443，访问 `https://ceshi01.fanke.xyz:8443/`。
-- 原宝塔后台继续使用 `https://gate.fanke.xyz/admin`，它的 443 证书与 RemoteGate 的 8443 证书分别由各自入口管理。
+- 将映射的公网协议/端口填为 HTTPS/8443，访问 `https://ceshi01.example.com:8443/`。
+- 原宝塔后台继续使用 `https://gate.example.com/admin`，它的 443 证书与 RemoteGate 的 8443 证书分别由各自入口管理。
 
 ### 使用宝塔/Nginx HTTPS
 

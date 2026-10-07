@@ -13,7 +13,7 @@
 ## 1. 准备
 
 - Linux 服务器，宝塔已安装 Docker 管理功能。
-- 一个指向服务器 IP 的后台域名。以下使用 `gate.fanke.xyz` 举例，请替换为自己的域名。
+- 一个指向服务器 IP 的后台域名。以下使用 `gate.example.com` 举例，请替换为自己的域名。
 - 宝塔站点使用有效的 HTTPS 证书，公网可访问站点的 443 端口。
 
 后台只需要这一个域名；设备访问域名可以在后台上线后再配置。不需要数据库。
@@ -61,7 +61,7 @@ services:
 ```dotenv
 REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:stable
 REMOTE_GATE_DATA_DIR=/www/RemoteGate/data
-CONSOLE_HOST=gate.fanke.xyz
+CONSOLE_HOST=gate.example.com
 PUBLIC_URL=
 HTTPS_LISTEN_ADDR=
 ```
@@ -76,11 +76,11 @@ HTTPS_LISTEN_ADDR=
 | `REMOTE_GATE_IMAGE` | 默认 `stable`，跟随最新通过检查的构建 |
 | `HTTPS_LISTEN_ADDR` | 本篇留空，关闭 RemoteGate 内置 HTTPS，由宝塔提供 HTTPS |
 
-比如 HTTPS 使用非标准 8443 端口，`PUBLIC_URL` 填 `https://gate.fanke.xyz:8443`。该设置只识别外部地址，不会给宝塔申请证书。
+比如 HTTPS 使用非标准 8443 端口，`PUBLIC_URL` 填 `https://gate.example.com:8443`。该设置只识别外部地址，不会给宝塔申请证书。
 
-同一域名从 HTTP 切换为 HTTPS 不用修改配置。已有 `PUBLIC_URL=https://gate.fanke.xyz` 也可原样保留，实际通过 `http://gate.fanke.xyz` 访问时不会因协议差异被拒绝。自定义外部端口或后台域名变化后，需要修改配置并重新部署容器。
+同一域名从 HTTP 切换为 HTTPS 不用修改配置。已有 `PUBLIC_URL=https://gate.example.com` 也可原样保留，实际通过 `http://gate.example.com` 访问时不会因协议差异被拒绝。自定义外部端口或后台域名变化后，需要修改配置并重新部署容器。
 
-如果已有站点暂时只支持 HTTP，可以使用 `http://gate.fanke.xyz/install`。兼容逻辑不会申请站点证书；建议先在宝塔配置有效的 HTTPS 证书，再填写管理员密码。
+如果已有站点暂时只支持 HTTP，可以使用 `http://gate.example.com/install`。兼容逻辑不会申请站点证书；建议先在宝塔配置有效的 HTTPS 证书，再填写管理员密码。
 
 本编排使用 host 网络，不另加 `ports`。HTTP 只监听服务器的 `127.0.0.1:18088`，不用向公网开放 18088。这里也不需要开放 RemoteGate 的 8443 端口。
 
@@ -92,7 +92,7 @@ HTTPS_LISTEN_ADDR=
 
 ## 4. 配置宝塔站点反代
 
-在宝塔网站管理中创建或选择 `gate.fanke.xyz` 站点，为这个站点配置 HTTPS 证书，然后添加反向代理：
+在宝塔网站管理中创建或选择 `gate.example.com` 站点，为这个站点配置 HTTPS 证书，然后添加反向代理：
 
 | 项目 | 填写 |
 | --- | --- |
@@ -108,13 +108,13 @@ HTTPS_LISTEN_ADDR=
 **直接在浏览器打开：**
 
 ```text
-https://gate.fanke.xyz/install
+https://gate.example.com/install
 ```
 
 管理员账号默认 `admin`，填写密码、确认密码及后台入口，例如 `/admin`。创建后会进入：
 
 ```text
-https://gate.fanke.xyz/admin
+https://gate.example.com/admin
 ```
 
 如果自定义为 `/my-panel`，以后就使用对应地址。安装完成后 `/install` 关闭，旧安装的原账号与入口会保留。

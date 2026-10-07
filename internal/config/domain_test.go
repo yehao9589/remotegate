@@ -5,10 +5,10 @@ import "testing"
 func TestDomainSettingsPersistence(t *testing.T) {
 	p := t.TempDir() + "/state.json"
 	s, _ := Open(p)
-	if err := s.SetDomainSettings(DomainSettings{BaseDomain: " Fanke.XYZ ", ServerIP: "203.0.113.1"}); err != nil {
+	if err := s.SetDomainSettings(DomainSettings{BaseDomain: " Example.COM ", ServerIP: "203.0.113.1"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, v := range []string{"https://fanke.xyz", "*.fanke.xyz", "fanke.xyz:443", "127.0.0.1", "bad..xyz"} {
+	for _, v := range []string{"https://example.com", "*.example.com", "example.com:443", "127.0.0.1", "bad..xyz"} {
 		if s.SetDomainSettings(DomainSettings{BaseDomain: v}) == nil {
 			t.Fatalf("accepted %q", v)
 		}
@@ -17,14 +17,14 @@ func TestDomainSettingsPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopened.DomainSettings().BaseDomain != "fanke.xyz" {
+	if reopened.DomainSettings().BaseDomain != "example.com" {
 		t.Fatal("settings not persisted")
 	}
 	if _, _, err = s.CreateDevice("keep-domain"); err != nil {
 		t.Fatal(err)
 	}
 	reopened, _ = Open(p)
-	if reopened.DomainSettings().BaseDomain != "fanke.xyz" {
+	if reopened.DomainSettings().BaseDomain != "example.com" {
 		t.Fatal("device write lost domain")
 	}
 }

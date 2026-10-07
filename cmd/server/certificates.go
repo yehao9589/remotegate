@@ -13,6 +13,7 @@ import (
 	"net/mail"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,9 @@ type certificateState struct {
 	AccessKey       string             `json:"accessKey"`
 	SecretKey       string             `json:"secretKey"`
 	AutoRenew       bool               `json:"autoRenew"`
+	RenewBeforeDays int                `json:"renewBeforeDays,omitempty"`
+	RetryHours      int                `json:"retryHours,omitempty"`
+	PendingACME     bool               `json:"pendingACME,omitempty"`
 	TermsAccepted   bool               `json:"termsAccepted"`
 	CertPEM         string             `json:"certPEM,omitempty"`
 	KeyPEM          string             `json:"keyPEM,omitempty"`
@@ -187,15 +191,14 @@ func (m *certificateManager) status(domain string) map[string]any {
 	out["privateKeyPath"] = s.PrivateKeyPath
 	out["history"] = append([]certificateEvent{}, s.History...)
 	out["configured"] = s.Domain == domain && credentialsConfigured && s.Email != "" && s.TermsAccepted
+	out["renewBeforeDays"], out["retryHours"] = renewalPolicy(s)
+	out["pendingACME"] = s.PendingACME
 	if !s.LastAttempt.IsZero() {
 		out["retryAfter"] = s.LastAttempt.Add(time.Minute)
 	}
-	if m.pair != nil && s.Source == "acme" && s.AutoRenew {
+	if m.pair != nil && s.Source == "acme" && s.AutoRenew && !s.PendingACME {
 		if leaf, err := x509.ParseCertificate(m.pair.Certificate[0]); err == nil {
-			due := leaf.NotAfter.Add(-30 * 24 * time.Hour)
-			if backoff := s.LastAttempt.Add(12 * time.Hour); backoff.After(due) {
-				due = backoff
-			}
+			due := renewalTime(s, leaf)
 			out["renewAfter"] = due
 		}
 	}
@@ -218,6 +221,11 @@ func (m *certificateManager) start(domain string) error {
 		return errors.New("请至少等待一分钟后再重试")
 	}
 	s.LastAttempt = time.Now().UTC()
+	// Saving a draft does not apply it. Once an existing ACME certificate's
+	// replacement is explicitly requested, failed attempts may retry normally.
+	if s.Source == "acme" {
+		s.PendingACME = false
+	}
 	s.LastResult = "正在申请：DNS 验证可能需要几分钟"
 	operation := "证书申请"
 	if m.pair != nil && s.Source == "acme" {
@@ -257,6 +265,7 @@ func (m *certificateManager) start(domain string) error {
 			next.CertPEM = cert
 			next.KeyPEM = key
 			next.Source = "acme"
+			next.PendingACME = false
 			next.UpdatedAt = time.Now().UTC()
 			next.LastResult = "证书已签发并保存；内置 HTTPS 使用新证书，外部反向代理需另行部署"
 			addCertificateEvent(&next, operation, "success", next.LastResult)
@@ -275,11 +284,71 @@ func (m *certificateManager) renewDue(domain string, now time.Time) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.state
-	if m.running || !s.AutoRenew || s.Source != "acme" || s.Domain != domain || m.pair == nil || now.Sub(s.LastAttempt) < 12*time.Hour {
+	if m.running || !s.AutoRenew || s.PendingACME || s.Source != "acme" || s.Domain != domain || m.pair == nil {
 		return false
 	}
 	leaf, err := x509.ParseCertificate(m.pair.Certificate[0])
-	return err == nil && leaf.NotAfter.Sub(now) < 30*24*time.Hour
+	return err == nil && !now.Before(renewalTime(s, leaf))
+}
+
+// Zero values preserve the scheduling policy used by older installations.
+func renewalPolicy(s certificateState) (days, hours int) {
+	days, hours = s.RenewBeforeDays, s.RetryHours
+	if days == 0 {
+		days = 30
+	}
+	if hours == 0 {
+		hours = 12
+	}
+	return
+}
+
+func renewalTime(s certificateState, leaf *x509.Certificate) time.Time {
+	days, hours := renewalPolicy(s)
+	due := leaf.NotAfter.Add(-time.Duration(days) * 24 * time.Hour)
+	// Avoid constant reissuance for certificates shorter than the lead window.
+	// Such certificates become eligible after two thirds of their lifetime.
+	if adaptive := leaf.NotBefore.Add(leaf.NotAfter.Sub(leaf.NotBefore) * 2 / 3); due.Before(adaptive) && leaf.NotAfter.Sub(leaf.NotBefore) <= time.Duration(days)*24*time.Hour {
+		due = adaptive
+	}
+	if !s.LastAttempt.IsZero() {
+		if backoff := s.LastAttempt.Add(time.Duration(hours) * time.Hour); backoff.After(due) {
+			due = backoff
+		}
+	}
+	return due
+}
+
+func setRenewalPolicy(s *certificateState, days, hours *int) error {
+	if days != nil && (*days < 1 || *days > 90) {
+		return errors.New("续期提前天数应为 1–90 天")
+	}
+	if hours != nil && (*hours < 1 || *hours > 168) {
+		return errors.New("失败重试间隔应为 1–168 小时")
+	}
+	if days != nil {
+		s.RenewBeforeDays = *days
+	}
+	if hours != nil {
+		s.RetryHours = *hours
+	}
+	return nil
+}
+
+func acmeConfigurationChanged(before, after certificateState) bool {
+	keyType := func(s certificateState) string {
+		if s.KeyType == "" {
+			return "2048"
+		}
+		return s.KeyType
+	}
+	oldNames, newNames := slices.Clone(requestedNames(before)), slices.Clone(requestedNames(after))
+	slices.Sort(oldNames)
+	slices.Sort(newNames)
+	return before.Domain != after.Domain || before.Provider != after.Provider || before.Email != after.Email ||
+		caName(before) != caName(after) || keyType(before) != keyType(after) ||
+		before.AccessKey != after.AccessKey || before.SecretKey != after.SecretKey ||
+		before.EABKeyID != after.EABKeyID || before.EABHMAC != after.EABHMAC || !slices.Equal(oldNames, newNames)
 }
 func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 	var domain string
@@ -338,6 +407,7 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 		CA, KeyType, EABKeyID, EABHMAC, CertificatePath, PrivateKeyPath        string
 		Action, Email, Provider, AccessKey, SecretKey, Certificate, PrivateKey string
 		AutoRenew, TermsAccepted                                               bool
+		RenewBeforeDays, RetryHours                                            *int
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&in) != nil {
 		http.Error(w, "请求格式错误或证书文件过大", 400)
@@ -388,14 +458,22 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("导入证书不能自动续期")
 			break
 		}
+		if err = setRenewalPolicy(&s, in.RenewBeforeDays, in.RetryHours); err != nil {
+			break
+		}
 		s.AutoRenew = in.AutoRenew
 		message := "自动续期已关闭"
 		if s.AutoRenew {
 			message = "自动续期已开启"
 		}
+		days, hours := renewalPolicy(s)
+		message += fmt.Sprintf("；提前 %d 天；失败后 %d 小时重试", days, hours)
 		addCertificateEvent(&s, "续期设置", "success", message)
 		err = m.saveLocked(s)
 	case "configure":
+		if err = setRenewalPolicy(&s, in.RenewBeforeDays, in.RetryHours); err != nil {
+			break
+		}
 		if in.Provider != "" && s.Provider != "" && in.Provider != s.Provider {
 			s.AccessKey = ""
 			s.SecretKey = ""
@@ -426,7 +504,7 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("不支持的密钥算法")
 			break
 		}
-		if len(in.Names) == 0 {
+		if in.Names == nil {
 			in.Names = []string{domain, "*." + domain}
 		}
 		in.Names, err = normalizeCertificateNames(in.Names, domain)
@@ -473,6 +551,7 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("请填写该 DNS 平台的授权凭据")
 			break
 		}
+		s.PendingACME = s.PendingACME || m.pair == nil || s.Source != "acme" || acmeConfigurationChanged(m.state, s)
 		addCertificateEvent(&s, "申请配置", "success", "证书申请配置已保存")
 		err = m.saveLocked(s)
 	case "upload", "path", "reload":
@@ -507,6 +586,7 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 			}
 			s.Names = append([]string{}, pair.Leaf.DNSNames...)
 			s.AutoRenew = false
+			s.PendingACME = false
 			s.UpdatedAt = time.Now().UTC()
 			s.LastResult = "证书已上传；手动证书不会自动续期"
 			if in.Action == "path" {

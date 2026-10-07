@@ -23,7 +23,7 @@
 
 | 当前情况 | 如何首次进入后台 |
 | --- | --- |
-| 已有宝塔/Nginx 可用域名反代 | 直接打开域名的 `/install`，例如 `https://gate.fanke.xyz/install`；不需要 SSH |
+| 已有宝塔/Nginx 可用域名反代 | 直接打开域名的 `/install`，例如 `https://gate.example.com/install`；不需要 SSH |
 | 暂无反代，准备使用 RemoteGate 内置 HTTPS | 可经 SSH 隧道创建账号与配置第一张证书，再切换公网 HTTPS |
 
 完整说明见[首次访问、后台入口与 HTTPS](docs/deployment/access.md)。宝塔教程已包含第一条流程，不必再执行第二条。
