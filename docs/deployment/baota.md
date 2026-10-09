@@ -74,7 +74,7 @@ HTTPS_LISTEN_ADDR=
 | `PUBLIC_URL` | 默认留空；使用自定义外部端口时填完整地址，不写 `/admin` 等路径 |
 | `REMOTE_GATE_DATA_DIR` | 服务器数据目录，更新和重建时保持不变 |
 | `REMOTE_GATE_IMAGE` | 默认 `stable`，跟随最新通过检查的构建 |
-| `HTTPS_LISTEN_ADDR` | 本篇留空，关闭 RemoteGate 内置 HTTPS，由宝塔提供 HTTPS |
+| `HTTPS_LISTEN_ADDR` | 首次按本篇留空，由宝塔提供后台 HTTPS；在后台保存过内置入口设置后，以保存的 `https.json` 为准 |
 
 比如 HTTPS 使用非标准 8443 端口，`PUBLIC_URL` 填 `https://gate.example.com:8443`。该设置只识别外部地址，不会给宝塔申请证书。
 
@@ -127,7 +127,9 @@ https://gate.example.com/admin
 - [选择映射域名的 HTTPS 入口](access.md#设备映射的-https-入口)：后台能访问不代表所有映射域名都已接入。
 - [宝塔更新与备份](maintenance.md#宝塔界面更新)。
 
-本篇的后台 HTTPS 证书由宝塔管理。RemoteGate 后台申请的证书不会自动写入宝塔站点，内置 HTTPS 也不会因为申请证书而自动开启。
+本篇先由宝塔提供后台 HTTPS。希望系统申请的映射证书自动生效、访问地址不带端口时，请按[与宝塔共用 443](shared-443.md)完成一次监听迁移：宝塔保留原网站与证书，RemoteGate 对映射提供系统证书和自动续期。迁移后新增映射无需逐个添加宝塔站点。
+
+若采用“其他方式”中的部署包手动导入，则宝塔仍终止映射 TLS，系统续期后要重新导入；它与共用 443 是不同方式。
 
 ## 常见问题
 

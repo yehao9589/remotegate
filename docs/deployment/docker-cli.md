@@ -18,8 +18,9 @@ cp .env.example .env
 
 | 场景 | .env 设置 | 启动后访问 |
 | --- | --- | --- |
+| 系统独立 HTTPS（默认） | 配置 `BOOTSTRAP_DOMAIN`、邮箱、DNS 凭据及服务条款同意；保留 `HTTPS_LISTEN_ADDR=:443` | 首次证书签发后直接进入 HTTPS 安装页，完整可复制配置见[独立部署](standalone.md) |
 | 已有本机 HTTPS 反代 | `CONSOLE_HOST` 填后台域名；默认外部 80/443 下 `PUBLIC_URL` 留空，自定义端口时填完整地址；仅使用反代时将 `HTTPS_LISTEN_ADDR` 留空 | [访问方案 A](access.md#方案-a已有宝塔nginx-反代)中的域名安装页，无需 SSH |
-| 没有反代，使用内置 HTTPS | 首次 `CONSOLE_HOST`、`PUBLIC_URL` 留空；`HTTPS_LISTEN_ADDR=:443`，占用时换 `:8443` | [访问方案 B](access.md#方案-b没有反代使用-ssh-隧道)，先经 SSH 创建账号与申请证书 |
+| 没有反代，使用内置 HTTPS | 首次 `CONSOLE_HOST`、`PUBLIC_URL` 留空；443 空闲时使用 `HTTPS_LISTEN_ADDR=:443` | [访问方案 B](access.md#方案-b没有反代使用-ssh-隧道)，先经 SSH 创建账号与申请证书；已有宝塔网站希望共用标准端口时阅读[共用 443](shared-443.md) |
 
 默认使用 `REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:stable`。数据默认放在项目的 `./data`；也可以把 `REMOTE_GATE_DATA_DIR` 改成服务器绝对路径。
 

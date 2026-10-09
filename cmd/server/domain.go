@@ -113,8 +113,38 @@ func (a *app) domainCheck(w http.ResponseWriter, r *http.Request) {
 		}(i, target)
 	}
 	wg.Wait()
+	if r.Context().Err() != nil {
+		return
+	}
 	rows = append(rows, resultRows...)
-	writeJSON(w, map[string]any{"dns": rows, "checkedAt": time.Now(), "serverIP": d.ServerIP})
+	checkedAt := time.Now()
+	for _, row := range rows {
+		port := d.RootHTTPSPort
+		if port == 0 {
+			port = 443
+		}
+		if row["host"] != d.BaseDomain || row["port"] != port {
+			continue
+		}
+		cert, hasCertificate := row["certificate"].(map[string]any)
+		if !hasCertificate && row["error"] == nil {
+			continue
+		}
+		check := config.PublicHTTPSCheck{Host: d.BaseDomain, Port: port, CheckedAt: checkedAt}
+		check.Valid, _ = cert["valid"].(bool)
+		check.Error, _ = cert["error"].(string)
+		if message, ok := row["error"].(string); ok {
+			check.Error = message
+		}
+		check.Issuer, _ = cert["issuer"].(string)
+		check.Names, _ = cert["names"].([]string)
+		check.ExpiresAt, _ = cert["expiresAt"].(time.Time)
+		if err := a.store.SetDomainHTTPSCheck(d.ID, check); err != nil {
+			http.Error(w, "保存检测结果失败，请重新检测："+err.Error(), 500)
+			return
+		}
+	}
+	writeJSON(w, map[string]any{"dns": rows, "checkedAt": checkedAt, "serverIP": d.ServerIP})
 }
 
 type domainCheckTarget struct {
@@ -166,7 +196,11 @@ func domainCheckTargets(d config.DomainSettings, mappings []config.Mapping, cons
 		}
 	}
 	if len(out) == 0 {
-		add(domainCheckTarget{Host: d.BaseDomain, Port: 443, Kind: "root", HTTPS: true})
+		port := d.RootHTTPSPort
+		if port == 0 {
+			port = 443
+		}
+		add(domainCheckTarget{Host: d.BaseDomain, Port: port, Kind: "root", HTTPS: true})
 	}
 	add(domainCheckTarget{Host: "rg-check-" + time.Now().Format("150405") + "." + d.BaseDomain, Port: 443, Kind: "wildcard"})
 	return out, nil

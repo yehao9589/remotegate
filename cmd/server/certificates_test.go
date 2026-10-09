@@ -21,11 +21,14 @@ import (
 	"github.com/local/remotegate/internal/config"
 )
 
-func testCertificate(t *testing.T, domain string, expires time.Time) (string, string) {
+func testCertificate(t *testing.T, domain string, expires time.Time, names ...string) (string, string) {
 	t.Helper()
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
 	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "RemoteGate test certificate"}, DNSNames: []string{"*." + domain, domain}, NotBefore: expires.Add(-90 * 24 * time.Hour), NotAfter: expires, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	if len(names) > 0 {
+		template.DNSNames = names
+	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)

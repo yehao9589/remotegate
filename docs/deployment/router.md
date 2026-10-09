@@ -8,7 +8,7 @@
 
 填写路由器能够访问的服务端地址，例如 `https://gate.example.com`。它不包含 `/admin` 等后台路径，也不是你电脑的 `127.0.0.1` 或 SSH 隧道地址。
 
-如果走宝塔反代，代理需转发 `/api/agent/connect` 的 WebSocket 升级请求。使用服务端内置 8443 入口时，地址为 `https://gate.example.com:8443`。
+如果走宝塔反代，代理需转发 `/api/agent/connect` 的 WebSocket 升级请求。独立或[共用 443](shared-443.md) 入口的外部地址为 `https://gate.example.com`；只有选择非标准端口时才需带该端口。
 
 ## 2. 选择插件安装方式
 

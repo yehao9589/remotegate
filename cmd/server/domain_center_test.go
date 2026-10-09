@@ -33,6 +33,14 @@ func TestDomainChecksUseActualMappingEndpoints(t *testing.T) {
 	}
 }
 
+func TestExternalRootHTTPSUsesConfiguredPublicPort(t *testing.T) {
+	d := config.DomainSettings{BaseDomain: "example.com", RootHTTPSProvider: "external", RootHTTPSPort: 8443}
+	targets, err := domainCheckTargets(d, nil, "", "", "")
+	if err != nil || targets[0].Host != d.BaseDomain || targets[0].Port != 8443 || !targets[0].HTTPS {
+		t.Fatal(targets, err)
+	}
+}
+
 func TestCertificateRenewalControlsAndPublicExport(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := config.Open(filepath.Join(dir, "state.json"))

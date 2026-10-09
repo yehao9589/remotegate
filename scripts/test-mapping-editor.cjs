@@ -14,6 +14,14 @@ test('a short name needs an explicitly selected suffix',()=>{
  assert.equal(host(' @ ','gate.example.com'),'gate.example.com');
  assert.equal(host('CESHI01.GATE.EXAMPLE.COM','gate.example.com'),'ceshi01.gate.example.com');
 });
+
+test('new public mappings default to system HTTPS instead of the HTTP admin preview port',()=>{
+ const access=context.mappingPublicAccess({},'gate.example.com');
+ assert.equal(access.scheme,'https');assert.equal(access.port,443);
+ const edited=context.mappingPublicAccess({id:'existing',publicScheme:'http',publicPort:8080});
+ assert.equal(edited.scheme,'http');assert.equal(edited.port,8080);
+ assert.equal(context.mappingPublicAccess({host:'router.localhost'}).port,18088);
+});
 test('manual mode requires a complete domain, including local test domains',()=>{
  assert.equal(host('ceshi01.gate.example.com',manual),'ceshi01.gate.example.com');
  assert.equal(host('router.localhost',manual),'router.localhost');

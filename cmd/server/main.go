@@ -29,19 +29,22 @@ import (
 var webFS embed.FS
 
 type app struct {
-	certs        *certificateManager
-	certMu       sync.Mutex
-	certManagers map[string]*certificateManager
-	certDir      string
-	httpsAddress string
-	httpsError   string
-	store        *config.Store
-	hub          *hub.Hub
-	adminUser    string
-	adminPass    string
-	auth         *adminManager
-	consoleHost  string
-	publicURL    *url.URL
+	certs             *certificateManager
+	certMu            sync.Mutex
+	certManagers      map[string]*certificateManager
+	certDir           string
+	httpsAddress      string
+	httpsError        string
+	httpsServer       *http.Server
+	httpsSettings     httpsSettings
+	httpsSettingsPath string
+	store             *config.Store
+	hub               *hub.Hub
+	adminUser         string
+	adminPass         string
+	auth              *adminManager
+	consoleHost       string
+	publicURL         *url.URL
 }
 
 func main() {
@@ -50,7 +53,7 @@ func main() {
 		log.Print(string(data))
 		return
 	}
-	listen := env("LISTEN_ADDR", ":8080")
+	listen := env("LISTEN_ADDR", "127.0.0.1:18088")
 	statePath := env("STATE_PATH", "./data/state.json")
 	auth, err := openAdminManager(filepath.Join(filepath.Dir(statePath), "admin.json"), os.Getenv("ADMIN_USERNAME"), os.Getenv("ADMIN_PASSWORD"))
 	if err != nil {
@@ -69,7 +72,11 @@ func main() {
 	}
 	a.certDir = filepath.Join(filepath.Dir(statePath), "certificates")
 	a.certManagers = make(map[string]*certificateManager)
+	a.httpsSettingsPath = filepath.Join(filepath.Dir(statePath), "https.json")
 	a.startCertificateServices()
+	if err := a.bootstrapCertificate(os.Getenv); err != nil {
+		log.Printf("首次 HTTPS 配置失败：%v；本机初始化入口仍可使用", err)
+	}
 	server := &http.Server{Addr: listen, Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 75 * time.Second}
 	log.Printf("RemoteGate %s (%s) server listening on %s", buildinfo.Tag(), buildinfo.Commit, listen)
 	if !auth.initialized() {
@@ -94,6 +101,7 @@ func (a *app) routes() http.Handler {
 	}))
 	mux.HandleFunc("/install", a.root)
 	mux.HandleFunc("/api/admin/certificates", a.admin(a.certificates))
+	mux.HandleFunc("/api/admin/https", a.admin(a.httpsSettingsHandler))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("/api/admin/domains", a.admin(a.domains))
 	mux.HandleFunc("/api/admin/domains/check", a.admin(a.domainCheck))
@@ -145,6 +153,10 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideJS = append(guideJS, securityJS...)
 		visualJS, _ := webFS.ReadFile("web/visuals.js")
 		guideJS = append(guideJS, visualJS...)
+		refreshJS, _ := webFS.ReadFile("web/refresh.js")
+		guideJS = append(guideJS, refreshJS...)
+		deploymentJS, _ := webFS.ReadFile("web/https-deploy.js")
+		guideJS = append(guideJS, deploymentJS...)
 		guideCSS, _ := webFS.ReadFile("web/install-guide.css")
 		consoleCSS, _ := webFS.ReadFile("web/console.css")
 		guideCSS = append(guideCSS, consoleCSS...)
@@ -161,6 +173,7 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		page = a.renderConsoleAuth(page, r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Add("Vary", "Cookie")
 		_, _ = w.Write([]byte(page))
 		return
 	}

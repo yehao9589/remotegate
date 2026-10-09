@@ -31,9 +31,9 @@ COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh && \
     setcap cap_net_bind_service=+ep /usr/local/bin/remotegate-server
 VOLUME ["/data"]
-EXPOSE 8080 8443
-ENV LISTEN_ADDR=:8080 HTTPS_LISTEN_ADDR=:8443 STATE_PATH=/data/state.json \
-    HEALTHCHECK_URL=http://127.0.0.1:8080/healthz
+EXPOSE 443
+ENV LISTEN_ADDR=127.0.0.1:18088 HTTPS_LISTEN_ADDR=:443 STATE_PATH=/data/state.json \
+    HEALTHCHECK_URL=http://127.0.0.1:18088/healthz
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl --fail --silent --max-time 3 "$HEALTHCHECK_URL" >/dev/null || exit 1
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

@@ -376,10 +376,9 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "GET" {
 		status := m.status(domain)
-		a.certMu.Lock()
-		status["httpsAddress"] = a.httpsAddress
-		status["httpsError"] = a.httpsError
-		a.certMu.Unlock()
+		https := a.httpsStatus()
+		status["httpsAddress"] = https["address"]
+		status["httpsError"] = https["error"]
 		matches := []map[string]any{}
 		for _, mapping := range a.store.Snapshot().Mappings {
 			if mapping.Host == domain || strings.HasSuffix(mapping.Host, "."+domain) {
@@ -388,6 +387,7 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		status["mappings"] = matches
+		status["httpsSettings"] = https
 		writeJSON(w, status)
 		return
 	}
@@ -406,6 +406,7 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 		Names                                                                  []string
 		CA, KeyType, EABKeyID, EABHMAC, CertificatePath, PrivateKeyPath        string
 		Action, Email, Provider, AccessKey, SecretKey, Certificate, PrivateKey string
+		CurrentPassword                                                        string
 		AutoRenew, TermsAccepted                                               bool
 		RenewBeforeDays, RetryHours                                            *int
 	}
@@ -415,6 +416,10 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 	}
 	if domain == "" {
 		http.Error(w, "请先保存主域名", 400)
+		return
+	}
+	if in.Action == "deploy-export" {
+		a.exportCertificateDeployment(w, r, m, domain, in.CurrentPassword)
 		return
 	}
 	if in.Action == "issue" || in.Action == "renew" {
@@ -617,42 +622,7 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, m.status(domain))
 }
 func (a *app) startCertificateServices() {
-	if addr := os.Getenv("HTTPS_LISTEN_ADDR"); addr != "" {
-		listener, err := net.Listen("tcp", addr)
-		a.certMu.Lock()
-		if err != nil {
-			a.httpsError = err.Error()
-		} else {
-			a.httpsAddress = addr
-		}
-		a.certMu.Unlock()
-		if err == nil {
-			server := &http.Server{Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 75 * time.Second, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: func(h *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				for _, d := range a.store.Domains() {
-					m, e := a.certificateFor(d.BaseDomain)
-					if e == nil {
-						m.mu.Lock()
-						m.tlsAddress = addr
-						m.mu.Unlock()
-						if pair, e := m.getCertificate(h); e == nil {
-							return pair, nil
-						}
-					}
-				}
-				return nil, errors.New("no certificate installed for this domain")
-			}}}
-			go func() {
-				err := server.ServeTLS(listener, "", "")
-				if err != nil {
-					a.certMu.Lock()
-					a.httpsError = err.Error()
-					a.httpsAddress = ""
-					a.certMu.Unlock()
-					log.Printf("HTTPS listener stopped: %v", err)
-				}
-			}()
-		}
-	}
+	a.initializeHTTPS()
 	go func() {
 		check := func() {
 			for _, d := range a.store.Domains() {

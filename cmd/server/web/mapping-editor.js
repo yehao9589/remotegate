@@ -9,7 +9,7 @@ function mappingHost(host,suffix){
  return full;
 }
 function mappingPublicAccess(item={},domain=''){const local=item.host==='localhost'||item.host?.endsWith('.localhost')||item.host?.endsWith('.127.0.0.1.nip.io')||(!item.id&&domain==='localhost');const scheme=item.publicScheme||(local?'http':'https');return {scheme,port:item.publicPort||(local?(Number(location.port)||80):(scheme==='https'?443:80))}}
-function publicMappingURL(item){const access=mappingPublicAccess(item),host=item.host||'';return `${access.scheme}://${host}:${access.port}/`}
+function publicMappingURL(item){const access=mappingPublicAccess(item),host=item.host||'',standard=(access.scheme==='https'&&access.port===443)||(access.scheme==='http'&&access.port===80);return `${access.scheme}://${host}${standard?'':':'+access.port}/`}
 function splitMappingTarget(value){try{const u=new URL(value),port=u.port||(u.protocol==='https:'?'443':'80');u.port='';return {address:u.pathname==='/'&&!u.search&&!u.hash?u.href.replace(/\/$/,''):u.href,port}}catch{return {address:value,port:'80'}}}
 function joinMappingTarget(address,port){const u=new URL(address);if(!['http:','https:'].includes(u.protocol))throw Error('内网地址仅支持 http:// 或 https://');if(u.port)throw Error('请把端口填写在右侧端口栏');if(!/^\d+$/.test(port)||Number(port)<1||Number(port)>65535)throw Error('端口范围为 1–65535');u.port=port;return u.href}
 
@@ -26,8 +26,7 @@ openEditor=(type,item={})=>{
  const suffix=draft?.domainSuffix??(selected?.baseDomain||(item.host?customMappingDomain:domains[0]?.baseDomain||''));
  const prefix=draft?.host??(selected?(item.host===selected.baseDomain?'@':item.host.slice(0,-selected.baseDomain.length-1)):item.host||'');
  const target=splitMappingTarget(item.target||'http://127.0.0.1:80');
- const scheme=item.publicScheme||(item.id?mappingPublicAccess(item).scheme:location.protocol==='https:'?'https':'http');
- const port=item.publicPort||(item.id?mappingPublicAccess(item).port:Number(location.port)||(scheme==='https'?443:80));
+ const access=mappingPublicAccess(item,suffix),scheme=access.scheme,port=access.port;
  $('#fields').innerHTML=`${device?`<p class="mapping-device">接入设备：<strong>${esc(device.name)}</strong></p>`:`<label>接入设备<select name="deviceId" required>${state.devices.map(d=>`<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('')}</select></label>`}
  <div class="mapping-domain-grid"><div><div class="mapping-domain-heading"><label for="mappingDomainSuffix">域名后缀</label><button type="button" id="mappingAddDomain">＋ 添加域名</button></div>
  <select id="mappingDomainSuffix" name="domainSuffix" required aria-label="域名后缀"></select>
@@ -35,10 +34,12 @@ openEditor=(type,item={})=>{
  <label class="mapping-host-label"><span id="mappingHostLabel">子域名</span><div class="mapping-host-field"><input name="host" required value="${esc(prefix)}" autocomplete="off"><span id="mappingHostSuffix" aria-hidden="true"></span></div></label></div>
  <div class="mapping-public"><label>公网协议<select name="publicScheme"><option value="https">HTTPS</option><option value="http">HTTP</option></select></label><label>公网端口<input name="publicPort" type="number" min="1" max="65535" step="1" required></label></div>
  <p class="mapping-preview" id="mappingPreview" role="status" aria-live="polite"></p>
+ <div id="mappingHTTPSAdvice" class="mapping-https-advice" role="status" hidden></div>
  <details class="mapping-help"><summary>DNS 与证书要求</summary><p>主机名填 @ 表示使用域名后缀本身。预览仅组合地址；DNS 须解析到服务器，并配置对应公网入口。HTTPS 证书须覆盖完整访问域名。</p></details>
  <div class="mapping-target"><label>内网地址<input name="targetAddress" type="url" required value="${esc(draft?.targetAddress??target.address)}" placeholder="http://127.0.0.1"></label><label>内网端口<input name="targetPort" type="number" min="1" max="65535" step="1" required value="${esc(draft?.targetPort??target.port)}" placeholder="80"></label></div>
  <label>备注<input name="note" maxlength="200" value="${esc(draft?.note??item.note??'')}"></label><label class="check"><input name="enabled" type="checkbox" ${(draft?.enabled??item.enabled)!==false?'checked':''}> 启用映射</label>`;
  const suffixInput=$('#mappingDomainSuffix'),hostInput=$('#fields [name=host]'),schemeInput=$('#fields [name=publicScheme]'),portInput=$('#fields [name=publicPort]');
+ let httpsAdvice;
  schemeInput.value=draft?.publicScheme??scheme;portInput.value=draft?.publicPort??port;
  function preview(){
   const suffix=suffixInput.value,manual=suffix===customMappingDomain;
@@ -53,6 +54,7 @@ openEditor=(type,item={})=>{
    output.textContent=!hostInput.value.trim()&&suffix?'填写主机名后显示完整访问地址。':e.message;output.dataset.valid='false';
    if(hostInput.value.trim()&&suffix)try{mappingHost(hostInput.value,suffix)}catch(error){hostInput.setCustomValidity(error.message)}
   }
+  httpsAdvice?.refresh();
  }
  function domainOptions(list,current){
   suffixInput.innerHTML=`<option value="" disabled>请选择或先添加域名</option>${list.map(d=>`<option value="${esc(d.baseDomain)}">${esc(d.baseDomain)} · 显示名称：${esc(d.name||d.baseDomain)}</option>`).join('')}<option value="${customMappingDomain}">手动填写完整域名</option>`;
@@ -60,6 +62,8 @@ openEditor=(type,item={})=>{
   $('#mappingDomainStatus').textContent=list.length?'选择已有域名，再填写主机名。':'还没有添加域名。点击“添加域名”，完成后会返回当前映射；也可选择手动填写完整域名。';preview();
  }
  domainOptions(domains,suffix);
+ httpsAdvice=createMappingHTTPSAdvice(context,()=>{try{return {host:mappingHost(hostInput.value,suffixInput.value),publicScheme:schemeInput.value,publicPort:Number(portInput.value)}}catch{return null}},plan=>{schemeInput.value='https';portInput.value=plan.port;preview()});
+ httpsAdvice.refresh();
  hostInput.oninput=preview;suffixInput.onchange=preview;portInput.oninput=preview;
  schemeInput.onchange=()=>{if(portInput.value==='80'||portInput.value==='443')portInput.value=schemeInput.value==='https'?'443':'80';preview()};
  $('#mappingAddDomain').onclick=()=>{const draft=mappingDraft();$('#modal').close();openDomainEditor({},draft)};

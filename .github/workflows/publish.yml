@@ -54,7 +54,10 @@ jobs:
           node scripts/check-console.cjs
           node --test scripts/test-mapping-editor.cjs
           node --test scripts/test-auth.cjs
+          node --test scripts/test-refresh.cjs
           node --test scripts/test-clipboard.cjs
+          node --test scripts/test-domain-https.cjs
+          node --test scripts/test-https-deploy.cjs
 
   container-test:
     needs: checks

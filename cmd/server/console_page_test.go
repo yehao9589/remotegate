@@ -39,6 +39,9 @@ func TestConsoleFirstVisibleScreen(t *testing.T) {
 		if w.Header().Get("Cache-Control") != "no-store" {
 			t.Fatal("session-dependent HTML must not be cached")
 		}
+		if w.Header().Get("Vary") != "Cookie" {
+			t.Fatal("session-dependent HTML must distinguish browser cookies")
+		}
 	}
 	assertScreen("/install", "firstInstall", nil)
 	assertScreen("/", "firstInstall", nil)
@@ -71,5 +74,40 @@ func TestConsoleInitialScreenThroughLoopbackProxy(t *testing.T) {
 	requireStatus(t, w, 200)
 	if !strings.Contains(w.Body.String(), `<section id="login">`) {
 		t.Fatal("default local reverse proxy should render the login screen")
+	}
+}
+
+func TestConsoleRefreshPreservesHTTPSCookieThroughDefaultProxy(t *testing.T) {
+	a := freshAuthApp(t)
+	a.consoleHost = "console.example.com"
+	requireStatus(t, authCall(a, "/api/auth/setup", setupBody, "", nil), 200)
+	// A default local proxy replaces Host and does not forward the TLS scheme.
+	r := httptest.NewRequest("POST", "http://127.0.0.1/api/auth/login", strings.NewReader(`{"username":"owner","password":"test-password-123"}`))
+	r.RemoteAddr = "127.0.0.1:12345"
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Origin", "https://console.example.com")
+	r.Header.Set("X-Admin-Entry", "/admin")
+	w := httptest.NewRecorder()
+	a.routes().ServeHTTP(w, r)
+	requireStatus(t, w, 200)
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != adminCookie || !cookies[0].Secure {
+		t.Fatal("HTTPS login must create a secure session cookie")
+	}
+	for i := 0; i < 3; i++ {
+		for _, path := range []string{"/admin", "/api/auth/status", "/api/admin/state"} {
+			r = httptest.NewRequest("GET", "http://127.0.0.1"+path, nil)
+			r.RemoteAddr = "127.0.0.1:12345"
+			r.AddCookie(cookies[0])
+			w = httptest.NewRecorder()
+			a.routes().ServeHTTP(w, r)
+			requireStatus(t, w, 200)
+			if path == "/admin" && !strings.Contains(w.Body.String(), `"panel":"workbench"`) {
+				t.Fatal("refresh lost the secure session through the proxy")
+			}
+			if path == "/api/auth/status" && !strings.Contains(w.Body.String(), `"authenticated":true`) {
+				t.Fatal("status lost the secure session through the proxy")
+			}
+		}
 	}
 }

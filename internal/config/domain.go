@@ -6,14 +6,31 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type DomainSettings struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	BaseDomain  string `json:"baseDomain"`
-	ServerIP    string `json:"serverIP"`
-	DNSProvider string `json:"dnsProvider"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	BaseDomain        string            `json:"baseDomain"`
+	ServerIP          string            `json:"serverIP"`
+	DNSProvider       string            `json:"dnsProvider"`
+	RootHTTPSProvider string            `json:"rootHTTPSProvider,omitempty"`
+	RootHTTPSPort     int               `json:"rootHTTPSPort,omitempty"`
+	PublicHTTPS       *PublicHTTPSCheck `json:"publicHTTPS,omitempty"`
+}
+
+// This is a server-observed result for one concrete public endpoint, not an
+// installed certificate or evidence that all subdomains have HTTPS enabled.
+type PublicHTTPSCheck struct {
+	Host      string    `json:"host"`
+	Port      int       `json:"port"`
+	CheckedAt time.Time `json:"checkedAt"`
+	Valid     bool      `json:"valid"`
+	Error     string    `json:"error,omitempty"`
+	Issuer    string    `json:"issuer,omitempty"`
+	Names     []string  `json:"names,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt,omitempty"`
 }
 
 var domainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -22,11 +39,18 @@ func (s *Store) DomainSettings() DomainSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.state.Domains) > 0 {
-		return s.state.Domains[0]
+		return cloneDomain(s.state.Domains[0])
 	}
-	return s.state.Domain
+	return cloneDomain(s.state.Domain)
 }
 func normalizeDomain(d DomainSettings) (DomainSettings, error) {
+	d.PublicHTTPS = nil // Observations cannot be supplied through the settings API.
+	if d.RootHTTPSProvider != "" && d.RootHTTPSProvider != "remotegate" && d.RootHTTPSProvider != "external" {
+		return d, errors.New("请选择 RemoteGate 或宝塔 / 反向代理管理主域名 HTTPS")
+	}
+	if d.RootHTTPSPort < 0 || d.RootHTTPSPort > 65535 {
+		return d, errors.New("公网 HTTPS 端口范围为 1–65535")
+	}
 	d.BaseDomain = strings.ToLower(strings.TrimSpace(d.BaseDomain))
 	d.ServerIP = strings.TrimSpace(d.ServerIP)
 	if d.BaseDomain == "" || len(d.BaseDomain) > 253 || !domainPattern.MatchString(d.BaseDomain) || net.ParseIP(d.BaseDomain) != nil {
@@ -52,8 +76,11 @@ func (s *Store) Domains() []DomainSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := append([]DomainSettings{}, s.state.Domains...)
+	for i := range out {
+		out[i] = cloneDomain(out[i])
+	}
 	if len(out) == 0 && s.state.Domain.BaseDomain != "" {
-		d := s.state.Domain
+		d := cloneDomain(s.state.Domain)
 		if d.ID == "" {
 			d.ID = "legacy"
 		}
@@ -72,7 +99,7 @@ func (s *Store) PutDomain(d DomainSettings) (DomainSettings, error) {
 	var err error
 	d, err = normalizeDomain(d)
 	if err != nil {
-		return d, err
+		return cloneDomain(d), err
 	}
 	if d.ID == "" {
 		d.ID, _ = randomToken(9)
@@ -101,11 +128,14 @@ func (s *Store) PutDomain(d DomainSettings) (DomainSettings, error) {
 	for i, v := range s.state.Domains {
 		if v.ID == d.ID {
 			old := v
+			if old.BaseDomain == d.BaseDomain && old.ServerIP == d.ServerIP && effectiveHTTPSPort(old) == effectiveHTTPSPort(d) {
+				d.PublicHTTPS = old.PublicHTTPS
+			}
 			s.state.Domains[i] = d
 			if err = s.saveLocked(); err != nil {
 				s.state.Domains[i] = old
 			}
-			return d, err
+			return cloneDomain(d), err
 		}
 	}
 	s.state.Domains = append(s.state.Domains, d)
@@ -131,3 +161,52 @@ func (s *Store) DeleteDomain(id string) error {
 	return errors.New("域名不存在")
 }
 func (s *Store) SetDomainSettings(d DomainSettings) error { _, err := s.PutDomain(d); return err }
+
+func effectiveHTTPSPort(d DomainSettings) int {
+	if d.RootHTTPSPort == 0 {
+		return 443
+	}
+	return d.RootHTTPSPort
+}
+
+func cloneDomain(d DomainSettings) DomainSettings {
+	if d.PublicHTTPS != nil {
+		check := *d.PublicHTTPS
+		check.Names = append([]string(nil), check.Names...)
+		d.PublicHTTPS = &check
+	}
+	return d
+}
+
+func (s *Store) SetDomainHTTPSCheck(id string, check PublicHTTPSCheck) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, d := range s.state.Domains {
+		if d.ID != id {
+			continue
+		}
+		if check.Host != d.BaseDomain || check.Port != effectiveHTTPSPort(d) {
+			return errors.New("检测结果与当前主域名 HTTPS 入口不匹配，请重新检测")
+		}
+		old := d.PublicHTTPS
+		check.Names = append([]string(nil), check.Names...)
+		s.state.Domains[i].PublicHTTPS = &check
+		if err := s.saveLocked(); err != nil {
+			s.state.Domains[i].PublicHTTPS = old
+			return err
+		}
+		return nil
+	}
+	// Legacy single-domain state is still readable without requiring a settings edit.
+	if id == "legacy" && s.state.Domain.BaseDomain == check.Host && effectiveHTTPSPort(s.state.Domain) == check.Port {
+		old := s.state.Domain.PublicHTTPS
+		check.Names = append([]string(nil), check.Names...)
+		s.state.Domain.PublicHTTPS = &check
+		if err := s.saveLocked(); err != nil {
+			s.state.Domain.PublicHTTPS = old
+			return err
+		}
+		return nil
+	}
+	return errors.New("域名不存在，请刷新列表")
+}

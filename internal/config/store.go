@@ -85,6 +85,10 @@ func (s *Store) Snapshot() State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := State{Domain: s.state.Domain, Domains: append([]DomainSettings(nil), s.state.Domains...), Devices: make([]Device, len(s.state.Devices)), Mappings: make([]Mapping, len(s.state.Mappings))}
+	out.Domain = cloneDomain(out.Domain)
+	for i := range out.Domains {
+		out.Domains[i] = cloneDomain(out.Domains[i])
+	}
 	copy(out.Devices, s.state.Devices)
 	copy(out.Mappings, s.state.Mappings)
 	sort.Slice(out.Devices, func(i, j int) bool { return out.Devices[i].Name < out.Devices[j].Name })
