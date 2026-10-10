@@ -2,7 +2,7 @@
 
 一个容器运行管理后台、设备隧道、域名映射和证书管理，不需要 MySQL、Redis、PHP 或宿主机 Node.js/Go。官方镜像提供 Linux AMD64/ARM64 服务端，并内置 x86_64、ARM64、ARMv7 路由器插件包。
 
-**默认由 RemoteGate 独立提供后台和映射 HTTPS，不依赖宝塔或 Nginx。** 希望直接填写 compose、.env 后通过 HTTPS 安装，请先阅读[独立部署教程](docs/deployment/standalone.md)。宝塔 Docker 可以仅用来创建这个容器，不需要创建宝塔网站。
+**已有宝塔网站时，由宝塔提供后台和映射 HTTPS，RemoteGate 后台只做公网检测。** 先按[宝塔教程](docs/deployment/baota.md)安装，再阅读[泛域名证书与检测](docs/deployment/external-https.md)。独立服务器仍可通过 .env 首次配置内置 HTTPS，见[独立部署教程](docs/deployment/standalone.md)；内置入口与外部入口是不同部署方式。
 
 ## 第一步：选择一种安装方式
 
@@ -25,9 +25,9 @@
 
 | 当前情况 | 如何首次进入后台 |
 | --- | --- |
-| 独立部署，在 .env 配置首次后台证书（默认） | 系统申请成功后直接打开 `https://后台域名/install`，无需反代或电脑 PowerShell；见[独立部署](docs/deployment/standalone.md) |
+| 独立部署，在 .env 配置首次后台证书（兼容方式） | 系统申请成功后直接打开 `https://后台域名/install`，无需反代或电脑 PowerShell；见[独立部署](docs/deployment/standalone.md) |
 | 已有宝塔/Nginx 可用域名反代 | 直接打开域名的 `/install`，例如 `https://gate.example.com/install`；不需要 SSH |
-| 暂无反代，准备使用 RemoteGate 内置 HTTPS | 可经 SSH 隧道创建账号与配置第一张证书，再切换公网 HTTPS |
+| 暂无反代，准备使用 RemoteGate 内置 HTTPS | SSH 可临时创建账号；首次内置证书需在创建账号前按独立教程配置 |
 
 完整说明见[首次访问、后台入口与 HTTPS](docs/deployment/access.md)。宝塔教程已包含第一条流程，不必再执行第二条。
 
@@ -35,9 +35,10 @@
 
 ## 第三步：接入路由器与访问域名
 
+- [宝塔泛域名证书与 HTTPS 检测](docs/deployment/external-https.md)：在 RemoteGate 对应的宝塔站点申请、启用与续期证书，系统只检查公网结果。无需主机助手或宝塔 API。
 - [路由器插件安装与映射教程](docs/deployment/router.md)：选择一键安装或 iStore 手动安装，待设备上线后在设备下添加域名。
 - [映射域名的 HTTPS 入口](docs/deployment/access.md#设备映射的-https-入口)：选择内置 HTTPS 或前置宝塔/Nginx，按实际入口填写映射协议与端口。
-- [兼容已有网站的共用入口](docs/deployment/shared-443.md)：仅在你希望保留其他网站时考虑此高级方式；独立部署无需迁移宝塔监听。
+- [历史共用入口配置](docs/deployment/shared-443.md)：仅供已有 v0.1.5 内置入口实例维护，新宝塔部署采用上方外部证书方案。
 
 后台域名、设备映射域名及路由器服务器地址不是同一个字段：后台入口可以带自定义路径，路由器服务器地址不带这个路径，每个映射使用具体子域名。
 

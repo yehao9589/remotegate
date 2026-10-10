@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"github.com/local/remotegate/internal/config"
@@ -96,16 +97,15 @@ func (a *app) domainCheck(w http.ResponseWriter, r *http.Request) {
 					if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
 						continue
 					}
-					dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 4 * time.Second}, Config: &tls.Config{ServerName: target.Host, MinVersion: tls.VersionTLS12}}
-					conn, e := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), strconv.Itoa(target.Port)))
+					result, e := inspectHTTPSCertificate(ctx, net.JoinHostPort(ip.String(), strconv.Itoa(target.Port)), target.Host, nil)
 					if e != nil {
 						certResult = map[string]any{"valid": false, "error": e.Error()}
 						continue
 					}
-					peer := conn.(*tls.Conn).ConnectionState().PeerCertificates[0]
-					conn.Close()
-					certResult = map[string]any{"valid": true, "issuer": peer.Issuer.CommonName, "expiresAt": peer.NotAfter, "names": peer.DNSNames, "daysRemaining": int(time.Until(peer.NotAfter).Hours() / 24)}
-					break
+					certResult = result
+					if result["valid"] == true {
+						break
+					}
 				}
 				row["certificate"] = certResult
 			}
@@ -118,19 +118,19 @@ func (a *app) domainCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	rows = append(rows, resultRows...)
 	checkedAt := time.Now()
+	checks := []config.PublicHTTPSCheck{}
 	for _, row := range rows {
-		port := d.RootHTTPSPort
-		if port == 0 {
-			port = 443
-		}
-		if row["host"] != d.BaseDomain || row["port"] != port {
+		if row["kind"] == "wildcard" {
 			continue
 		}
 		cert, hasCertificate := row["certificate"].(map[string]any)
 		if !hasCertificate && row["error"] == nil {
 			continue
 		}
-		check := config.PublicHTTPSCheck{Host: d.BaseDomain, Port: port, CheckedAt: checkedAt}
+		check := config.PublicHTTPSCheck{CheckedAt: checkedAt}
+		check.Host, _ = row["host"].(string)
+		check.Port, _ = row["port"].(int)
+		check.Addresses, _ = row["addresses"].([]string)
 		check.Valid, _ = cert["valid"].(bool)
 		check.Error, _ = cert["error"].(string)
 		if message, ok := row["error"].(string); ok {
@@ -138,13 +138,42 @@ func (a *app) domainCheck(w http.ResponseWriter, r *http.Request) {
 		}
 		check.Issuer, _ = cert["issuer"].(string)
 		check.Names, _ = cert["names"].([]string)
+		check.NotBefore, _ = cert["notBefore"].(time.Time)
 		check.ExpiresAt, _ = cert["expiresAt"].(time.Time)
-		if err := a.store.SetDomainHTTPSCheck(d.ID, check); err != nil {
-			http.Error(w, "保存检测结果失败，请重新检测："+err.Error(), 500)
-			return
-		}
+		checks = append(checks, check)
+	}
+	if err := a.store.SetDomainHTTPSChecks(d.ID, checks); err != nil {
+		http.Error(w, "保存检测结果失败，请重新检测："+err.Error(), 500)
+		return
 	}
 	writeJSON(w, map[string]any{"dns": rows, "checkedAt": checkedAt, "serverIP": d.ServerIP})
+}
+
+// Read only public TLS metadata, including the certificate returned by an
+// incorrect site. We explicitly verify trust, expiry and hostname before ever
+// reporting success; no HTTP request or credential is sent over this connection.
+func inspectHTTPSCertificate(ctx context.Context, address, host string, roots *x509.CertPool) (map[string]any, error) {
+	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: 4 * time.Second}, Config: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	peers := conn.(*tls.Conn).ConnectionState().PeerCertificates
+	if len(peers) == 0 {
+		return nil, errors.New("公网入口没有返回证书")
+	}
+	peer := peers[0]
+	intermediates := x509.NewCertPool()
+	for _, certificate := range peers[1:] {
+		intermediates.AddCert(certificate)
+	}
+	_, err = peer.Verify(x509.VerifyOptions{DNSName: host, Roots: roots, Intermediates: intermediates})
+	result := map[string]any{"valid": err == nil, "issuer": peer.Issuer.CommonName, "notBefore": peer.NotBefore, "expiresAt": peer.NotAfter, "names": peer.DNSNames, "daysRemaining": int(time.Until(peer.NotAfter).Hours() / 24)}
+	if err != nil {
+		result["error"] = "证书验证未通过：" + err.Error()
+	}
+	return result, nil
 }
 
 type domainCheckTarget struct {

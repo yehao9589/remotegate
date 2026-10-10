@@ -95,6 +95,72 @@ func TestDomainSettingsPersistence(t *testing.T) {
 	}
 }
 
+func TestMappingCertificateChecksStayScopedAndPersist(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	s, _ := Open(path)
+	d, err := s.PutDomain(DomainSettings{BaseDomain: "gate.example.com"})
+	if err != nil || d.RootHTTPSProvider != "external" {
+		t.Fatal("new domain must use external certificates", d, err)
+	}
+	now := time.Now()
+	root := PublicHTTPSCheck{Host: d.BaseDomain, Port: 443, CheckedAt: now, Valid: true, Names: []string{d.BaseDomain, "*." + d.BaseDomain}, Addresses: []string{"203.0.113.1"}, ExpiresAt: now.Add(time.Hour)}
+	child := root
+	child.Host = "router." + d.BaseDomain
+	child.Valid = false
+	child.Error = "wrong certificate"
+	if err := s.SetDomainHTTPSChecks(d.ID, []PublicHTTPSCheck{root, child}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := reopened.Domains()[0]
+	if len(snapshot.HTTPSChecks) != 2 || !snapshot.PublicHTTPS.Valid || snapshot.HTTPSChecks[1].Valid {
+		t.Fatal("child and root results merged", snapshot)
+	}
+	snapshot.HTTPSChecks[0].Names[0] = "forged.test"
+	snapshot.HTTPSChecks[0].Addresses[0] = "127.0.0.1"
+	if s.Domains()[0].HTTPSChecks[0].Names[0] != d.BaseDomain || s.Domains()[0].HTTPSChecks[0].Addresses[0] != "203.0.113.1" {
+		t.Fatal("observation aliases store")
+	}
+	child.Port = 8443
+	child.Valid = true
+	if err := s.SetDomainHTTPSChecks(d.ID, []PublicHTTPSCheck{child}); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Domains()[0].HTTPSChecks) != 3 {
+		t.Fatal("different ports collapsed")
+	}
+	child.Host = "outside.test"
+	if err := s.SetDomainHTTPSChecks(d.ID, []PublicHTTPSCheck{child}); err == nil {
+		t.Fatal("foreign observation accepted")
+	}
+	d.HTTPSChecks = []PublicHTTPSCheck{{Host: "forged.test", Valid: true}}
+	d, err = s.PutDomain(d)
+	if err != nil || len(d.HTTPSChecks) != 3 {
+		t.Fatal("settings forged or removed checks", err)
+	}
+	d.ServerIP = "203.0.113.2"
+	d, err = s.PutDomain(d)
+	if err != nil || len(d.HTTPSChecks) != 0 || d.PublicHTTPS != nil {
+		t.Fatal("changed endpoint reference retained observations", err)
+	}
+}
+
+func TestEndpointCertificateResultsAreBounded(t *testing.T) {
+	s, _ := Open(t.TempDir() + "/state.json")
+	d, _ := s.PutDomain(DomainSettings{BaseDomain: "example.com"})
+	for port := 10000; port < 10045; port++ {
+		if err := s.SetDomainHTTPSChecks(d.ID, []PublicHTTPSCheck{{Host: d.BaseDomain, Port: port, CheckedAt: time.Now()}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if checks := s.Domains()[0].HTTPSChecks; len(checks) != 40 || checks[0].Port != 10005 {
+		t.Fatal("unbounded observations", checks)
+	}
+}
+
 func TestMultipleDomainsAndDeleteGuard(t *testing.T) {
 	s, _ := Open(t.TempDir() + "/state.json")
 	a, err := s.PutDomain(DomainSettings{Name: "阿里云", BaseDomain: "one.example", ServerIP: "203.0.113.1", DNSProvider: "alidns"})

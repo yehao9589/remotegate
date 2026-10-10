@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -272,6 +273,64 @@ func TestHTTPSSettingsAuthorizationAndValidation(t *testing.T) {
 	if a.httpsStatus()["running"] != false {
 		t.Fatal("listener still enabled")
 	}
+}
+
+func TestHTTPSPortProbePreservesListenersAndSavedSettings(t *testing.T) {
+	a, _, _ := deploymentTestApp(t)
+	active := spareHTTPSAddress(t)
+	if err := a.applyHTTPS(httpsSettings{Enabled: true, ListenAddress: active}, true); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(a.httpsSettingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	probe := func(address string, authenticated bool) *httptest.ResponseRecorder {
+		return deploymentRequest(a, "GET", "/api/admin/https?probe="+url.QueryEscape(address), "", "https://console.example.com", authenticated)
+	}
+	requireStatus(t, probe(active, false), 401)
+	requireStatus(t, probe("localhost:443", true), 400)
+	for _, tc := range []struct {
+		address   string
+		available bool
+		current   bool
+	}{{active, true, true}, {occupied.Addr().String(), false, false}, {spareHTTPSAddress(t), true, false}} {
+		w := probe(tc.address, true)
+		requireStatus(t, w, 200)
+		var result httpsAddressProbe
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Address != tc.address || result.Available != tc.available || result.Current != tc.current {
+			t.Fatalf("incorrect probe: %+v", result)
+		}
+		if result.Suggestion != "" {
+			if _, err := normalizeHTTPSAddress(result.Suggestion); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if tc.available && !tc.current {
+			l, err := net.Listen("tcp", tc.address)
+			if err != nil {
+				t.Fatalf("probe retained the port: %v", err)
+			}
+			l.Close()
+		}
+	}
+	after, err := os.ReadFile(a.httpsSettingsPath)
+	if err != nil || !bytes.Equal(before, after) || a.httpsStatus()["address"] != active {
+		t.Fatal("probe changed the saved or running HTTPS service")
+	}
+	conn, err := net.DialTimeout("tcp", occupied.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal("probe disturbed the other service", err)
+	}
+	conn.Close()
 }
 
 func TestCompleteCertificateDeploymentExport(t *testing.T) {

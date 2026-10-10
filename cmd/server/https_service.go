@@ -219,6 +219,26 @@ func (a *app) initializeHTTPS() {
 func (a *app) httpsSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method == http.MethodGet {
+		if address := r.URL.Query().Get("probe"); address != "" {
+			address, err := normalizeHTTPSAddress(address)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			result := a.probeHTTPSAddress(address)
+			if !result.Available {
+				host, _, _ := net.SplitHostPort(address)
+				for _, port := range []string{"18443", "24443", "34443"} {
+					candidate := a.probeHTTPSAddress(net.JoinHostPort(host, port))
+					if candidate.Available {
+						result.Suggestion = candidate.Address
+						break
+					}
+				}
+			}
+			writeJSON(w, result)
+			return
+		}
 		writeJSON(w, a.httpsStatus())
 		return
 	}
@@ -231,4 +251,32 @@ func (a *app) httpsSettingsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, a.httpsStatus())
+}
+
+type httpsAddressProbe struct {
+	Address    string `json:"address"`
+	Available  bool   `json:"available"`
+	Current    bool   `json:"current"`
+	Reason     string `json:"reason,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
+// A short bind checks this container's network namespace only. It never serves
+// requests or replaces an existing listener; applyHTTPS rechecks when enabling.
+func (a *app) probeHTTPSAddress(address string) httpsAddressProbe {
+	a.certMu.Lock()
+	defer a.certMu.Unlock()
+	result := httpsAddressProbe{Address: address}
+	if a.httpsServer != nil && a.httpsAddress == address {
+		result.Available, result.Current = true, true
+		return result
+	}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		result.Reason = err.Error()
+		return result
+	}
+	listener.Close()
+	result.Available = true
+	return result
 }

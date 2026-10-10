@@ -1,6 +1,6 @@
 # RemoteGate
 
-**[部署方式导航](DEPLOYMENT.md)** · [独立 HTTPS 部署](docs/deployment/standalone.md) · [可选外部代理部署](docs/deployment/baota.md) · [版本下载](https://github.com/yehao9589/remotegate/releases)
+**[部署方式导航](DEPLOYMENT.md)** · [宝塔部署](docs/deployment/baota.md) · [泛域名证书与检测](docs/deployment/external-https.md) · [版本下载](https://github.com/yehao9589/remotegate/releases)
 
 RemoteGate 是一个面向 iStoreOS/OpenWrt 的自建远程访问 MVP。路由器上的 Agent 主动连接国内服务器；浏览器访问不同域名时，服务端把 HTTP 请求通过这条长连接转给对应设备和内网地址。
 
@@ -21,7 +21,7 @@ nas.example.com    ─┘                                                   └�
 - Linux Agent 可设置 `SO_BINDTODEVICE` 与 `SO_MARK`
 - OpenWrt `procd` 开机守护和 OpenClash/防火墙重载触发器
 - 首次安装通过网页创建管理员，密码以 bcrypt 哈希保存，登录使用 HttpOnly 会话 Cookie
-- 系统独立提供后台与映射 HTTPS，按域名使用自己的证书，ACME 续期自动生效；首次可通过 compose / .env 申请后台证书，不依赖宝塔或 Nginx
+- 公网 HTTPS 检测：证书在宝塔 / 反向代理申请、部署与续期，后台分别验证主域名和映射实际返回的证书；原有内置 HTTPS 服务保留兼容
 
 当前版本不支持目标站点的 WebSocket、流式下载、SSH/RDP/VNC 和多服务端高可用。这些属于后续版本。
 
@@ -37,7 +37,7 @@ docker compose pull
 docker compose up -d
 ```
 
-编排使用 Linux host 网络，HTTP 只监听 `127.0.0.1:18088`，公网 HTTPS 默认使用 443，不需要数据库。默认采用[独立 HTTPS 部署](docs/deployment/standalone.md)：填写首次证书配置后直接打开 HTTPS 安装页。宝塔 Docker 仅可作为容器管理面板，无需创建宝塔网站；自愿使用已有反代或本机 / SSH 初始化时，选择对应的[首次访问方案](docs/deployment/access.md)，不要混用步骤。
+编排使用 Linux host 网络，HTTP 只监听 `127.0.0.1:18088`，不需要数据库。已有宝塔网站时按[宝塔部署](docs/deployment/baota.md)启动容器，在宝塔申请并启用主域名与泛域名证书，再通过 RemoteGate 检测。原有独立 HTTPS 启动配置保留兼容，选择对应教程，不混用步骤。
 
 常规部署默认使用 `ghcr.io/yehao9589/remotegate:stable`，跟随最新通过检查的构建。宝塔 compose 与 `.env` 都使用 `:stable`；旧 `.env` 的固定版本会覆盖 compose 默认值。更新时需要重新拉取镜像并重新部署，单纯重启不会升级，数据目录保持不变。只有需要锁定版本时才使用 `:v版本号`。
 
@@ -62,7 +62,7 @@ DNS 中可以将 `*.remote.example.com` 解析到服务器公网 IP。将 `CONSO
 打开控制台，使用首次安装时创建的管理员账号登录：
 
 1. 添加设备，保存页面仅显示一次的设备 ID 和 Token。
-2. 在设备卡片内添加域名映射，例如公网 `https://router.remote.example.com/` → 内网 `http://127.0.0.1:80`。默认 HTTPS / 443，按访问域名选择系统证书；仅自愿使用其他入口时修改协议和端口。
+2. 在设备卡片内添加域名映射，例如公网 `https://router.remote.example.com/` → 内网 `http://127.0.0.1:80`。默认 HTTPS / 443，证书由公网入口提供；使用其他端口时按实际入口填写。
 3. 从后台获取一键安装命令，或下载插件在 iStore 手动安装。完整操作见[路由器接入教程](docs/deployment/router.md)。
 
 ## 构建 OpenWrt Agent
@@ -132,33 +132,16 @@ go test ./...
 
 生产环境必须使用 HTTPS，保持证书验证开启，并限制 `/data/state.json` 的读取权限。
 
-## 域名与证书管理
+## 域名与 HTTPS 检测
 
-后台“域名与证书”支持：
-- 紧凑的多域名列表、搜索与状态筛选，每页显示 10 个域名；每个域名按需展开“解析接入、证书、任务记录”，刷新时保持展开位置和检测输入。
-- 主域名 / 泛域名勾选与自定义域名列表；免费 Let's Encrypt 为默认选项，ZeroSSL 配置 EAB 后可用。切换申请、上传和路径来源时保留弹窗内的填写草稿。
-- 从域名下直接申请或立即续期，单独开关自动续期，路径证书重新读取，导出公开证书链 PEM（不含私钥）。记录最近 30 条证书任务与设置变更；服务重启中断的申请显示为中断。
-- 公网检测支持输入具体子域名与实际 HTTPS 端口，检查 DNS、参考 IP 和经过验证的公网证书。未指定目标时检查启用的映射及控制台域名，不再固定假设 console 子域名。检测不会修改 DNS；HTTP 映射的默认检测仅检查解析。
-- 同时管理多个主域名；每个域名单独选择 DNS 平台、保存授权、安装证书并维护续期状态。
-- 自动 DNS 验证支持阿里云 DNS、腾讯云 DNSPod 和 Cloudflare。其他平台可手动管理解析并上传 PEM 证书。
-- 证书来源支持 ACME 自动申请、上传 PEM 完整证书链与未加密私钥，以及读取服务端绝对路径。导入时检查密钥匹配、有效期、服务器用途和所属域名；支持具体子域名证书，不再强制泛域名。路径导入是读取快照，外部文件更新后需重新读取。
-- ACME 支持 Let's Encrypt 和 ZeroSSL（需该账户的 EAB Key ID / HMAC Key）。证书范围可选主域名、泛域名或同一主域名下的多个具体域名。支持 RSA 2048、RSA 4096、ECDSA P-256。每个主域名当前维护一张活动证书，可在同一张证书中填写多个名称。
-- 在域名行点击“证书”，选择自动申请、上传或服务器路径。自动申请填写当前 DNS 平台的凭据和联系邮箱，确认条款后选择“保存并申请”。“仅保存配置”不会发起签发；修改覆盖范围、颁发机构或授权后显示“新配置待申请”，原证书继续服务，但自动续期暂停，直到显式发起新配置申请。只改续期参数不会暂停原有续期。DNSPod 使用 ID,Token，阿里云使用 AccessKey ID / Secret，Cloudflare 使用 DNS API Token（可选独立 Zone Token）；不同平台的授权不混用，弹窗内切换时保留各自草稿。
-- DNS 验证仅创建 TXT 记录，按本次返回的 RecordId 清理，不删除其他 TXT 记录。需 `alidns:AddDomainRecord` 和 `alidns:DeleteDomainRecord` 权限；请按实际域名资源限制 RAM 授权。
-- 自动续期每小时检查，默认提前 30 天申请替换证书，失败间隔 12 小时重试。域名下展开“续期设置”可分别修改为提前 1–90 天、失败间隔 1–168 小时，保存并持久化；开关自动续期不会重置参数。有效期不长于提前天数的证书，在有效期经过约 2/3 后进入续期窗口，避免反复签发。上传与路径证书不会自动向 CA 续期。任务结果显示在后台，失败保留原证书，成功后热更新。
+证书在宝塔 / 反向代理申请、部署与续期。后台只检测公网入口，支持：
 
-### 启用内置 HTTPS
+- 多域名搜索、筛选和分页，按需展开解析接入、HTTPS 检测与检测记录。
+- 分别检测主域名和具体映射地址的 DNS、参考 IP、实际证书信任链、域名与有效期。
+- 显示颁发机构、覆盖域名和到期时间；错误入口仍展示其实际返回的证书，验证失败不会显示为可用。
+- 按域名与端口持久保存最近 40 个地址的最新结果，刷新后保留，超过 24 小时提示复检，临近到期提醒。
+- 新增域名默认使用外部证书入口；外部管理域名不执行 RemoteGate 自动续期。
 
-设置 `HTTPS_LISTEN_ADDR=:8443` 并重启。监听器可以在尚未上传证书时启动，但 TLS 握手需等待有效证书。上传或签发成功后立即热更新，新连接使用新证书。
+主域名检测通过不会自动证明子域名可用；HTTPS 检测也不证明设备在线或内网服务正常。详见[宝塔泛域名证书与检测](docs/deployment/external-https.md)。无需主机助手或宝塔 API。
 
-Docker 部署：
-
-```sh
-docker compose up -d
-```
-
-HTTPS 已在基础编排中启用；确认服务器 443 未被其他服务占用并已放行。修改 `.env` 的 `HTTPS_LISTEN_ADDR` 可以使用其他端口。HTTP 管理端口只监听服务器本机。`CONSOLE_HOST` 设置为控制台域名，例如 `console.example.com`。证书不会自动改变 DNS、开放云安全组或配置外部 Nginx/Caddy。若已有外部反向代理终止 TLS，需要继续由该代理管理其证书，或改为使用内置 HTTPS。旧 `docker-compose.https.yml` 保留为兼容覆盖文件。
-
-证书、私钥、DNS 授权保存在状态目录旁的 `certificates/`，按域名散列文件名分别保存。ACME 账户按 CA、邮箱和域名隔离。Linux 文件权限 0600、目录 0700；Windows 应限制此目录 ACL。秘密字段不通过状态 API 返回；后台写入只接受 HTTPS 或本机回环连接。请保护数据目录、主机及备份。此实现不接受公网明文 HTTP 上传凭据，也不盲目信任 X-Forwarded-Proto。
-
-更换主域名会使用该新域名的独立证书配置；同一域名重新签发或导入失败时保留原证书。状态页展示有效期、续期、申请结果、HTTPS 监听及映射覆盖情况。DNS/公网证书检测需单独执行。真实 CA 签发需要可用的 DNS 授权和外网连接；自动化测试使用本地证书和模拟签发，不会向 CA 发起测试订单。
+原有内置 HTTPS 配置和证书文件保留兼容，显式选择 RemoteGate 的独立部署可继续运行已有服务；新的检测页面不提供申请、导入、续期或迁移入口的按钮。

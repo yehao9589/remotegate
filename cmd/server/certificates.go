@@ -624,14 +624,7 @@ func (a *app) certificates(w http.ResponseWriter, r *http.Request) {
 func (a *app) startCertificateServices() {
 	a.initializeHTTPS()
 	go func() {
-		check := func() {
-			for _, d := range a.store.Domains() {
-				m, e := a.certificateFor(d.BaseDomain)
-				if e == nil && m.renewDue(d.BaseDomain, time.Now()) {
-					_ = m.start(d.BaseDomain)
-				}
-			}
-		}
+		check := func() { a.renewDomainCertificates(time.Now()) }
 		check()
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
@@ -639,6 +632,24 @@ func (a *app) startCertificateServices() {
 			check()
 		}
 	}()
+}
+
+func (a *app) renewDomainCertificates(now time.Time) {
+	// Detection-only instances must not use old DNS credentials to renew an
+	// unused certificate. Retain renewal only for an active, explicit native
+	// deployment; public observations never authorize issuance or DNS writes.
+	if a.httpsStatus()["running"] != true {
+		return
+	}
+	for _, d := range a.store.Domains() {
+		if d.RootHTTPSProvider != "remotegate" {
+			continue
+		}
+		m, err := a.certificateFor(d.BaseDomain)
+		if err == nil && m.renewDue(d.BaseDomain, now) {
+			_ = m.start(d.BaseDomain)
+		}
+	}
 }
 
 func (a *app) certificateFor(domain string) (*certificateManager, error) {

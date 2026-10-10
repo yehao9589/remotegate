@@ -10,14 +10,15 @@ import (
 )
 
 type DomainSettings struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	BaseDomain        string            `json:"baseDomain"`
-	ServerIP          string            `json:"serverIP"`
-	DNSProvider       string            `json:"dnsProvider"`
-	RootHTTPSProvider string            `json:"rootHTTPSProvider,omitempty"`
-	RootHTTPSPort     int               `json:"rootHTTPSPort,omitempty"`
-	PublicHTTPS       *PublicHTTPSCheck `json:"publicHTTPS,omitempty"`
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	BaseDomain        string             `json:"baseDomain"`
+	ServerIP          string             `json:"serverIP"`
+	DNSProvider       string             `json:"dnsProvider"`
+	RootHTTPSProvider string             `json:"rootHTTPSProvider,omitempty"`
+	RootHTTPSPort     int                `json:"rootHTTPSPort,omitempty"`
+	PublicHTTPS       *PublicHTTPSCheck  `json:"publicHTTPS,omitempty"`
+	HTTPSChecks       []PublicHTTPSCheck `json:"httpsChecks,omitempty"`
 }
 
 // This is a server-observed result for one concrete public endpoint, not an
@@ -30,6 +31,8 @@ type PublicHTTPSCheck struct {
 	Error     string    `json:"error,omitempty"`
 	Issuer    string    `json:"issuer,omitempty"`
 	Names     []string  `json:"names,omitempty"`
+	Addresses []string  `json:"addresses,omitempty"`
+	NotBefore time.Time `json:"notBefore,omitempty"`
 	ExpiresAt time.Time `json:"expiresAt,omitempty"`
 }
 
@@ -45,6 +48,10 @@ func (s *Store) DomainSettings() DomainSettings {
 }
 func normalizeDomain(d DomainSettings) (DomainSettings, error) {
 	d.PublicHTTPS = nil // Observations cannot be supplied through the settings API.
+	d.HTTPSChecks = nil
+	if d.RootHTTPSProvider == "" {
+		d.RootHTTPSProvider = "external"
+	}
 	if d.RootHTTPSProvider != "" && d.RootHTTPSProvider != "remotegate" && d.RootHTTPSProvider != "external" {
 		return d, errors.New("请选择 RemoteGate 或宝塔 / 反向代理管理主域名 HTTPS")
 	}
@@ -130,6 +137,7 @@ func (s *Store) PutDomain(d DomainSettings) (DomainSettings, error) {
 			old := v
 			if old.BaseDomain == d.BaseDomain && old.ServerIP == d.ServerIP && effectiveHTTPSPort(old) == effectiveHTTPSPort(d) {
 				d.PublicHTTPS = old.PublicHTTPS
+				d.HTTPSChecks = old.HTTPSChecks
 			}
 			s.state.Domains[i] = d
 			if err = s.saveLocked(); err != nil {
@@ -173,9 +181,64 @@ func cloneDomain(d DomainSettings) DomainSettings {
 	if d.PublicHTTPS != nil {
 		check := *d.PublicHTTPS
 		check.Names = append([]string(nil), check.Names...)
+		check.Addresses = append([]string(nil), check.Addresses...)
 		d.PublicHTTPS = &check
 	}
+	d.HTTPSChecks = append([]PublicHTTPSCheck(nil), d.HTTPSChecks...)
+	for i := range d.HTTPSChecks {
+		d.HTTPSChecks[i].Names = append([]string(nil), d.HTTPSChecks[i].Names...)
+		d.HTTPSChecks[i].Addresses = append([]string(nil), d.HTTPSChecks[i].Addresses...)
+	}
 	return d
+}
+
+// Store concrete endpoint observations separately; a wildcard SAN is never
+// evidence that another endpoint returns that certificate.
+func (s *Store) SetDomainHTTPSChecks(id string, checks []PublicHTTPSCheck) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var d *DomainSettings
+	for i := range s.state.Domains {
+		if s.state.Domains[i].ID == id {
+			d = &s.state.Domains[i]
+			break
+		}
+	}
+	if d == nil && id == "legacy" && s.state.Domain.BaseDomain != "" {
+		d = &s.state.Domain
+	}
+	if d == nil {
+		return errors.New("域名不存在，请刷新列表")
+	}
+	old := cloneDomain(*d)
+	next := cloneDomain(*d)
+	for _, check := range checks {
+		if check.Port < 1 || check.Port > 65535 || len(check.Host) > 253 || !domainPattern.MatchString(check.Host) || (check.Host != d.BaseDomain && !strings.HasSuffix(check.Host, "."+d.BaseDomain)) {
+			return errors.New("检测结果与当前域名不匹配，请重新检测")
+		}
+		check.Names = append([]string(nil), check.Names...)
+		check.Addresses = append([]string(nil), check.Addresses...)
+		kept := next.HTTPSChecks[:0]
+		for _, existing := range next.HTTPSChecks {
+			if existing.Host != check.Host || existing.Port != check.Port {
+				kept = append(kept, existing)
+			}
+		}
+		next.HTTPSChecks = append(kept, check)
+		if len(next.HTTPSChecks) > 40 {
+			next.HTTPSChecks = next.HTTPSChecks[len(next.HTTPSChecks)-40:]
+		}
+		if check.Host == d.BaseDomain && check.Port == effectiveHTTPSPort(*d) {
+			root := check
+			next.PublicHTTPS = &root
+		}
+	}
+	*d = next
+	if err := s.saveLocked(); err != nil {
+		*d = old
+		return err
+	}
+	return nil
 }
 
 func (s *Store) SetDomainHTTPSCheck(id string, check PublicHTTPSCheck) error {
