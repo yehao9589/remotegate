@@ -178,7 +178,11 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		http.Error(w, "unknown host", http.StatusNotFound)
+		message := "unknown host\n访问域名没有匹配到已启用的映射，请检查映射域名和反向代理的 Host 设置。"
+		if loopbackPeer(r) && (netLoopbackHost(r.Host) || hostOnly(r.Host) == "localhost") {
+			message = "unknown host\n反向代理把访问域名替换成了本机地址，无法识别子域名映射。请在 RemoteGate 对应站点的反代中保留原始 Host：proxy_set_header Host $http_host;"
+		}
+		http.Error(w, message, http.StatusNotFound)
 		return
 	}
 	if r.ContentLength > protocol.MaxBodyBytes {
@@ -242,7 +246,9 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn)
 	log.Printf("device connected: %s (%s)", d.Name, id)
 	defer func() { a.hub.Detach(c); _ = conn.Close(); log.Printf("device disconnected: %s (%s)", d.Name, id) }()
-	_ = a.hub.ReadLoop(c)
+	if err := a.hub.ReadLoop(c); err != nil {
+		log.Printf("device tunnel ended: %s (%s): %v", d.Name, id, err)
+	}
 }
 
 func (a *app) admin(next http.HandlerFunc) http.HandlerFunc {

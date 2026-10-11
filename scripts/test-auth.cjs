@@ -32,19 +32,43 @@ test('valid session shows workbench while data is still loading',async()=>{
  release();await boot;assert.equal(page.refreshes(),1);assert.equal(page.$('#content').attributes['aria-busy'],'false');
  assert.equal(page.requests.length,0);
 });
-test('a stale login document restores a server-validated session without a password',async()=>{
- const page=authPage('login',async()=>{},async()=>({authenticated:true,entryPath:'/private-panel'}));await page.context.initializeAuth();
+test('a stale login document keeps login hidden until the server restores the session',async()=>{
+ let release;const pending=new Promise(resolve=>{release=resolve});
+ const page=authPage('login',async()=>{},()=>pending);const boot=page.context.initializeAuth();
+ assert.equal(page.$('#authScreen').hidden,true);assert.equal(page.$('#login').hidden,true);assert.equal(page.$('#shell').hidden,true);assert.equal(page.$('#authPending').hidden,false);assert.equal(page.refreshes(),0);
+ release({authenticated:true,entryPath:'/private-panel'});await boot;
  assert.equal(page.$('#shell').hidden,false);assert.equal(page.$('#authScreen').hidden,true);assert.equal(page.refreshes(),1);
+ assert.equal(page.$('#authPending').hidden,true);
+});
+test('an invalid session shows login only after its pending status check finishes',async()=>{
+ let release;const pending=new Promise(resolve=>{release=resolve});
+ const page=authPage('login',async()=>{},()=>pending);const boot=page.context.initializeAuth();
+ assert.equal(page.$('#login').hidden,true);assert.equal(page.$('#authPending').hidden,false);
+ release({authenticated:false});await boot;
+ assert.equal(page.$('#login').hidden,false);assert.equal(page.$('#authPending').hidden,true);assert.equal(page.$('#shell').hidden,true);assert.equal(page.refreshes(),0);
 });
 test('a failed restore request keeps the login form available',async()=>{
  const page=authPage('login',async()=>{},async()=>{throw Error('network failure')});await page.context.initializeAuth();
  assert.equal(page.$('#shell').hidden,true);assert.equal(page.$('#login').hidden,false);assert.equal(page.refreshes(),0);
+ assert.equal(page.$('#authPending').hidden,true);
+});
+test('a timed-out status check leaves a usable login form instead of a permanent pending screen',async()=>{
+ const page=authPage('login',async()=>{},(url,options)=>new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(Object.assign(Error('timeout'),{name:'AbortError'})),{once:true})));
+ page.context.setTimeout=callback=>setTimeout(callback,0);
+ await page.context.initializeAuth();
+ assert.equal(page.$('#login').hidden,false);assert.equal(page.$('#authPending').hidden,true);assert.equal(page.$('#shell').hidden,true);assert.equal(page.refreshes(),0);
 });
 test('a delayed status response cannot undo logout or a newer auth transition',async()=>{
  let release;const pending=new Promise(resolve=>{release=resolve});
  const page=authPage('login',async()=>{},()=>pending);const boot=page.context.initializeAuth();
  page.context.showAuthPanel('login','已退出登录');release({authenticated:true,entryPath:'/private-panel'});await boot;
  assert.equal(page.$('#shell').hidden,true);assert.equal(page.$('#loginerror').textContent,'已退出登录');assert.equal(page.refreshes(),0);
+});
+test('a delayed negative status response cannot clear a newer login message',async()=>{
+ let release;const pending=new Promise(resolve=>{release=resolve});
+ const page=authPage('login',async()=>{},()=>pending);const boot=page.context.initializeAuth();
+ page.context.showAuthPanel('login','会话已失效');release({authenticated:false});await boot;
+ assert.equal(page.$('#loginerror').textContent,'会话已失效');assert.equal(page.$('#authPending').hidden,true);assert.equal(page.refreshes(),0);
 });
 test('network failure stays in workbench and provides a working retry',async()=>{
  let fail=true;

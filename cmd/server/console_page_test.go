@@ -27,8 +27,12 @@ func TestConsoleFirstVisibleScreen(t *testing.T) {
 			t.Fatalf("initial screen: %s, error: %v", match[1], err)
 		}
 		if panel == "workbench" {
-			if initial.EntryPath != "/private-panel" || !strings.Contains(page, `<div id="authScreen" hidden>`) || !strings.Contains(page, `<div id="shell">`) {
+			if initial.EntryPath != "/private-panel" || !strings.Contains(page, `<div id="authScreen" hidden>`) || !strings.Contains(page, `<div id="shell">`) || !strings.Contains(page, `<div id="authPending" hidden`) {
 				t.Fatal("authenticated page must show workbench immediately")
+			}
+		} else if panel == "login" {
+			if !strings.Contains(page, `<section id="login" hidden>`) || !strings.Contains(page, `<div id="authScreen" hidden>`) || !strings.Contains(page, `<div id="shell" hidden>`) || !strings.Contains(page, `<div id="authPending" role="status"`) || initial.EntryPath != "" {
+				t.Fatal("login document must keep the form hidden until the current session check finishes")
 			}
 		} else if !strings.Contains(page, `<section id="`+panel+`">`) || !strings.Contains(page, `<div id="shell" hidden>`) || initial.EntryPath != "" {
 			t.Fatal("incorrect initial auth panel or exposed entry path")
@@ -72,8 +76,8 @@ func TestConsoleInitialScreenThroughLoopbackProxy(t *testing.T) {
 	w := httptest.NewRecorder()
 	a.routes().ServeHTTP(w, r)
 	requireStatus(t, w, 200)
-	if !strings.Contains(w.Body.String(), `<section id="login">`) {
-		t.Fatal("default local reverse proxy should render the login screen")
+	if !strings.Contains(w.Body.String(), `<div id="authPending" role="status"`) || !strings.Contains(w.Body.String(), `<section id="login" hidden>`) {
+		t.Fatal("default local reverse proxy should keep login hidden while restoring the session")
 	}
 }
 

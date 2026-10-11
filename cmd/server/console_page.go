@@ -27,6 +27,12 @@ func (a *app) renderConsoleAuth(page string, r *http.Request) string {
 		page = strings.Replace(page, `<body class="auth-visible">`, `<body>`, 1)
 		page = strings.Replace(page, `<div id="authScreen">`, `<div id="authScreen" hidden>`, 1)
 		page = strings.Replace(page, `<div id="shell" hidden>`, `<div id="shell">`, 1)
+	} else if initial.Panel == "login" {
+		// Keep a neutral first paint while the browser checks its current cookie.
+		// A cached document or cross-site navigation can omit a still-valid session.
+		page = strings.Replace(page, `<body class="auth-visible">`, `<body>`, 1)
+		page = strings.Replace(page, `<div id="authScreen">`, `<div id="authScreen" hidden>`, 1)
+		page = strings.Replace(page, `<div id="authPending" hidden`, `<div id="authPending"`, 1)
 	} else {
 		page = strings.Replace(page, `<section id="`+initial.Panel+`" hidden>`, `<section id="`+initial.Panel+`">`, 1)
 	}

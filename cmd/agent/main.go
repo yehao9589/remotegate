@@ -53,20 +53,29 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	backoff := time.Second
+	var backoff time.Duration
 	for ctx.Err() == nil {
+		started := time.Now()
 		if err = run(ctx, cfg); err != nil && ctx.Err() == nil {
 			log.Printf("connection ended: %v", err)
 		}
+		backoff = nextReconnectDelay(backoff, time.Since(started))
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
 		}
-		if backoff < 30*time.Second {
-			backoff *= 2
-		}
 	}
+}
+
+func nextReconnectDelay(previous, sessionDuration time.Duration) time.Duration {
+	if sessionDuration >= 30*time.Second || previous <= 0 {
+		return time.Second
+	}
+	if previous >= 15*time.Second {
+		return 30 * time.Second
+	}
+	return previous * 2
 }
 
 func run(ctx context.Context, cfg Config) error {
@@ -101,6 +110,8 @@ func run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer conn.Close()
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
 	log.Printf("connected to %s", u.Host)
 	client := &http.Client{
 		Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
@@ -117,7 +128,10 @@ func run(ctx context.Context, cfg Config) error {
 		if msg.Type != "request" {
 			continue
 		}
-		result := handle(client, cfg, msg)
+		result := handleWithContext(ctx, client, cfg, msg)
+		if err = conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			return err
+		}
 		if err = conn.WriteJSON(result); err != nil {
 			return err
 		}
@@ -125,6 +139,10 @@ func run(ctx context.Context, cfg Config) error {
 }
 
 func handle(client *http.Client, cfg Config, msg protocol.Message) protocol.Message {
+	return handleWithContext(context.Background(), client, cfg, msg)
+}
+
+func handleWithContext(ctx context.Context, client *http.Client, cfg Config, msg protocol.Message) protocol.Message {
 	out := protocol.Message{Type: "response", ID: msg.ID}
 	base, err := url.Parse(msg.Target)
 	if err != nil {
@@ -141,7 +159,7 @@ func handle(client *http.Client, cfg Config, msg protocol.Message) protocol.Mess
 		return out
 	}
 	target := base.ResolveReference(rel)
-	req, err := http.NewRequest(msg.Method, target.String(), strings.NewReader(string(msg.Body)))
+	req, err := http.NewRequestWithContext(ctx, msg.Method, target.String(), strings.NewReader(string(msg.Body)))
 	if err != nil {
 		out.Error = err.Error()
 		return out

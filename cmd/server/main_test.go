@@ -58,6 +58,37 @@ func TestHostRequestTravelsThroughAgent(t *testing.T) {
 	<-done
 }
 
+func TestUnmatchedProxyHostExplainsMappingFailure(t *testing.T) {
+	a := freshAuthApp(t)
+	a.consoleHost = "console.example.com"
+	requireStatus(t, authCall(a, "/api/auth/setup", setupBody, "", nil), 200)
+	device, _, err := a.store.CreateDevice("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.store.PutMapping(config.Mapping{Host: "router.example.com", DeviceID: device.ID, Target: "http://127.0.0.1:80", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		host, peer, message string
+		status              int
+	}{
+		{"127.0.0.1", "127.0.0.1:12345", "proxy_set_header Host $http_host;", 404},
+		{"localhost:18088", "[::1]:12345", "proxy_set_header Host $http_host;", 404},
+		{"missing.example.com", "127.0.0.1:12345", "访问域名没有匹配", 404},
+		{"127.0.0.1", "192.0.2.1:12345", "访问域名没有匹配", 404},
+		{"router.example.com", "127.0.0.1:12345", "device offline", 502},
+	} {
+		r := httptest.NewRequest("GET", "http://"+tc.host+"/", nil)
+		r.RemoteAddr = tc.peer
+		w := httptest.NewRecorder()
+		a.routes().ServeHTTP(w, r)
+		if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.message) {
+			t.Fatalf("host %s: %d %s", tc.host, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestAdminRequiresUsernameAndPassword(t *testing.T) {
 	store, _ := config.Open(t.TempDir() + "/state.json")
 	a := &app{store: store, hub: hub.New(), adminUser: "admin", adminPass: "admin"}

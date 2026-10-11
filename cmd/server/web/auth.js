@@ -3,7 +3,7 @@ async function authRequest(action,body,options={}){const response=await fetch('/
 function showAuthPanel(panel,message=''){
  authTransition++;
  document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());
- $('#authScreen').hidden=false;$('#shell').hidden=true;
+ $('#authPending').hidden=true;$('#authScreen').hidden=false;$('#shell').hidden=true;
  ['firstInstall','login'].forEach(id=>$('#'+id).hidden=id!==panel);
  document.body.classList.add('auth-visible');
  if(panel==='login'){$('#password').value='';$('#loginerror').textContent=message;$('#username').focus()}
@@ -13,7 +13,7 @@ async function enterAdmin(entryPath){
  const transition=++authTransition;
  $('.auth-wordmark').href=entryPath||location.pathname;
  if(entryPath&&location.pathname!==entryPath)history.replaceState(null,'',entryPath);
- $('#authScreen').hidden=true;$('#shell').hidden=false;document.body.classList.remove('auth-visible');
+ $('#authPending').hidden=true;$('#authScreen').hidden=true;$('#shell').hidden=false;document.body.classList.remove('auth-visible');
  $('#password').value='';$('#setupForm').reset();
  $('#content').setAttribute('aria-busy','true');
  $('#stats').innerHTML='';$('#sync').textContent='正在连接服务器…';
@@ -34,16 +34,22 @@ async function initializeAuth(){
  const initial=JSON.parse($('#authInitialState').textContent);
  if(initial?.panel==='firstInstall'){showAuthPanel('firstInstall');return}
  if(initial?.panel==='workbench'){await enterAdmin(initial.entryPath);return}
- showAuthPanel('login');
+ const transition=++authTransition;
+ $('#authScreen').hidden=true;$('#shell').hidden=true;$('#authPending').hidden=false;
+ $('#firstInstall').hidden=true;$('#login').hidden=true;
+ document.body.classList.remove('auth-visible');
  // A cached login document or the first navigation after an HTTP/HTTPS redirect
  // can disagree with the current cookie. Restore only a server-validated session.
- const transition=authTransition,controller=new AbortController();
+ const controller=new AbortController();
  const timeout=setTimeout(()=>controller.abort(),8000);
+ let status;
  try{
-  const status=await authRequest('status',undefined,{signal:controller.signal});
-  if(transition===authTransition&&status.authenticated)await enterAdmin(status.entryPath);
- }catch(e){/* Keep the usable login form when the status request is unavailable. */}
+  status=await authRequest('status',undefined,{signal:controller.signal});
+ }catch(e){/* A failed or timed-out check must still leave a usable login form. */}
  finally{clearTimeout(timeout)}
+ if(transition!==authTransition)return;
+ if(status?.authenticated)await enterAdmin(status.entryPath);
+ else showAuthPanel('login');
 }
 async function loginWithAccount(){authTransition++;const button=$('#loginSubmit');button.disabled=true;$('#loginerror').textContent='';try{const result=await authRequest('login',{username:$('#username').value.trim(),password:$('#password').value});await enterAdmin(result.entryPath)}catch(e){$('#loginerror').textContent=e.message}finally{button.disabled=false}}
 async function logoutAccount(){authTransition++;try{await authRequest('logout',{});showAuthPanel('login')}catch(e){toast('退出失败：'+e.message)}}

@@ -23,11 +23,16 @@ type Client struct {
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[string]*Client
+	mu           sync.RWMutex
+	clients      map[string]*Client
+	pingInterval time.Duration
+	pongWait     time.Duration
+	writeWait    time.Duration
 }
 
-func New() *Hub { return &Hub{clients: make(map[string]*Client)} }
+func New() *Hub {
+	return &Hub{clients: make(map[string]*Client), pingInterval: 20 * time.Second, pongWait: 90 * time.Second, writeWait: 30 * time.Second}
+}
 
 func (h *Hub) Disconnect(id string) {
 	h.mu.RLock()
@@ -66,9 +71,25 @@ func (h *Hub) Detach(c *Client) {
 }
 
 func (h *Hub) ReadLoop(c *Client) error {
+	// Server-originated traffic keeps reverse proxies from closing idle tunnels.
+	// WebSocket control frames work with the default pong handler in old agents.
+	if err := c.conn.SetReadDeadline(time.Now().Add(h.pongWait)); err != nil {
+		return err
+	}
+	c.conn.SetPongHandler(func(string) error {
+		return c.conn.SetReadDeadline(time.Now().Add(h.pongWait))
+	})
+	stop := make(chan struct{})
+	defer close(stop)
+	go h.keepAlive(c, stop)
 	for {
 		var msg protocol.Message
 		if err := c.conn.ReadJSON(&msg); err != nil {
+			return err
+		}
+		// Older agents handle targets serially. Responses also prove liveness
+		// when queued requests delay their reading of a ping control frame.
+		if err := c.conn.SetReadDeadline(time.Now().Add(h.pongWait)); err != nil {
 			return err
 		}
 		if msg.Type == "response" {
@@ -79,7 +100,37 @@ func (h *Hub) ReadLoop(c *Client) error {
 	}
 }
 
+func (h *Hub) keepAlive(c *Client, stop <-chan struct{}) {
+	ticker := time.NewTicker(h.pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			// Serialize with requests so a large in-flight data frame is not
+			// mistaken for a failed ping. All writes still have a time limit.
+			c.writeMu.Lock()
+			select {
+			case <-stop:
+				c.writeMu.Unlock()
+				return
+			default:
+			}
+			err := c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(h.writeWait))
+			c.writeMu.Unlock()
+			if err != nil {
+				_ = c.conn.Close()
+				return
+			}
+		}
+	}
+}
+
 func (h *Hub) Request(ctx context.Context, deviceID string, msg protocol.Message) (protocol.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.Message{}, err
+	}
 	h.mu.RLock()
 	c := h.clients[deviceID]
 	h.mu.RUnlock()
@@ -90,9 +141,21 @@ func (h *Hub) Request(ctx context.Context, deviceID string, msg protocol.Message
 	c.pending.Store(msg.ID, response)
 	defer c.pending.Delete(msg.ID)
 	c.writeMu.Lock()
-	err := c.conn.WriteJSON(msg)
+	if err := ctx.Err(); err != nil {
+		c.writeMu.Unlock()
+		return protocol.Message{}, err
+	}
+	deadline := time.Now().Add(h.writeWait)
+	if expires, ok := ctx.Deadline(); ok && expires.Before(deadline) {
+		deadline = expires
+	}
+	err := c.conn.SetWriteDeadline(deadline)
+	if err == nil {
+		err = c.conn.WriteJSON(msg)
+	}
 	c.writeMu.Unlock()
 	if err != nil {
+		_ = c.conn.Close()
 		return protocol.Message{}, err
 	}
 	select {

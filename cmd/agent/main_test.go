@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/local/remotegate/internal/protocol"
 )
 
@@ -29,5 +33,77 @@ func TestHandlePreservesLoginRedirectAndCookie(t *testing.T) {
 	}
 	if got.Headers["Location"][0] != "/admin" {
 		t.Fatalf("location was not preserved: %#v", got.Headers)
+	}
+}
+
+func TestReconnectDelayResetsAfterStableSessionAndCapsAtThirtySeconds(t *testing.T) {
+	var delay time.Duration
+	for _, seconds := range []int{1, 2, 4, 8, 16, 30, 30} {
+		delay = nextReconnectDelay(delay, time.Second)
+		if delay != time.Duration(seconds)*time.Second {
+			t.Fatal("unexpected retry delay", delay, seconds)
+		}
+	}
+	if got := nextReconnectDelay(delay, time.Minute); got != time.Second {
+		t.Fatal("a stable connection must reset the next reconnect delay", got)
+	}
+}
+
+func TestIdleAgentStopsWhenContextIsCancelled(t *testing.T) {
+	connected := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		connected <- struct{}{}
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ended := make(chan error, 1)
+	go func() { ended <- run(ctx, Config{ServerURL: server.URL, DeviceID: "test", Token: "test"}) }()
+	select {
+	case <-connected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent did not connect")
+	}
+	cancel()
+	select {
+	case <-ended:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled agent remained blocked on an idle socket")
+	}
+}
+
+func TestCancelledAgentTargetRequestStopsPromptly(t *testing.T) {
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ended := make(chan protocol.Message, 1)
+	go func() {
+		ended <- handleWithContext(ctx, http.DefaultClient, Config{}, protocol.Message{Method: "GET", Target: server.URL, Path: "/"})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("target request did not start")
+	}
+	cancel()
+	select {
+	case result := <-ended:
+		if !strings.Contains(result.Error, "context canceled") {
+			t.Fatal("target cancellation was not reported", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled agent remained blocked on the target")
 	}
 }
