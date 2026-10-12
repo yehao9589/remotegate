@@ -13,13 +13,14 @@ import (
 var ErrOffline = errors.New("device is offline")
 
 type Client struct {
-	DeviceID string
-	Name     string
-	Version  string
-	Since    time.Time
-	conn     *websocket.Conn
-	writeMu  sync.Mutex
-	pending  sync.Map
+	DeviceID  string
+	Name      string
+	Version   string
+	Since     time.Time
+	CanUpdate bool
+	conn      *websocket.Conn
+	writeMu   sync.Mutex
+	pending   sync.Map
 }
 
 type Hub struct {
@@ -44,8 +45,9 @@ func (h *Hub) Disconnect(id string) {
 	}
 }
 
-func (h *Hub) Attach(deviceID, name, version string, conn *websocket.Conn) *Client {
+func (h *Hub) Attach(deviceID, name, version string, conn *websocket.Conn, updater ...bool) *Client {
 	c := &Client{DeviceID: deviceID, Name: name, Version: version, Since: time.Now().UTC(), conn: conn}
+	c.CanUpdate = len(updater) > 0 && updater[0]
 	h.mu.Lock()
 	old := h.clients[deviceID]
 	h.clients[deviceID] = c
@@ -169,6 +171,7 @@ func (h *Hub) Request(ctx context.Context, deviceID string, msg protocol.Message
 type Status struct {
 	DeviceID, Name, Version string
 	Since                   time.Time
+	CanUpdate               bool
 }
 
 func (h *Hub) Statuses() map[string]Status {
@@ -176,7 +179,7 @@ func (h *Hub) Statuses() map[string]Status {
 	defer h.mu.RUnlock()
 	out := make(map[string]Status, len(h.clients))
 	for id, c := range h.clients {
-		out[id] = Status{c.DeviceID, c.Name, c.Version, c.Since}
+		out[id] = Status{DeviceID: c.DeviceID, Name: c.Name, Version: c.Version, Since: c.Since, CanUpdate: c.CanUpdate}
 	}
 	return out
 }

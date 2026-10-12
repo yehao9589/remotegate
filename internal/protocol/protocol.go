@@ -16,6 +16,7 @@ type Message struct {
 	Error      string              `json:"error,omitempty"`
 	DeviceName string              `json:"deviceName,omitempty"`
 	Version    string              `json:"version,omitempty"`
+	Deadline   int64               `json:"deadline,omitempty"`
 }
 
 func FilterHeaders(src http.Header) map[string][]string {

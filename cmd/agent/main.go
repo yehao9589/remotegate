@@ -32,6 +32,9 @@ type Config struct {
 }
 
 func main() {
+	if handleUpdateCLI(os.Args[1:]) {
+		return
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
 		fmt.Printf("RemoteGate Agent %s (%s)\n", buildinfo.Tag(), buildinfo.Commit)
 		return
@@ -93,6 +96,9 @@ func run(ctx context.Context, cfg Config) error {
 	q.Set("device_id", cfg.DeviceID)
 	q.Set("token", cfg.Token)
 	q.Set("version", buildinfo.Version())
+	if routerUpdateSupported() {
+		q.Set("updater", "1")
+	}
 	if installed, err := os.ReadFile("/usr/share/remotegate/version"); err == nil {
 		value := strings.TrimSpace(string(installed))
 		if len(value) > 0 && len(value) <= 64 {
@@ -125,10 +131,15 @@ func run(ctx context.Context, cfg Config) error {
 		if err = conn.ReadJSON(&msg); err != nil {
 			return err
 		}
-		if msg.Type != "request" {
+		if msg.Type != "request" && msg.Type != "update-start" && msg.Type != "update-status" {
 			continue
 		}
-		result := handleWithContext(ctx, client, cfg, msg)
+		var result protocol.Message
+		if msg.Type == "request" {
+			result = handleWithContext(ctx, client, cfg, msg)
+		} else {
+			result = updateControl(ctx, cfg, msg)
+		}
 		if err = conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
 			return err
 		}

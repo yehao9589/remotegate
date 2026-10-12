@@ -54,6 +54,9 @@ func source(n, path string, m int64) entry {
 	if err != nil {
 		panic(err)
 	}
+	// LuCI's Lua template parser and router scripts require Unix line endings,
+	// including when the package is assembled from a Windows checkout.
+	b = []byte(strings.ReplaceAll(string(b), "\r\n", "\n"))
 	return entry{n, b, m}
 }
 func main() {
@@ -79,7 +82,7 @@ func main() {
 local u = require("uci").cursor()
 local json = require "luci.jsonc"
 local c = u:get_all("remotegate", "main") or {}
-if c.enabled ~= "1" then os.exit(1) end
+if c.enabled ~= "1" and arg[1] ~= "--for-update" then os.exit(1) end
 if not c.server or c.server == "" or not c.device_id or c.device_id == "" or not c.token or c.token == "" then os.exit(1) end
 io.write(json.stringify({serverUrl=c.server,deviceId=c.device_id,token=c.token,interface=c.interface or "",mark=51820,allowPublicTargets=false}))
 `, 0755),
@@ -139,6 +142,8 @@ exit 0
 set -eu
 [ "$(id -u)" = 0 ] || { echo 'Root required'; exit 1; }
 command -v opkg >/dev/null || { echo 'This build requires opkg (iStoreOS 21.02/22.03/24.10).'; exit 1; }
+mode=${1:-install}
+case "$mode" in install|--update) ;; *) echo 'Unsupported installer option'; exit 1;; esac
 case "$(uname -m)" in
  x86_64) arch=amd64;;
  aarch64) arch=arm64;;
@@ -149,17 +154,25 @@ dir=$(mktemp -d /tmp/remotegate-install.XXXXXX)
 trap 'rm -f "$dir"/*.ipk; rmdir "$dir"' EXIT
 line=$(awk '/^__PAYLOAD__$/ {print NR+1; exit}' "$0")
 tail -n +"$line" "$0" | tar -xz -C "$dir"
-opkg install "$dir/remotegate-$arch.ipk"
+if [ "$mode" = --update ]; then
+ current=$(opkg status luci-app-remotegate | awk '/^Version:/ {print $2; exit}')
+ [ -n "$current" ] || { echo 'Existing RemoteGate plugin is required'; exit 1; }
+ opkg compare-versions "$current" '<' '__VERSION__' || { echo 'Target is not a newer version'; exit 1; }
+ opkg --force-reinstall install "$dir/remotegate-$arch.ipk"
+else
+ opkg install "$dir/remotegate-$arch.ipk"
+fi
 echo 'Refresh LuCI, then open Services -> RemoteGate.'
 exit 0
 __PAYLOAD__
 `
+	header = strings.ReplaceAll(header, "__VERSION__", buildinfo.PackageVersion())
 	out := append([]byte(header), archive(payload)...)
 	output := filepath.Join("dist", buildinfo.PackageFilename())
 	if err := os.WriteFile(output, out, 0755); err != nil {
 		panic(err)
 	}
-	manifest := map[string]any{"sha256": fmt.Sprintf("%x", sha256.Sum256(out)), "packageVersion": buildinfo.PackageVersion(), "agentVersion": buildinfo.Version(), "release": buildinfo.Current(), "packageName": "luci-app-remotegate", "architectures": []string{"x86_64", "ARM64", "ARMv7"}, "contents": []string{"RemoteGate 客户端", "新版 LuCI 路由器面板", "状态刷新与接入引导", "版本上报", "开机启动服务", "连接配置生成器", "直连路由保护脚本"}}
+	manifest := map[string]any{"size": len(out), "sha256": fmt.Sprintf("%x", sha256.Sum256(out)), "packageVersion": buildinfo.PackageVersion(), "agentVersion": buildinfo.Version(), "release": buildinfo.Current(), "packageName": "luci-app-remotegate", "architectures": []string{"x86_64", "ARM64", "ARMv7"}, "contents": []string{"RemoteGate 客户端", "新版 LuCI 路由器面板", "路由器与后台在线更新", "状态刷新与接入引导", "版本上报", "开机启动服务", "连接配置生成器", "直连路由保护脚本"}}
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		panic(err)

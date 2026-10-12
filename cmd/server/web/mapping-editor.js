@@ -9,7 +9,8 @@ function mappingHost(host,suffix){
  return full;
 }
 function mappingPublicAccess(item={},domain=''){const local=item.host==='localhost'||item.host?.endsWith('.localhost')||item.host?.endsWith('.127.0.0.1.nip.io')||(!item.id&&domain==='localhost');const scheme=item.publicScheme||(local?'http':'https');return {scheme,port:item.publicPort||(local?(Number(location.port)||80):(scheme==='https'?443:80))}}
-function publicMappingURL(item){const access=mappingPublicAccess(item),host=item.host||'',standard=(access.scheme==='https'&&access.port===443)||(access.scheme==='http'&&access.port===80);return `${access.scheme}://${host}${standard?'':':'+access.port}/`}
+function publicMappingURL(item){const access=mappingPublicAccess(item);return `${access.scheme}://${item.host||''}:${access.port}/`}
+function mappingTargetURL(value){try{const u=new URL(value);if(!['http:','https:'].includes(u.protocol))return value;const credentials=u.username||u.password?`${u.username}${u.password?':'+u.password:''}@`:'';return `${u.protocol}//${credentials}${u.hostname}:${u.port||(u.protocol==='https:'?'443':'80')}${u.pathname}${u.search}${u.hash}`}catch{return value}}
 function splitMappingTarget(value){try{const u=new URL(value),port=u.port||(u.protocol==='https:'?'443':'80');u.port='';return {address:u.pathname==='/'&&!u.search&&!u.hash?u.href.replace(/\/$/,''):u.href,port}}catch{return {address:value,port:'80'}}}
 function joinMappingTarget(address,port){const u=new URL(address);if(!['http:','https:'].includes(u.protocol))throw Error('内网地址仅支持 http:// 或 https://');if(u.port)throw Error('请把端口填写在右侧端口栏');if(!/^\d+$/.test(port)||Number(port)<1||Number(port)>65535)throw Error('端口范围为 1–65535');u.port=port;return u.href}
 

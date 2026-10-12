@@ -45,6 +45,9 @@ type app struct {
 	auth              *adminManager
 	consoleHost       string
 	publicURL         *url.URL
+	updateMu          sync.Mutex
+	deviceUpdates     map[string]pluginUpdateView
+	updatePackage     *verifiedUpdatePackage
 }
 
 func main() {
@@ -111,6 +114,9 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/install/", a.installScript)
 	mux.HandleFunc("/downloads/remotegate.run", a.installerDownload)
 	mux.HandleFunc("/api/agent/connect", a.connectAgent)
+	mux.HandleFunc("/api/agent/update", a.agentUpdateResource)
+	mux.HandleFunc("/api/agent/update/package", a.agentUpdateResource)
+	mux.HandleFunc("/updates/", a.bootstrapUpdateDownload)
 	mux.HandleFunc("/api/admin/state", a.admin(a.state))
 	mux.HandleFunc("/api/admin/devices", a.admin(a.devices))
 	mux.HandleFunc("/api/admin/devices/", a.admin(a.deviceByID))
@@ -157,6 +163,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideJS = append(guideJS, refreshJS...)
 		deploymentJS, _ := webFS.ReadFile("web/https-deploy.js")
 		guideJS = append(guideJS, deploymentJS...)
+		updateJS, _ := webFS.ReadFile("web/plugin-update.js")
+		guideJS = append(guideJS, updateJS...)
 		guideCSS, _ := webFS.ReadFile("web/install-guide.css")
 		consoleCSS, _ := webFS.ReadFile("web/console.css")
 		guideCSS = append(guideCSS, consoleCSS...)
@@ -168,6 +176,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideCSS = append(guideCSS, authCSS...)
 		visualCSS, _ := webFS.ReadFile("web/visuals.css")
 		guideCSS = append(guideCSS, visualCSS...)
+		updateCSS, _ := webFS.ReadFile("web/plugin-update.css")
+		guideCSS = append(guideCSS, updateCSS...)
 		page := strings.Replace(string(data), "/* INSTALL_GUIDE_JS */", string(guideJS), 1)
 		page = strings.Replace(page, "/* INSTALL_GUIDE_CSS */", string(guideCSS), 1)
 		page = a.renderConsoleAuth(page, r)
@@ -243,7 +253,7 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(protocol.MaxBodyBytes + (1 << 20))
-	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn)
+	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1")
 	log.Printf("device connected: %s (%s)", d.Name, id)
 	defer func() { a.hub.Detach(c); _ = conn.Close(); log.Printf("device disconnected: %s (%s)", d.Name, id) }()
 	if err := a.hub.ReadLoop(c); err != nil {
@@ -297,12 +307,13 @@ func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 		Online      bool      `json:"online"`
 		Version     string    `json:"version,omitempty"`
 		ConnectedAt time.Time `json:"connectedAt,omitempty"`
+		CanUpdate   bool      `json:"canUpdate"`
 	}
 	devices := make([]view, 0, len(state.Devices))
 	for _, d := range state.Devices {
 		d.TokenHash = ""
 		s, online := statuses[d.ID]
-		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since})
+		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since, CanUpdate: s.CanUpdate})
 	}
 	writeJSON(w, map[string]any{"devices": devices, "mappings": state.Mappings})
 }
@@ -330,6 +341,18 @@ func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) deviceByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/admin/devices/")
+	if deviceID, operation, ok := strings.Cut(id, "/"); ok {
+		if operation == "update" {
+			a.devicePluginUpdate(w, r, deviceID)
+			return
+		}
+		if operation == "update/bootstrap" {
+			a.bootstrapPluginUpdate(w, r, deviceID)
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
 	var in struct {
 		Name string `json:"name"`
 	}

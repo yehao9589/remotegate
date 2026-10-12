@@ -21,8 +21,8 @@ test('mapping advice makes no certificate API request or change to the selected 
  assert.match(node.innerHTML,/待检测/);assert.match(node.innerHTML,/在宝塔 \/ 反向代理申请并启用/);
  mapping.publicScheme='http';advice.refresh();assert.equal(node.hidden,true);
 });
-test('standard public URLs retain implicit ports and custom ports remain visible',()=>{
- assert.equal(context.publicMappingURL({host:'router.example.com',publicScheme:'https',publicPort:443}),'https://router.example.com/');
- assert.equal(context.publicMappingURL({host:'router.example.com',publicScheme:'http',publicPort:80}),'http://router.example.com/');
+test('public URLs show default ports and custom ports consistently',()=>{
+ assert.equal(context.publicMappingURL({host:'router.example.com',publicScheme:'https',publicPort:443}),'https://router.example.com:443/');
+ assert.equal(context.publicMappingURL({host:'router.example.com',publicScheme:'http',publicPort:80}),'http://router.example.com:80/');
  assert.equal(context.publicMappingURL({host:'router.example.com',publicScheme:'https',publicPort:8443}),'https://router.example.com:8443/');
 });

@@ -27,6 +27,9 @@ func (a *app) packageInfo(w http.ResponseWriter, r *http.Request) {
 	result["size"] = len(data)
 	result["sha256"] = digest
 	result["download"] = "/downloads/remotegate.run"
+	if manifest, err := a.loadUpdatePackage(); err == nil {
+		result["onlineUpdate"] = manifest
+	}
 	var manifest map[string]any
 	raw, err := os.ReadFile(installerPath() + ".json")
 	if err == nil && json.Unmarshal(raw, &manifest) == nil && manifest["sha256"] == digest {

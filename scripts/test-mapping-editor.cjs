@@ -32,11 +32,15 @@ test('mapping preview and split target preserve explicit ports and paths',()=>{
  const split=context.splitMappingTarget('https://192.168.1.20:8443/path');
  assert.equal(split.address,'https://192.168.1.20/path');assert.equal(split.port,'8443');
  assert.equal(context.joinMappingTarget(split.address,split.port),'https://192.168.1.20:8443/path');
+ assert.equal(context.mappingTargetURL('http://127.0.0.1'),'http://127.0.0.1:80/');
+ assert.equal(context.mappingTargetURL('http://127.0.0.1:80'),'http://127.0.0.1:80/');
+ assert.equal(context.mappingTargetURL('https://[::1]/app/?next=/#section'),'https://[::1]:443/app/?next=/#section');
 });
 
 test('target round trips preserve trailing slashes in paths, queries and fragments',()=>{
  for(const target of ['http://127.0.0.1:8080/app/','https://192.168.1.20:8443/?next=/','http://[::1]:9090/app/?next=/#section/']){
   const split=context.splitMappingTarget(target);
   assert.equal(context.joinMappingTarget(split.address,split.port),target);
+  assert.equal(context.mappingTargetURL(target),target);
  }
 });
