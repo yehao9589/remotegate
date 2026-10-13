@@ -422,6 +422,14 @@ func (a *app) authLogout(w http.ResponseWriter, r *http.Request) {
 	if !authJSON(w, r, &in) {
 		return
 	}
+	if owner, valid := a.remoteOwner(r); valid {
+		a.remoteMu.Lock()
+		manager := a.remote
+		a.remoteMu.Unlock()
+		if manager != nil {
+			manager.closeOwner(owner)
+		}
+	}
 	if a.auth != nil {
 		a.auth.mu.Lock()
 		for _, name := range []string{adminCookie, httpAdminCookie} {

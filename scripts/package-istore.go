@@ -71,6 +71,7 @@ func main() {
  option device_id ''
  option token ''
  option interface ''
+ option remote_access '0'
 `, 0600),
 		source("usr/lib/lua/luci/controller/remotegate.lua", "deploy/openwrt/luci/controller.lua", 0644),
 		source("usr/lib/lua/luci/model/cbi/remotegate.lua", "deploy/openwrt/luci/model.lua", 0644),
@@ -84,7 +85,7 @@ local json = require "luci.jsonc"
 local c = u:get_all("remotegate", "main") or {}
 if c.enabled ~= "1" and arg[1] ~= "--for-update" then os.exit(1) end
 if not c.server or c.server == "" or not c.device_id or c.device_id == "" or not c.token or c.token == "" then os.exit(1) end
-io.write(json.stringify({serverUrl=c.server,deviceId=c.device_id,token=c.token,interface=c.interface or "",mark=51820,allowPublicTargets=false}))
+io.write(json.stringify({serverUrl=c.server,deviceId=c.device_id,token=c.token,interface=c.interface or "",mark=51820,allowPublicTargets=false,remoteAccess=c.remote_access=="1"}))
 `, 0755),
 		entry{"usr/libexec/remotegate-route-guard", routeGuard, 0755},
 		text("etc/init.d/remotegate", `#!/bin/sh /etc/rc.common

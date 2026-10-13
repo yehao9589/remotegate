@@ -4,5 +4,6 @@
   "token": "paste-device-token",
   "interface": "eth1",
   "mark": 51820,
-  "allowPublicTargets": false
+  "allowPublicTargets": false,
+  "remoteAccess": false
 }

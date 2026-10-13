@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -21,10 +23,13 @@ type Client struct {
 	Version                 string
 	Since                   time.Time
 	CanUpdate               bool
+	CanRemote               bool
 	conn                    *websocket.Conn
 	writeMu                 sync.Mutex
 	pending                 sync.Map
 	pings                   sync.Map
+	streams                 sync.Map
+	streamCount             atomic.Int32
 	metricsMu               sync.Mutex
 	lastActiveAt, latencyAt time.Time
 	latency                 time.Duration
@@ -66,6 +71,7 @@ func (h *Hub) Disconnect(id string) {
 func (h *Hub) Attach(deviceID, name, version string, conn *websocket.Conn, updater ...bool) *Client {
 	c := &Client{DeviceID: deviceID, Name: name, Version: version, Since: time.Now().UTC(), conn: conn}
 	c.CanUpdate = len(updater) > 0 && updater[0]
+	c.CanRemote = len(updater) > 1 && updater[1]
 	c.lastActiveAt = c.Since
 	h.mu.Lock()
 	old := h.clients[deviceID]
@@ -93,6 +99,10 @@ func (h *Hub) Detach(c *Client) {
 		if actual, ok := c.pings.LoadAndDelete(key); ok {
 			actual.(pingWaiter).result <- pingResult{err: ErrOffline}
 		}
+		return true
+	})
+	c.streams.Range(func(_, value any) bool {
+		value.(*tcpConn).finish(ErrOffline, false)
 		return true
 	})
 }
@@ -140,6 +150,20 @@ func (h *Hub) ReadLoop(c *Client) error {
 		if msg.Type == "response" {
 			if ch, ok := c.pending.LoadAndDelete(msg.ID); ok {
 				ch.(chan protocol.Message) <- msg
+			}
+		}
+		if msg.Type == "tcp-data" || msg.Type == "tcp-close" || msg.Type == "tcp-credit" {
+			if value, ok := c.streams.Load(msg.ID); ok {
+				stream := value.(*tcpConn)
+				if msg.Type == "tcp-credit" {
+					if !stream.addCredit(msg.Status) {
+						stream.finish(errors.New("invalid stream credit"), true)
+					}
+				} else if msg.Type == "tcp-close" {
+					stream.finish(io.EOF, false)
+				} else if !stream.feed(msg.Body) {
+					stream.finish(errors.New("remote stream buffer exceeded"), true)
+				}
 			}
 		}
 	}
@@ -222,6 +246,10 @@ func (h *Hub) Request(ctx context.Context, deviceID string, msg protocol.Message
 	if c == nil {
 		return protocol.Message{}, ErrOffline
 	}
+	return h.requestTo(ctx, c, msg)
+}
+
+func (h *Hub) requestTo(ctx context.Context, c *Client, msg protocol.Message) (protocol.Message, error) {
 	response := make(chan protocol.Message, 1)
 	c.pending.Store(msg.ID, response)
 	defer c.pending.Delete(msg.ID)
@@ -255,6 +283,7 @@ type Status struct {
 	DeviceID, Name, Version string
 	Since                   time.Time
 	CanUpdate               bool
+	CanRemote               bool
 	LastActiveAt, LatencyAt time.Time
 	LatencyMs               *int64
 }
@@ -265,7 +294,7 @@ func (h *Hub) Statuses() map[string]Status {
 	out := make(map[string]Status, len(h.clients))
 	for id, c := range h.clients {
 		c.metricsMu.Lock()
-		status := Status{DeviceID: c.DeviceID, Name: c.Name, Version: c.Version, Since: c.Since, CanUpdate: c.CanUpdate, LastActiveAt: c.lastActiveAt, LatencyAt: c.latencyAt}
+		status := Status{DeviceID: c.DeviceID, Name: c.Name, Version: c.Version, Since: c.Since, CanUpdate: c.CanUpdate, CanRemote: c.CanRemote, LastActiveAt: c.lastActiveAt, LatencyAt: c.latencyAt}
 		if !c.latencyAt.IsZero() {
 			ms := c.latency.Milliseconds()
 			status.LatencyMs = &ms

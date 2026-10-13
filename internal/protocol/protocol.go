@@ -3,6 +3,9 @@ package protocol
 import "net/http"
 
 const MaxBodyBytes = 16 << 20
+const MaxStreamBytes = 32 << 10
+const MaxDeviceStreams = 4
+const StreamWindowBytes = 4 * MaxStreamBytes
 
 type Message struct {
 	Type       string              `json:"type"`
