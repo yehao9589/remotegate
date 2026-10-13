@@ -89,6 +89,10 @@ jobs:
             APP_BUILD_TIME=${{ needs.checks.outputs.built_at }}
           cache-from: type=gha,scope=smoke
           cache-to: type=gha,mode=max,scope=smoke
+      - name: Verify compact image layers
+        run: |
+          docker image save remotegate:smoke --output /tmp/remotegate-image.tar
+          python3 scripts/check-image-layers.py /tmp/remotegate-image.tar
       - name: Validate Compose and start a fresh installation
         run: |
           docker compose config --quiet
