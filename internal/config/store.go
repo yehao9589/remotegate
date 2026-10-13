@@ -20,12 +20,17 @@ import (
 )
 
 type Device struct {
-	PackageVersion string    `json:"packageVersion,omitempty"`
-	Version        string    `json:"version,omitempty"`
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	TokenHash      string    `json:"tokenHash"`
-	CreatedAt      time.Time `json:"createdAt"`
+	Note               string     `json:"note,omitempty"`
+	Pinned             bool       `json:"pinned,omitempty"`
+	Info               DeviceInfo `json:"info"`
+	LastConnectedAt    time.Time  `json:"lastConnectedAt,omitempty"`
+	LastDisconnectedAt time.Time  `json:"lastDisconnectedAt,omitempty"`
+	PackageVersion     string     `json:"packageVersion,omitempty"`
+	Version            string     `json:"version,omitempty"`
+	ID                 string     `json:"id"`
+	Name               string     `json:"name"`
+	TokenHash          string     `json:"tokenHash"`
+	CreatedAt          time.Time  `json:"createdAt"`
 }
 
 type Mapping struct {

@@ -48,6 +48,7 @@ type app struct {
 	updateMu          sync.Mutex
 	deviceUpdates     map[string]pluginUpdateView
 	updatePackage     *verifiedUpdatePackage
+	operators         *operatorResolver
 }
 
 func main() {
@@ -67,6 +68,7 @@ func main() {
 		log.Fatal(err)
 	}
 	a := &app{store: store, hub: hub.New(), auth: auth, consoleHost: strings.ToLower(os.Getenv("CONSOLE_HOST"))}
+	a.operators = newOperatorResolver(filepath.Join(filepath.Dir(statePath), "ip-networks.json"), !strings.EqualFold(os.Getenv("IP_OPERATOR_LOOKUP"), "false"))
 	if value := strings.TrimSpace(os.Getenv("PUBLIC_URL")); value != "" {
 		a.publicURL, err = parsePublicURL(value)
 		if err != nil {
@@ -165,6 +167,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideJS = append(guideJS, deploymentJS...)
 		updateJS, _ := webFS.ReadFile("web/plugin-update.js")
 		guideJS = append(guideJS, updateJS...)
+		deviceJS, _ := webFS.ReadFile("web/device-center.js")
+		guideJS = append(guideJS, deviceJS...)
 		guideCSS, _ := webFS.ReadFile("web/install-guide.css")
 		consoleCSS, _ := webFS.ReadFile("web/console.css")
 		guideCSS = append(guideCSS, consoleCSS...)
@@ -178,6 +182,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideCSS = append(guideCSS, visualCSS...)
 		updateCSS, _ := webFS.ReadFile("web/plugin-update.css")
 		guideCSS = append(guideCSS, updateCSS...)
+		deviceCSS, _ := webFS.ReadFile("web/device-center.css")
+		guideCSS = append(guideCSS, deviceCSS...)
 		page := strings.Replace(string(data), "/* INSTALL_GUIDE_JS */", string(guideJS), 1)
 		page = strings.Replace(page, "/* INSTALL_GUIDE_CSS */", string(guideCSS), 1)
 		page = a.renderConsoleAuth(page, r)
@@ -243,6 +249,11 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid device credentials", http.StatusUnauthorized)
 		return
 	}
+	info := deviceConnectionInfo(r)
+	if err := info.Validate(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -254,8 +265,18 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(protocol.MaxBodyBytes + (1 << 20))
 	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1")
+	if err := a.store.RecordConnection(id, c.Since, info); err != nil {
+		log.Printf("device connection information failed: %v", err)
+	}
 	log.Printf("device connected: %s (%s)", d.Name, id)
-	defer func() { a.hub.Detach(c); _ = conn.Close(); log.Printf("device disconnected: %s (%s)", d.Name, id) }()
+	defer func() {
+		a.hub.Detach(c)
+		_ = conn.Close()
+		if err := a.store.RecordDisconnect(id, c.Since, time.Now()); err != nil {
+			log.Printf("device disconnect information failed: %v", err)
+		}
+		log.Printf("device disconnected: %s (%s)", d.Name, id)
+	}()
 	if err := a.hub.ReadLoop(c); err != nil {
 		log.Printf("device tunnel ended: %s (%s): %v", d.Name, id, err)
 	}
@@ -304,16 +325,20 @@ func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 	statuses := a.hub.Statuses()
 	type view struct {
 		config.Device
-		Online      bool      `json:"online"`
-		Version     string    `json:"version,omitempty"`
-		ConnectedAt time.Time `json:"connectedAt,omitempty"`
-		CanUpdate   bool      `json:"canUpdate"`
+		Online       bool          `json:"online"`
+		Version      string        `json:"version,omitempty"`
+		ConnectedAt  time.Time     `json:"connectedAt,omitempty"`
+		CanUpdate    bool          `json:"canUpdate"`
+		LastActiveAt time.Time     `json:"lastActiveAt,omitempty"`
+		LatencyAt    time.Time     `json:"latencyAt,omitempty"`
+		LatencyMs    *int64        `json:"latencyMs,omitempty"`
+		Network      deviceNetwork `json:"network"`
 	}
 	devices := make([]view, 0, len(state.Devices))
 	for _, d := range state.Devices {
 		d.TokenHash = ""
 		s, online := statuses[d.ID]
-		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since, CanUpdate: s.CanUpdate})
+		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)})
 	}
 	writeJSON(w, map[string]any{"devices": devices, "mappings": state.Mappings})
 }
@@ -342,6 +367,10 @@ func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 func (a *app) deviceByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/admin/devices/")
 	if deviceID, operation, ok := strings.Cut(id, "/"); ok {
+		if operation == "health" || operation == "reconnect" {
+			a.deviceConnectionAction(w, r, deviceID, operation)
+			return
+		}
 		if operation == "update" {
 			a.devicePluginUpdate(w, r, deviceID)
 			return
@@ -354,7 +383,9 @@ func (a *app) deviceByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Name string `json:"name"`
+		Name   *string `json:"name"`
+		Note   *string `json:"note"`
+		Pinned *bool   `json:"pinned"`
 	}
 	if r.Method != "DELETE" && r.Method != "PUT" {
 		http.Error(w, "method not allowed", 405)
@@ -364,7 +395,13 @@ func (a *app) deviceByID(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", 400)
 		return
 	}
-	if err := a.store.ChangeDevice(id, in.Name, r.Method == "DELETE"); err != nil {
+	var err error
+	if r.Method == "DELETE" {
+		err = a.store.ChangeDevice(id, "", true)
+	} else {
+		err = a.store.UpdateDevice(id, in.Name, in.Note, in.Pinned)
+	}
+	if err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}

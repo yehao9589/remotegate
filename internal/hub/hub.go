@@ -2,7 +2,10 @@ package hub
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,14 +16,29 @@ import (
 var ErrOffline = errors.New("device is offline")
 
 type Client struct {
-	DeviceID  string
-	Name      string
-	Version   string
-	Since     time.Time
-	CanUpdate bool
-	conn      *websocket.Conn
-	writeMu   sync.Mutex
-	pending   sync.Map
+	DeviceID                string
+	Name                    string
+	Version                 string
+	Since                   time.Time
+	CanUpdate               bool
+	conn                    *websocket.Conn
+	writeMu                 sync.Mutex
+	pending                 sync.Map
+	pings                   sync.Map
+	metricsMu               sync.Mutex
+	lastActiveAt, latencyAt time.Time
+	latency                 time.Duration
+	heartbeat               string
+	heartbeatAt             time.Time
+}
+
+type pingResult struct {
+	latency time.Duration
+	err     error
+}
+type pingWaiter struct {
+	started time.Time
+	result  chan pingResult
 }
 
 type Hub struct {
@@ -48,6 +66,7 @@ func (h *Hub) Disconnect(id string) {
 func (h *Hub) Attach(deviceID, name, version string, conn *websocket.Conn, updater ...bool) *Client {
 	c := &Client{DeviceID: deviceID, Name: name, Version: version, Since: time.Now().UTC(), conn: conn}
 	c.CanUpdate = len(updater) > 0 && updater[0]
+	c.lastActiveAt = c.Since
 	h.mu.Lock()
 	old := h.clients[deviceID]
 	h.clients[deviceID] = c
@@ -70,6 +89,12 @@ func (h *Hub) Detach(c *Client) {
 		}
 		return true
 	})
+	c.pings.Range(func(key, value any) bool {
+		if actual, ok := c.pings.LoadAndDelete(key); ok {
+			actual.(pingWaiter).result <- pingResult{err: ErrOffline}
+		}
+		return true
+	})
 }
 
 func (h *Hub) ReadLoop(c *Client) error {
@@ -78,7 +103,22 @@ func (h *Hub) ReadLoop(c *Client) error {
 	if err := c.conn.SetReadDeadline(time.Now().Add(h.pongWait)); err != nil {
 		return err
 	}
-	c.conn.SetPongHandler(func(string) error {
+	c.conn.SetPongHandler(func(data string) error {
+		now := time.Now()
+		c.metricsMu.Lock()
+		c.lastActiveAt = now.UTC()
+		if data == c.heartbeat && data != "" {
+			c.latency, c.latencyAt = now.Sub(c.heartbeatAt), now.UTC()
+		}
+		c.metricsMu.Unlock()
+		if value, ok := c.pings.LoadAndDelete(data); ok {
+			waiter := value.(pingWaiter)
+			latency := now.Sub(waiter.started)
+			c.metricsMu.Lock()
+			c.latency, c.latencyAt = latency, now.UTC()
+			c.metricsMu.Unlock()
+			waiter.result <- pingResult{latency: latency}
+		}
 		return c.conn.SetReadDeadline(time.Now().Add(h.pongWait))
 	})
 	stop := make(chan struct{})
@@ -91,6 +131,9 @@ func (h *Hub) ReadLoop(c *Client) error {
 		}
 		// Older agents handle targets serially. Responses also prove liveness
 		// when queued requests delay their reading of a ping control frame.
+		c.metricsMu.Lock()
+		c.lastActiveAt = time.Now().UTC()
+		c.metricsMu.Unlock()
 		if err := c.conn.SetReadDeadline(time.Now().Add(h.pongWait)); err != nil {
 			return err
 		}
@@ -119,13 +162,53 @@ func (h *Hub) keepAlive(c *Client, stop <-chan struct{}) {
 				return
 			default:
 			}
-			err := c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(h.writeWait))
+			now := time.Now()
+			payload := "heartbeat:" + strconv.FormatInt(now.UnixNano(), 10)
+			c.metricsMu.Lock()
+			c.heartbeat, c.heartbeatAt = payload, now
+			c.metricsMu.Unlock()
+			err := c.conn.WriteControl(websocket.PingMessage, []byte(payload), now.Add(h.writeWait))
 			c.writeMu.Unlock()
 			if err != nil {
 				_ = c.conn.Close()
 				return
 			}
 		}
+	}
+}
+
+// Ping measures the live tunnel without depending on an HTTP target or new agent commands.
+func (h *Hub) Ping(ctx context.Context, deviceID string) (time.Duration, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	h.mu.RLock()
+	c := h.clients[deviceID]
+	h.mu.RUnlock()
+	if c == nil {
+		return 0, ErrOffline
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return 0, err
+	}
+	id := "probe:" + hex.EncodeToString(nonce[:])
+	waiter := pingWaiter{started: time.Now(), result: make(chan pingResult, 1)}
+	c.pings.Store(id, waiter)
+	defer c.pings.Delete(id)
+	deadline := time.Now().Add(h.writeWait)
+	if expires, ok := ctx.Deadline(); ok && expires.Before(deadline) {
+		deadline = expires
+	}
+	// WriteControl is safe beside the serialized data writer and honors this deadline.
+	if err := c.conn.WriteControl(websocket.PingMessage, []byte(id), deadline); err != nil {
+		return 0, err
+	}
+	select {
+	case result := <-waiter.result:
+		return result.latency, result.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
 	}
 }
 
@@ -172,6 +255,8 @@ type Status struct {
 	DeviceID, Name, Version string
 	Since                   time.Time
 	CanUpdate               bool
+	LastActiveAt, LatencyAt time.Time
+	LatencyMs               *int64
 }
 
 func (h *Hub) Statuses() map[string]Status {
@@ -179,7 +264,14 @@ func (h *Hub) Statuses() map[string]Status {
 	defer h.mu.RUnlock()
 	out := make(map[string]Status, len(h.clients))
 	for id, c := range h.clients {
-		out[id] = Status{DeviceID: c.DeviceID, Name: c.Name, Version: c.Version, Since: c.Since, CanUpdate: c.CanUpdate}
+		c.metricsMu.Lock()
+		status := Status{DeviceID: c.DeviceID, Name: c.Name, Version: c.Version, Since: c.Since, CanUpdate: c.CanUpdate, LastActiveAt: c.lastActiveAt, LatencyAt: c.latencyAt}
+		if !c.latencyAt.IsZero() {
+			ms := c.latency.Milliseconds()
+			status.LatencyMs = &ms
+		}
+		c.metricsMu.Unlock()
+		out[id] = status
 	}
 	return out
 }

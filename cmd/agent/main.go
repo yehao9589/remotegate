@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -96,6 +97,13 @@ func run(ctx context.Context, cfg Config) error {
 	q.Set("device_id", cfg.DeviceID)
 	q.Set("token", cfg.Token)
 	q.Set("version", buildinfo.Version())
+	q.Set("info", "1")
+	q.Set("os", runtime.GOOS)
+	q.Set("arch", runtime.GOARCH)
+	q.Set("interface", cfg.Interface)
+	if hostname, err := os.Hostname(); err == nil && len(hostname) <= 128 {
+		q.Set("hostname", hostname)
+	}
 	if routerUpdateSupported() {
 		q.Set("updater", "1")
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,9 @@ func TestIdleAgentStopsWhenContextIsCancelled(t *testing.T) {
 	connected := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{}
+		if q := r.URL.Query(); q.Get("info") != "1" || q.Get("os") != runtime.GOOS || q.Get("arch") != runtime.GOARCH {
+			t.Error("agent did not report actual platform")
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return

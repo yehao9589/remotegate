@@ -1,5 +1,7 @@
 // One local icon set keeps navigation, status and actions visually consistent.
 const consoleIconPaths={
+	 pin:'<path d="m16 3 5 5-4 2-1 5-3 1-5-5 1-3 5-1 2-4ZM11 16l-7 7"/>',
+	 eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
  monitor:'<rect x="3" y="3" width="18" height="13" rx="2.5"/><path d="M8 21h8m-4-5v5"/>',
  globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 4 6.2 4 9s-1 5.8-4 9c-3-3.2-4-6.2-4-9s1-5.8 4-9Z"/>',
  package:'<path d="m12 3 9 5-9 5-9-5 9-5Zm-9 5v9l9 5 9-5V8M12 13v9M7.5 5.5l9 5v4"/>',

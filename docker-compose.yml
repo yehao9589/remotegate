@@ -7,6 +7,7 @@ services:
     environment:
       CONSOLE_HOST: ${CONSOLE_HOST:-}
       PUBLIC_URL: ${PUBLIC_URL:-}
+      IP_OPERATOR_LOOKUP: "${IP_OPERATOR_LOOKUP:-true}"
       LISTEN_ADDR: ${LISTEN_ADDR:-127.0.0.1:18088}
       HTTPS_LISTEN_ADDR: "${HTTPS_LISTEN_ADDR-:443}"
       # Optional: provision the first console certificate before HTTPS installation.

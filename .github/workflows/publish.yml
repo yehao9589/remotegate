@@ -59,6 +59,7 @@ jobs:
           node --test scripts/test-domain-https.cjs
           node --test scripts/test-https-deploy.cjs
           node --test scripts/test-plugin-update.cjs
+          node --test scripts/test-device-center.cjs
 
   container-test:
     needs: checks

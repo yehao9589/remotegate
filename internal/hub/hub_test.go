@@ -165,3 +165,71 @@ func TestCancelledRequestDoesNotDisconnectHealthyTunnel(t *testing.T) {
 		t.Fatal("cancellation closed the healthy tunnel", result, err)
 	}
 }
+
+func TestConnectionPingWorksWithLegacyAgentAndConcurrentHTTPRequests(t *testing.T) {
+	h := New()
+	conn, _ := tunnelPair(t, h)
+	go func() {
+		for {
+			var msg protocol.Message
+			if conn.ReadJSON(&msg) != nil {
+				return
+			}
+			if conn.WriteJSON(protocol.Message{Type: "response", ID: msg.ID, Status: 200}) != nil {
+				return
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := h.Request(ctx, "router", protocol.Message{Type: "request", ID: "during-ping"})
+		result <- err
+	}()
+	if latency, err := h.Ping(ctx, "router"); err != nil || latency < 0 {
+		t.Fatal(latency, err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	status := h.Statuses()["router"]
+	if status.LatencyMs == nil || status.LatencyAt.IsZero() || status.LastActiveAt.Before(status.Since) {
+		t.Fatal("missing measured status", status)
+	}
+}
+
+func TestPingTimeoutDoesNotDisconnectAndDisconnectReleasesPing(t *testing.T) {
+	h := New()
+	conn, _ := tunnelPair(t, h)
+	seen := make(chan struct{}, 4)
+	conn.SetPingHandler(func(string) error { seen <- struct{}{}; return nil })
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	if _, err := h.Ping(ctx, "router"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	cancel()
+	if len(h.Statuses()) != 1 || h.Statuses()["router"].LatencyMs != nil {
+		t.Fatal("timeout faked status")
+	}
+	<-seen
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	ended := make(chan error, 1)
+	go func() { _, err := h.Ping(ctx, "router"); ended <- err }()
+	<-seen
+	h.Disconnect("router")
+	if err := <-ended; !errors.Is(err, ErrOffline) {
+		t.Fatal("disconnect did not release ping", err)
+	}
+	if _, err := h.Ping(ctx, "router"); !errors.Is(err, ErrOffline) {
+		t.Fatal("offline ping accepted", err)
+	}
+}
