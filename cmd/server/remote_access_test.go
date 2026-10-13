@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/local/remotegate/internal/protocol"
 	"github.com/local/remotegate/internal/tcpbridge"
 	"github.com/local/remotegate/internal/testssh"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -288,5 +290,111 @@ func TestCanceledSFTPUploadKeepsOriginalFile(t *testing.T) {
 	requireStatus(t, list, 200)
 	if strings.Contains(list.Body.String(), ".remotegate-upload-") {
 		t.Fatal("cancelled upload left a temporary file")
+	}
+}
+
+type privateFileInfo struct{ os.FileInfo }
+
+func (f privateFileInfo) Mode() os.FileMode { return f.FileInfo.Mode()&os.ModeType | 0600 }
+func (f privateFileInfo) Uid() uint32       { return 123 }
+func (f privateFileInfo) Gid() uint32       { return 456 }
+
+type privateLister struct{ sftp.ListerAt }
+
+func (l privateLister) ListAt(files []os.FileInfo, offset int64) (int, error) {
+	n, err := l.ListerAt.ListAt(files, offset)
+	for i := 0; i < n; i++ {
+		files[i] = privateFileInfo{files[i]}
+	}
+	return n, err
+}
+
+type privateFileList struct{ sftp.FileLister }
+
+func (l privateFileList) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
+	files, err := l.FileLister.Filelist(r)
+	if err == nil && r.Method == "Stat" && r.Filepath == "/private.txt" {
+		return privateLister{files}, nil
+	}
+	return files, err
+}
+
+type observedFileCommands struct {
+	sftp.FileCmder
+	observed chan *sftp.Request
+	deny     bool
+}
+
+func (c observedFileCommands) Filecmd(r *sftp.Request) error {
+	if r.Method == "Setstat" {
+		c.observed <- r
+		if c.deny {
+			return os.ErrPermission
+		}
+	}
+	return c.FileCmder.Filecmd(r)
+}
+func (c observedFileCommands) PosixRename(r *sftp.Request) error {
+	return c.FileCmder.(sftp.PosixRenameFileCmder).PosixRename(r)
+}
+
+func TestSFTPReplacementPreservesPrivateFileMetadataAndRefusesDeniedChanges(t *testing.T) {
+	for _, deny := range []bool{false, true} {
+		t.Run(strconv.FormatBool(deny), func(t *testing.T) {
+			f := newRemoteFixture(t)
+			observed := make(chan *sftp.Request, 8)
+			f.ssh.WrapSFTP(func(h sftp.Handlers) sftp.Handlers {
+				h.FileList = privateFileList{h.FileList}
+				h.FileCmd = observedFileCommands{h.FileCmd, observed, deny}
+				return h
+			})
+			session := f.connect(t)
+			url := "/api/admin/remote/" + session["id"].(string) + "/files"
+			start := func(data string, replace bool) string {
+				response := remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "upload-start", "path": "/", "name": "private.txt", "size": len(data), "replace": replace})
+				requireStatus(t, response, 200)
+				var result struct{ UploadID string }
+				json.Unmarshal(response.Body.Bytes(), &result)
+				requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "upload-part", "uploadId": result.UploadID, "offset": 0, "data": []byte(data)}), 200)
+				return result.UploadID
+			}
+			// A confirmed overwrite may race with removal of the old destination.
+			first := start("original", true)
+			requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "upload-finish", "uploadId": first}), 200)
+			second := start("replacement", true)
+			status := 200
+			if deny {
+				status = 502
+			}
+			requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "upload-finish", "uploadId": second}), status)
+			var owner, mode bool
+			for len(observed) > 0 {
+				r := <-observed
+				attrs := r.Attributes()
+				flags := r.AttrFlags()
+				if flags.UidGid {
+					owner = attrs.UID == 123 && attrs.GID == 456
+				}
+				if flags.Permissions {
+					mode = attrs.Mode&0777 == 0600
+				}
+			}
+			if !owner || (!deny && !mode) {
+				t.Fatal("original file metadata was not preserved before replacement")
+			}
+			prepared := remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "download", "path": "/private.txt"})
+			requireStatus(t, prepared, 200)
+			var link map[string]string
+			json.Unmarshal(prepared.Body.Bytes(), &link)
+			got := remoteTestCall(f.app, f.cookie, link["url"], nil)
+			requireStatus(t, got, 200)
+			expected := "replacement"
+			if deny {
+				expected = "original"
+			}
+			if got.Body.String() != expected {
+				t.Fatal("metadata failure changed original contents")
+			}
+		})
 	}
 }

@@ -27,6 +27,8 @@ type remoteUpload struct {
 	temp, target  string
 	size, written int64
 	replace       bool
+	mode          os.FileMode
+	owner         *sftp.FileStat
 	lastOffset    int64
 	lastHash      [32]byte
 	lastSize      int
@@ -197,7 +199,12 @@ func (s *remoteSession) fileAction(w http.ResponseWriter, r *http.Request) {
 		var file *sftp.File
 		file, err = s.files.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
 		if err == nil {
-			s.uploads[id] = &remoteUpload{file: file, temp: temp, target: destination, size: input.Size, replace: input.Replace, lastOffset: -1}
+			upload := &remoteUpload{file: file, temp: temp, target: destination, size: input.Size, replace: input.Replace && existsErr == nil, lastOffset: -1}
+			if existsErr == nil {
+				upload.mode = info.Mode().Perm()
+				upload.owner, _ = info.Sys().(*sftp.FileStat)
+			}
+			s.uploads[id] = upload
 			result = map[string]any{"uploadId": id, "offset": int64(0)}
 		}
 	case "upload-part":
@@ -230,6 +237,18 @@ func (s *remoteSession) fileAction(w http.ResponseWriter, r *http.Request) {
 		if upload == nil || upload.written != upload.size {
 			http.Error(w, "上传内容尚未完整接收", 409)
 			return
+		}
+		if upload.replace {
+			if upload.owner != nil {
+				err = upload.file.Chown(int(upload.owner.UID), int(upload.owner.GID))
+			}
+			if err == nil {
+				err = upload.file.Chmod(upload.mode)
+			}
+			if err != nil {
+				http.Error(w, "无法保留原文件的所有者或权限，原文件未替换；可使用新文件名上传", 502)
+				return
+			}
 		}
 		err = upload.file.Close()
 		if err == nil {

@@ -67,6 +67,13 @@ func New() (*Server, error) {
 }
 
 func (s *Server) Address() string { return s.listener.Addr().String() }
+
+// WrapSFTP changes handlers for subsequently opened SFTP channels.
+func (s *Server) WrapSFTP(wrap func(sftp.Handlers) sftp.Handlers) {
+	s.mu.Lock()
+	s.handlers = wrap(s.handlers)
+	s.mu.Unlock()
+}
 func (s *Server) AllowKey(key ssh.PublicKey) {
 	s.mu.Lock()
 	s.keys[string(key.Marshal())] = true
@@ -140,7 +147,10 @@ func (s *Server) serveChannel(channel ssh.Channel, requests <-chan *ssh.Request)
 				continue
 			}
 			_ = request.Reply(true, nil)
-			server := sftp.NewRequestServer(channel, s.handlers)
+			s.mu.Lock()
+			handlers := s.handlers
+			s.mu.Unlock()
+			server := sftp.NewRequestServer(channel, handlers)
 			_ = server.Serve()
 			_ = server.Close()
 			return
