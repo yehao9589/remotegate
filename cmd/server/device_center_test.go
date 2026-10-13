@@ -48,7 +48,7 @@ func TestDeviceManagementLegacyPingReconnectAndPreferences(t *testing.T) {
 	requireStatus(t, authCall(a, path+"/health", "", "", cookie), 405)
 	requireStatus(t, authCall(a, path+"/health", "{}", "", cookie), 409)
 	requireStatus(t, authCall(a, "/api/admin/devices/missing/reconnect", "{}", "", cookie), 404)
-	server := httptest.NewServer(a.routes())
+	server := agentTestServer(t, a)
 	defer server.Close()
 	connect := func(info bool) *websocket.Conn {
 		query := url.Values{"device_id": {device.ID}, "token": {token}, "version": {"0.1.3"}, "package_version": {"0.1.3-1"}}

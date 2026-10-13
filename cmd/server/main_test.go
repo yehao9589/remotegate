@@ -27,7 +27,7 @@ func TestHostRequestTravelsThroughAgent(t *testing.T) {
 	// With no dedicated console host, a configured mapping still takes priority
 	// for the root path. This is how local testing works before DNS is set up.
 	a := &app{store: store, hub: hub.New(), adminUser: "admin", adminPass: "admin"}
-	ts := httptest.NewServer(a.routes())
+	ts := agentTestServer(t, a)
 	defer ts.Close()
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/agent/connect?device_id=" + d.ID + "&token=" + token + "&version=test"
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -92,7 +92,7 @@ func TestUnmatchedProxyHostExplainsMappingFailure(t *testing.T) {
 func TestAdminRequiresUsernameAndPassword(t *testing.T) {
 	store, _ := config.Open(t.TempDir() + "/state.json")
 	a := &app{store: store, hub: hub.New(), adminUser: "admin", adminPass: "admin"}
-	ts := httptest.NewServer(a.routes())
+	ts := agentTestServer(t, a)
 	defer ts.Close()
 
 	for _, tc := range []struct {
@@ -133,7 +133,7 @@ func TestEnrollmentNeedsWebsocket(t *testing.T) {
 	store, _ := config.Open(t.TempDir() + "/state.json")
 	d, token, _ := store.CreatePendingDevice("pending")
 	a := &app{store: store, hub: hub.New()}
-	ts := httptest.NewServer(a.routes())
+	ts := agentTestServer(t, a)
 	defer ts.Close()
 	path := "/api/agent/connect?device_id=" + d.ID + "&token=" + token + "&version=0.1.0"
 	resp, err := http.Get(ts.URL + path)

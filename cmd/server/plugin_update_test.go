@@ -50,8 +50,7 @@ func pluginFixture(t *testing.T) (*app, config.Device, string, *http.Cookie, upd
 
 func connectUpdateDevice(t *testing.T, a *app, device config.Device, token string, supported bool, packageVersions ...string) *websocket.Conn {
 	t.Helper()
-	server := httptest.NewServer(a.routes())
-	t.Cleanup(server.Close)
+	server := agentTestServer(t, a)
 	query := url.Values{"device_id": {device.ID}, "token": {token}, "version": {"0.1.3"}, "package_version": {"0.1.3-1"}}
 	if supported {
 		query.Set("updater", "1")

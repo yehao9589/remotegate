@@ -193,7 +193,7 @@ func testHTTPSMappingReachesConnectedDevice(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpServer := httptest.NewServer(a.routes())
+	httpServer := agentTestServer(t, a)
 	defer httpServer.Close()
 	connection, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/api/agent/connect?device_id="+device.ID+"&token="+token, nil)
 	if err != nil {
