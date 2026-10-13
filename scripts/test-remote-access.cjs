@@ -38,8 +38,14 @@ test('a changed administrator login closes its terminal and file session',async(
  assert.equal(disposed,1);assert.equal(c.closed,true);assert.equal(f.eval('remoteContext'),null);assert.equal(f.deleted[0],'/api/admin/remote/old-session');
 });
 test('expired SSH sessions give a recovery message instead of a raw 404',async()=>{
- const f=fixture();f.context.openRemote('router','files');const c=f.eval('remoteContext');
+ const f=fixture();f.context.openRemote('router','files');const c=f.eval('remoteContext');c.session={id:'expired'};
  f.context.api=async()=>{const error=Error('404 page not found');error.status=404;throw error};
  await assert.rejects(f.context.remoteCall(c,'remote/expired/files','POST',{action:'list'}),/SSH 会话已结束/);
- assert.equal(f.timers.size,0);
+ assert.equal(f.timers.size,0);assert.equal(c.expired,true);assert.equal(f.node('#remoteDisconnect').textContent,'重新连接');
+ f.node('#remoteDisconnect').onclick();assert.equal(c.closed,true);assert.equal(f.eval('remoteContext').session,null);assert.equal(f.node('#remoteDisconnect').textContent,'断开连接');
+});
+test('offline device status ends remote UI and closes the terminal connection',()=>{
+ const f=fixture();f.context.openRemote('router','files');const c=f.eval('remoteContext');c.session={id:'offline'};let closed=0;c.socket={close(){closed++}};
+ f.context.state.devices[0].online=false;f.context.renderWorkbench();
+ assert.equal(c.expired,true);assert.equal(closed,1);assert.equal(f.node('#remoteSessionBadge').textContent,'会话已结束');
 });

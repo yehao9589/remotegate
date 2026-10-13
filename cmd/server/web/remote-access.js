@@ -5,6 +5,13 @@ function remoteDeviceTabs(d){
  return '<button type="button" class="feature-tab remote-feature" data-action="remoteSSH" data-id="'+esc(d.id)+'" '+(!d.online?'disabled':'')+'>'+uiIcon('terminal')+'SSH 终端</button><button type="button" class="feature-tab remote-feature" data-action="remoteFiles" data-id="'+esc(d.id)+'" '+(!d.online?'disabled':'')+'>'+uiIcon('folder')+'文件管理</button>';
 }
 function remoteCurrent(c){return remoteContext===c&&!c.closed&&c.transition===authTransition&&$('#remoteDialog')?.open}
+function remoteSessionExpired(c){
+ if(!remoteCurrent(c)||c.expired||!c.session)return;c.expired=true;c.socket?.close();
+ const badge=$('#remoteSessionBadge');if(badge){badge.textContent='会话已结束';badge.className='pill off'}
+ $('#remoteContents').querySelectorAll('button,input').forEach(input=>input.disabled=true);
+ $('#remoteFooter').textContent='SSH 会话已结束；重新连接后再操作';
+ $('#remoteDisconnect').textContent='重新连接';$('#remoteDisconnect').onclick=()=>openRemote(c.device.id,c.view);
+}
 function remoteBytes(n){if(!Number.isFinite(n))return '—';const units=['B','KB','MB','GB'];let i=0;while(n>=1024&&i<3){n/=1024;i++}return (i?n.toFixed(1):n)+' '+units[i]}
 function remoteJoin(dir,name){return (dir==='/'?'':dir)+'/'+name}
 function remoteParent(dir){return dir.replace(/\/+$/,'').replace(/\/[^/]*$/,'')||'/'}
@@ -23,7 +30,7 @@ function closeRemote(c){
  if(remoteContext===c){remoteContext=null;$('#remoteContents').replaceChildren();$('#remoteDisconnect').hidden=true}
 }
 window.addEventListener('pagehide',()=>closeRemote(remoteContext));
-renderWorkbench=()=>{if(remoteContext&&remoteContext.transition!==authTransition){closeRemote(remoteContext);$('#remoteDialog')?.close()}previousRemoteWorkbench()};
+renderWorkbench=()=>{if(remoteContext&&remoteContext.transition!==authTransition){closeRemote(remoteContext);$('#remoteDialog')?.close()}if(remoteContext?.session&&!state.devices.some(device=>device.id===remoteContext.device.id&&device.online))remoteSessionExpired(remoteContext);previousRemoteWorkbench()};
 action=async(a,id)=>{if(a==='remoteSSH'||a==='remoteFiles'){openRemote(id,a==='remoteFiles'?'files':'terminal');return}return previousRemoteAction(a,id)};
 function openRemote(id,view){
  const device=state.devices.find(d=>d.id===id);if(!device||!device.online){toast('设备离线，请等待恢复连接');return}
@@ -32,7 +39,7 @@ function openRemote(id,view){
  $('#remoteTitle').textContent=device.name+' · 远程工具';
  $('#remoteSubtitle').textContent='使用设备现有 SSH 账号，可连接路由器本机或内网 NAS。';
  $('#remoteFooter').textContent='SSH 账号权限决定可执行命令与可访问文件';
- $('#remoteDisconnect').hidden=true;
+ $('#remoteDisconnect').hidden=true;$('#remoteDisconnect').textContent='断开连接';$('#remoteDisconnect').onclick=()=>$('#remoteDialog').close();
  if(!device.canRemote){
   $('#remoteContents').innerHTML='<div class="remote-enable-guide">'+uiIcon('terminal')+'<h3>先启用远程管理</h3><ol><li>将路由器插件更新到支持 SSH / 文件管理的版本。</li><li>打开路由器“服务 → RemoteGate”，勾选“启用 SSH / 文件管理”并保存应用。</li><li>回到后台刷新设备，再使用 SSH 账号连接。</li></ol><p class="muted">文件管理需要目标 SSH 服务支持 SFTP；OpenWrt 可安装 openssh-sftp-server。公网后台和插件服务器地址应使用 HTTPS。</p><button type="button" id="remoteUpgrade" class="primary">检查插件更新</button></div>';
   $('#remoteUpgrade').onclick=()=>{$('#remoteDialog').close();action('updatePlugin',device.id).catch(e=>toast(e.message))};
@@ -50,7 +57,7 @@ function remoteTarget(){return {host:$('#remoteHost').value.trim(),port:Number($
 async function remoteCall(c,path,method='POST',body){
  const controller=new AbortController();c.controllers.add(controller);const timer=setTimeout(()=>controller.abort(),70000);
  try{return await api(path,method,body,{signal:controller.signal})}
- catch(e){if(e.name==='AbortError')throw Error(c.closed?'连接已关闭':'请求超时，请检查设备和 SSH 服务');if(e.status===404&&path.startsWith('remote/'))throw Error('SSH 会话已结束，请断开后重新连接。');throw e}
+ catch(e){if(e.name==='AbortError')throw Error(c.closed?'连接已关闭':'请求超时，请检查设备和 SSH 服务');if(e.status===404&&path.startsWith('remote/')){remoteSessionExpired(c);throw Error('SSH 会话已结束，请重新连接。')}throw e}
  finally{clearTimeout(timer);c.controllers.delete(controller)}
 }
 function remoteLoginBusy(c,active){c.busy=active;$('#remoteProbe').disabled=active;$('#remoteConnect').disabled=active;for(const input of $('#remoteLogin').querySelectorAll('input,select,textarea'))input.disabled=active}
@@ -76,7 +83,7 @@ async function connectRemote(c){
  finally{body.password='';body.privateKey='';body.passphrase=''}
 }
 function renderRemoteConnected(c){
- $('#remoteContents').innerHTML='<div class="remote-connected"><div class="remote-session-line"><span class="pill on">SSH 已连接</span><code>'+esc(c.session.target)+'</code><span class="muted">SSH 登录会话</span></div><div class="remote-view-tabs"><button type="button" data-remote-view="terminal">'+uiIcon('terminal')+'SSH 终端</button><button type="button" data-remote-view="files">'+uiIcon('folder')+'文件管理</button></div><p class="remote-error" id="remoteSessionError" role="alert"></p><section id="remoteTerminalPanel"><div id="remoteTerminal" class="remote-terminal" aria-label="SSH 交互终端"></div><div class="remote-terminal-tools"><button type="button" id="remoteInterrupt">Ctrl+C 中断</button><button type="button" id="remoteClear">清空显示</button><span>终端中的命令会在当前 SSH 账号下执行</span></div></section><section id="remoteFilesPanel" hidden><div class="remote-file-toolbar"><button type="button" id="remoteUp" aria-label="上一级目录">'+uiIcon('arrow')+'上一级</button><form id="remotePathForm"><input id="remotePath" aria-label="当前远程目录" placeholder="目录路径"><button type="submit">前往</button></form><button type="button" id="remoteFileRefresh">'+uiIcon('refresh')+'刷新</button></div><div class="remote-file-actions"><input id="remoteFileSearch" placeholder="搜索当前目录" aria-label="搜索当前目录"><button type="button" id="remoteMkdir">'+uiIcon('plus')+'新建文件夹</button><button type="button" id="remoteUpload" class="primary">'+uiIcon('upload')+'上传文件</button><input type="file" id="remoteUploadInput" hidden></div><p id="remoteFileStatus" class="muted" role="status"></p><div id="remoteTransfer" hidden></div><div class="tablewrap remote-file-table"><table><thead><tr><th>名称</th><th>大小</th><th>修改时间 / 权限</th><th>操作</th></tr></thead><tbody id="remoteFileRows"></tbody></table></div><div id="remoteDownloadLinks"></div></section></div>';
+ $('#remoteContents').innerHTML='<div class="remote-connected"><div class="remote-session-line"><span class="pill on" id="remoteSessionBadge">SSH 已连接</span><code>'+esc(c.session.target)+'</code><span class="muted">SSH 登录会话</span></div><div class="remote-view-tabs"><button type="button" data-remote-view="terminal">'+uiIcon('terminal')+'SSH 终端</button><button type="button" data-remote-view="files">'+uiIcon('folder')+'文件管理</button></div><p class="remote-error" id="remoteSessionError" role="alert"></p><section id="remoteTerminalPanel"><div id="remoteTerminal" class="remote-terminal" aria-label="SSH 交互终端"></div><div class="remote-terminal-tools"><button type="button" id="remoteInterrupt">Ctrl+C 中断</button><button type="button" id="remoteClear">清空显示</button><span>终端中的命令会在当前 SSH 账号下执行</span></div></section><section id="remoteFilesPanel" hidden><div class="remote-file-toolbar"><button type="button" id="remoteUp" aria-label="上一级目录">'+uiIcon('arrow')+'上一级</button><form id="remotePathForm"><input id="remotePath" aria-label="当前远程目录" placeholder="目录路径"><button type="submit">前往</button></form><button type="button" id="remoteFileRefresh">'+uiIcon('refresh')+'刷新</button></div><div class="remote-file-actions"><input id="remoteFileSearch" placeholder="搜索当前目录" aria-label="搜索当前目录"><button type="button" id="remoteMkdir">'+uiIcon('plus')+'新建文件夹</button><button type="button" id="remoteUpload" class="primary">'+uiIcon('upload')+'上传文件</button><input type="file" id="remoteUploadInput" hidden></div><p id="remoteFileStatus" class="muted" role="status"></p><div id="remoteTransfer" hidden></div><div class="tablewrap remote-file-table"><table><thead><tr><th>名称</th><th>大小</th><th>修改时间 / 权限</th><th>操作</th></tr></thead><tbody id="remoteFileRows"></tbody></table></div><div id="remoteDownloadLinks"></div></section></div>';
  $('#remoteDisconnect').hidden=false;$('#remoteFooter').textContent='当前会话凭据仅保存在内存；关闭后释放连接';
  $('#remoteContents').querySelectorAll('[data-remote-view]').forEach(button=>button.onclick=()=>selectRemoteView(c,button.dataset.remoteView));
  $('#remoteInterrupt').onclick=()=>remoteTerminalSend(c,{type:'input',data:'\x03'});
@@ -114,7 +121,7 @@ async function startRemoteTerminal(c){
  const socket=new WebSocket(address);c.socket=socket;socket.binaryType='arraybuffer';
  socket.onopen=()=>{if(!remoteCurrent(c)){socket.close();return}remoteTerminalSend(c,{type:'resize',cols:terminal.cols,rows:terminal.rows});terminal.focus()};
  socket.onmessage=event=>{if(remoteCurrent(c))terminal.write(typeof event.data==='string'?event.data:new Uint8Array(event.data))};
- socket.onclose=()=>{if(remoteCurrent(c)){terminal.write('\r\n\x1b[33m终端连接已关闭，请重新连接 SSH。\x1b[0m\r\n');$('#remoteSessionError').textContent='终端已关闭；需要新终端时请断开并重新连接。'}};
+ socket.onclose=()=>{if(remoteCurrent(c)&&!c.expired){terminal.write('\r\n\x1b[33m终端连接已关闭，请重新连接 SSH。\x1b[0m\r\n');$('#remoteSessionError').textContent='终端已关闭；需要新终端时请断开并重新连接。'}};
  socket.onerror=()=>{if(remoteCurrent(c))$('#remoteSessionError').textContent='终端连接失败，请检查 SSH 服务和反代 WebSocket 配置。'};
  terminal.onData(data=>remoteTerminalSend(c,{type:'input',data}));terminal.onResize(size=>remoteTerminalSend(c,{type:'resize',...size}));
  c.observer=new ResizeObserver(()=>{if(remoteCurrent(c)&&c.view==='terminal')fit.fit()});c.observer.observe($('#remoteTerminal'));
