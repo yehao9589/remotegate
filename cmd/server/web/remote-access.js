@@ -130,7 +130,7 @@ async function remoteFileCall(c,body){return remoteCall(c,'remote/'+encodeURICom
 async function refreshRemoteFiles(c,dir){
  if(!remoteCurrent(c)||c.upload||c.fileBusy)return;c.fileBusy=true;$('#remoteFileStatus').textContent='正在读取目录…';$('#remoteSessionError').textContent='';
  try{const result=await remoteFileCall(c,{action:'list',path:dir});if(!remoteCurrent(c))return;c.dir=result.path;c.home=result.home;c.entries=result.entries;$('#remotePath').value=c.dir;$('#remoteFileStatus').textContent=result.entries.length+' 个项目'+(result.truncated?' · 仅展示前 2000 项':'')+' · 单文件上传最多 4 GB';renderRemoteFileRows(c)}
- catch(e){if(remoteCurrent(c)){$('#remoteSessionError').textContent=e.message;$('#remoteFileStatus').textContent='目录读取失败，可刷新重试。'}}
+ catch(e){if(remoteCurrent(c)){$('#remoteSessionError').textContent=e.message;$('#remoteFileStatus').textContent=c.expired?'请重新连接 SSH 后读取目录。':'目录读取失败，可刷新重试。'}}
  finally{c.fileBusy=false}
 }
 function renderRemoteFileRows(c){
@@ -187,6 +187,6 @@ async function uploadRemoteFile(c,file){
   if(canceled||!remoteCurrent(c)){if(remoteCurrent(c))await remoteFileCall(c,{action:'upload-cancel',uploadId});return}
   await remoteFileCall(c,{action:'upload-finish',uploadId});uploadId='';
   if(remoteCurrent(c))$('#remoteUploadProgress').textContent='上传完成';
- }catch(e){if(remoteCurrent(c)){$('#remoteSessionError').textContent=e.message;$('#remoteUploadProgress').textContent='上传失败，目标文件未提交'}if(uploadId&&remoteCurrent(c))await remoteFileCall(c,{action:'upload-cancel',uploadId}).catch(()=>{})}
+ }catch(e){if(remoteCurrent(c)){$('#remoteSessionError').textContent=e.message;$('#remoteUploadProgress').textContent='上传结果未确认，请检查目标文件后重试'}if(uploadId&&remoteCurrent(c))await remoteFileCall(c,{action:'upload-cancel',uploadId}).catch(()=>{})}
  finally{c.upload=false;if(remoteCurrent(c)){if(canceled)$('#remoteUploadProgress').textContent='上传已取消';$('#remoteUploadCancel').disabled=true;await refreshRemoteFiles(c,c.dir)}}
 }

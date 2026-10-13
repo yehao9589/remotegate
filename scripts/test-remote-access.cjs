@@ -49,3 +49,14 @@ test('offline device status ends remote UI and closes the terminal connection',(
  f.context.state.devices[0].online=false;f.context.renderWorkbench();
  assert.equal(c.expired,true);assert.equal(closed,1);assert.equal(f.node('#remoteSessionBadge').textContent,'会话已结束');
 });
+test('a lost upload completion reply does not claim the target file was unchanged',async()=>{
+ const f=fixture();f.context.openRemote('router','files');const c=f.eval('remoteContext');c.session={id:'upload'};
+ f.context.remoteFileCall=async(c,body)=>{
+  if(body.action==='upload-start')return {uploadId:'pending'};
+  if(body.action==='upload-finish')throw Error('completion reply lost');
+  if(body.action==='list')return {path:'/',home:'/',entries:[]};
+  return {ok:true};
+ };
+ await f.context.uploadRemoteFile(c,{name:'empty.txt',size:0});
+ assert.match(f.node('#remoteUploadProgress').textContent,/结果未确认/);assert.equal(c.upload,false);
+});
