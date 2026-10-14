@@ -5,5 +5,5 @@
   "interface": "eth1",
   "mark": 51820,
   "allowPublicTargets": false,
-  "remoteAccess": false
+  "remoteAccess": true
 }

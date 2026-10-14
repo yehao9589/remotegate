@@ -41,7 +41,7 @@ function openRemote(id,view){
  $('#remoteFooter').textContent='SSH 账号权限决定可执行命令与可访问文件';
  $('#remoteDisconnect').hidden=true;$('#remoteDisconnect').textContent='断开连接';$('#remoteDisconnect').onclick=()=>$('#remoteDialog').close();
  if(!device.canRemote){
-  $('#remoteContents').innerHTML='<div class="remote-enable-guide">'+uiIcon('terminal')+'<h3>先启用远程管理</h3><ol><li>将路由器插件更新到支持 SSH / 文件管理的版本。</li><li>打开路由器“服务 → RemoteGate”，勾选“启用 SSH / 文件管理”并保存应用。</li><li>回到后台刷新设备，再使用 SSH 账号连接。</li></ol><p class="muted">文件管理需要目标 SSH 服务支持 SFTP；OpenWrt 可安装 openssh-sftp-server。公网后台和插件服务器地址应使用 HTTPS。</p><button type="button" id="remoteUpgrade" class="primary">检查插件更新</button></div>';
+  $('#remoteContents').innerHTML='<div class="remote-enable-guide">'+uiIcon('terminal')+'<h3>先启用远程管理</h3><ol><li>将路由器插件更新到支持 SSH / 文件管理的版本。</li><li>新版默认开启 SSH / 文件管理；若曾关闭，请在路由器“服务 → RemoteGate”重新启用并保存应用。</li><li>回到后台刷新设备，再使用 SSH 账号连接。</li></ol><p class="muted">文件管理需要目标 SSH 服务支持 SFTP；OpenWrt 可安装 openssh-sftp-server。公网后台和插件服务器地址应使用 HTTPS。</p><button type="button" id="remoteUpgrade" class="primary">检查插件更新</button></div>';
   $('#remoteUpgrade').onclick=()=>{$('#remoteDialog').close();action('updatePlugin',device.id).catch(e=>toast(e.message))};
  }else renderRemoteLogin(c);
  $('#remoteDialog').showModal();

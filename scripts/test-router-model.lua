@@ -12,7 +12,7 @@ local function model(devices, saved, fail)
   return {getifaddrs=function() if fail then error("interface read failed") end; return devices end}
  end}, {__index=_G})
  local chunk=assert(loadfile(model_path));setfenv(chunk,env);chunk()
- assert(options.remote_access.kind=="Flag" and options.remote_access.default=="0" and options.remote_access.rmempty==false)
+ assert(options.remote_access.kind=="Flag" and options.remote_access.default=="1" and options.remote_access.rmempty==false)
  return options.interface
 end
 local function contains(text, expected) assert(text and text:find(expected,1,true), tostring(text).." missing "..expected) end

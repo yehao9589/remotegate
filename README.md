@@ -22,7 +22,7 @@ nas.example.com    ─┘                                                   └�
 - OpenWrt `procd` 开机守护和 OpenClash/防火墙重载触发器
 - 首次安装通过网页创建管理员，密码以 bcrypt 哈希保存，登录使用 HttpOnly 会话 Cookie
 - 公网 HTTPS 检测：证书在宝塔 / 反向代理申请、部署与续期，后台分别验证主域名和映射实际返回的证书；原有内置 HTTPS 服务保留兼容
-- 网页 SSH 终端与 SFTP 文件管理：使用设备或内网 NAS 现有 SSH 账号，通过设备隧道连接；插件中启用后可使用，首次连接核对主机指纹，凭据不保存
+- 网页 SSH 终端与 SFTP 文件管理：使用设备或内网 NAS 现有 SSH 账号，通过设备隧道连接；插件默认启用，首次连接核对主机指纹，凭据不保存
 - 文件浏览、搜索、上传下载、新建文件夹、重命名与非递归删除；文件上传分片处理，下载为流式传输
 
 HTTP 域名映射暂不支持目标站点的 WebSocket 或超过 16 MiB 的响应体，RDP/VNC 和多服务端高可用也尚未支持。SFTP 文件传输使用独立的流式通道。
@@ -77,7 +77,7 @@ DNS 中可以将 `*.remote.example.com` 解析到服务器公网 IP。将 `CONSO
 
 v0.1.8 起支持从路由器页面或管理后台“更新插件”在线升级。安装包随服务端镜像提供，确认后下载校验、保留设备配置并重连；旧版首次升级需执行一次后台生成的保留配置命令。详见[插件在线更新](docs/deployment/router.md#插件在线更新)。
 
-SSH 与文件管理需要支持此功能的插件，在路由器页面勾选「启用 SSH / 文件管理」并保存应用。文件管理还要求目标 SSH 服务提供 SFTP，OpenWrt 可安装 `openssh-sftp-server`。详见[连接与使用](docs/deployment/remote-access.md)。
+SSH 与文件管理需要支持此功能的插件，默认开启；若此前手动关闭，可在路由器页面重新启用并保存应用。文件管理还要求目标 SSH 服务提供 SFTP，OpenWrt 可安装 `openssh-sftp-server`。详见[连接与使用](docs/deployment/remote-access.md)。
 
 界面源文件位于 `deploy/openwrt/luci/`，与安装包使用同一份文件。测试虚拟机的后台为 `http://localhost:18080/cgi-bin/luci/admin/services/remotegate`，虚拟机连接宿主机服务器时填写 `http://10.0.2.2:18088`。
 

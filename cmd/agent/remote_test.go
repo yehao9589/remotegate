@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"github.com/local/remotegate/internal/protocol"
@@ -12,7 +13,7 @@ import (
 	"time"
 )
 
-func TestRemoteAccessRequiresOptInAndSafeTransport(t *testing.T) {
+func TestRemoteAccessHonorsDisableAndRequiresSafeTransport(t *testing.T) {
 	for _, test := range []struct {
 		url      string
 		enabled  bool
@@ -29,6 +30,36 @@ func TestRemoteAccessRequiresOptInAndSafeTransport(t *testing.T) {
 	} {
 		if got := remoteTransportAllowed(Config{ServerURL: test.url, RemoteAccess: test.enabled, InsecureTLS: test.insecure}); got != test.want {
 			t.Fatal(test, got)
+		}
+	}
+}
+
+func TestRemoteAccessDefaultAndExplicitDisableSurviveConfigRoundTrip(t *testing.T) {
+	for _, test := range []struct {
+		raw  string
+		want bool
+	}{
+		{`{"serverUrl":"https://console.example.com"}`, true},
+		{`{"serverUrl":"https://console.example.com","remoteAccess":false}`, false},
+		{`{"serverUrl":"https://console.example.com","remoteAccess":true}`, true},
+	} {
+		var cfg Config
+		if err := json.Unmarshal([]byte(test.raw), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		if remoteTransportAllowed(cfg) != test.want {
+			t.Fatal("unexpected default", cfg)
+		}
+		encoded, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored Config
+		if err = json.Unmarshal(encoded, &restored); err != nil {
+			t.Fatal(err)
+		}
+		if restored.RemoteAccess != test.want {
+			t.Fatal("saved setting changed after reload")
 		}
 	}
 }

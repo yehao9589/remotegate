@@ -34,7 +34,7 @@ type Config struct {
 	Mark               int    `json:"mark,omitempty"`
 	InsecureTLS        bool   `json:"insecureTls,omitempty"`
 	AllowPublicTargets bool   `json:"allowPublicTargets,omitempty"`
-	RemoteAccess       bool   `json:"remoteAccess,omitempty"`
+	RemoteAccess       bool   `json:"remoteAccess"`
 }
 
 func main() {
