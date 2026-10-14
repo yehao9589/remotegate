@@ -61,6 +61,7 @@ jobs:
           node --test scripts/test-plugin-update.cjs
           node --test scripts/test-device-center.cjs
           node --test scripts/test-remote-access.cjs
+          node --test scripts/test-package-center.cjs
 
   container-test:
     needs: checks

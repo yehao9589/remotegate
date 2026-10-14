@@ -114,6 +114,7 @@ func run(ctx context.Context, cfg Config) error {
 	}
 	if routerUpdateSupported() {
 		q.Set("updater", "1")
+		q.Set("update_tools", "1")
 	}
 	if installed, err := os.ReadFile("/usr/share/remotegate/version"); err == nil {
 		value := strings.TrimSpace(string(installed))
@@ -190,7 +191,7 @@ func run(ctx context.Context, cfg Config) error {
 		if bridge.Handle(msg) {
 			continue
 		}
-		if msg.Type != "request" && msg.Type != "update-start" && msg.Type != "update-status" {
+		if msg.Type != "request" && msg.Type != "update-start" && msg.Type != "update-status" && msg.Type != "update-preflight" {
 			continue
 		}
 		size := queuedMessageBytes(msg)

@@ -173,7 +173,7 @@ __PAYLOAD__
 	if err := os.WriteFile(output, out, 0755); err != nil {
 		panic(err)
 	}
-	manifest := map[string]any{"size": len(out), "sha256": fmt.Sprintf("%x", sha256.Sum256(out)), "packageVersion": buildinfo.PackageVersion(), "agentVersion": buildinfo.Version(), "release": buildinfo.Current(), "packageName": "luci-app-remotegate", "architectures": []string{"x86_64", "ARM64", "ARMv7"}, "contents": []string{"RemoteGate 客户端", "新版 LuCI 路由器面板", "路由器与后台在线更新", "状态刷新与接入引导", "SSH / SFTP 管理通道（默认开启）", "版本上报", "开机启动服务", "连接配置生成器", "直连路由保护脚本"}}
+	manifest := map[string]any{"size": len(out), "sha256": fmt.Sprintf("%x", sha256.Sum256(out)), "packageVersion": buildinfo.PackageVersion(), "agentVersion": buildinfo.Version(), "release": buildinfo.Current(), "packageName": "luci-app-remotegate", "architectures": []string{"x86_64", "ARM64", "ARMv7"}, "contents": []string{"RemoteGate 客户端", "新版 LuCI 路由器面板", "路由器与后台在线更新", "按架构精简下载与安装检查", "兼容版本回退工具", "状态刷新与接入引导", "SSH / SFTP 管理通道（默认开启）", "版本上报", "开机启动服务", "连接配置生成器", "直连路由保护脚本"}}
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		panic(err)

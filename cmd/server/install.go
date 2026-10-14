@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/local/remotegate/internal/buildinfo"
+	"github.com/local/remotegate/internal/update"
 	"mime"
 	"net/http"
 	"net/url"
@@ -21,6 +22,9 @@ type installTicket struct {
 	Owner                   *app
 	DeviceID, Token, Server string
 	Expires                 time.Time
+	Profile                 installProfile
+	OperationID, ReportKey  string
+	Packages                map[string]packageArtifact
 }
 
 var installs = struct {
@@ -38,17 +42,32 @@ func (a *app) createInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		DeviceID string `json:"deviceId"`
-		Token    string `json:"token"`
-		Server   string `json:"server"`
+		DeviceID  string `json:"deviceId"`
+		Token     string `json:"token"`
+		Server    string `json:"server"`
+		ProfileID string `json:"profileId"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&in) != nil {
 		http.Error(w, "invalid request", 400)
 		return
 	}
-	if _, ok := a.store.Authenticate(in.DeviceID, in.Token); !ok {
+	device, ok := a.store.Authenticate(in.DeviceID, in.Token)
+	if !ok {
 		http.Error(w, "invalid device credentials", 400)
 		return
+	}
+	p, err := a.packageCenterStore()
+	if err != nil {
+		http.Error(w, "安装配置无法读取", 503)
+		return
+	}
+	profile, exists := p.profile(in.ProfileID)
+	if !exists {
+		http.Error(w, "安装模板不存在", 400)
+		return
+	}
+	if in.Server == "" {
+		in.Server = profile.Server
 	}
 	u, e := url.Parse(in.Server)
 	if e != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
@@ -65,7 +84,40 @@ func (a *app) createInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := hex.EncodeToString(b)
-	t := installTicket{a, in.DeviceID, in.Token, strings.TrimRight(in.Server, "/"), time.Now().Add(15 * time.Minute)}
+	name := device.Name
+	for _, d := range a.store.Snapshot().Devices {
+		if d.ID == in.DeviceID {
+			name = d.Name
+		}
+	}
+	targetVersion := buildinfo.PackageVersion()
+	if m, err := a.loadUpdatePackage(); err == nil {
+		targetVersion = m.PackageVersion
+	}
+	operationID, err := p.record(in.DeviceID, name, "install", update.Status{Phase: "ready", ToVersion: targetVersion, Message: "安装命令已生成 · 模板：" + profile.Name})
+	if err != nil {
+		http.Error(w, "安装记录保存失败", 500)
+		return
+	}
+	reportKey := packageSecret()
+	if reportKey == "" {
+		http.Error(w, "安装授权生成失败", 500)
+		return
+	}
+	t := installTicket{Owner: a, DeviceID: in.DeviceID, Token: in.Token, Server: strings.TrimRight(in.Server, "/"), Expires: time.Now().Add(15 * time.Minute), Profile: profile, OperationID: operationID, ReportKey: reportKey, Packages: make(map[string]packageArtifact)}
+	for _, arch := range []string{"amd64", "arm64", "armv7"} {
+		if item, err := a.packageArtifact(p, "", arch); err == nil {
+			t.Packages[arch] = item
+		}
+	}
+	p.mu.Lock()
+	for key, grant := range p.installs {
+		if time.Now().After(grant.Expires) {
+			delete(p.installs, key)
+		}
+	}
+	p.installs[reportKey] = installProgressGrant{operationID, in.DeviceID, time.Now().Add(30 * time.Minute)}
+	p.mu.Unlock()
 	installs.Lock()
 	for k, v := range installs.items {
 		if time.Now().After(v.Expires) {
@@ -76,11 +128,43 @@ func (a *app) createInstall(w http.ResponseWriter, r *http.Request) {
 	installs.Unlock()
 	link := t.Server + "/install/" + key
 	command := "umask 077; f=$(mktemp /tmp/remotegate-setup.XXXXXX) && { curl -fSL " + shellQuote(link) + " -o \"$f\" && sh \"$f\"; }; rm -f \"$f\""
-	writeJSON(w, map[string]any{"command": command, "expiresAt": t.Expires})
+	writeJSON(w, map[string]any{"command": command, "expiresAt": t.Expires, "operationId": operationID})
 }
 func (a *app) installerDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" && r.Method != "HEAD" {
 		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if r.URL.Query().Get("arch") != "" || r.URL.Query().Get("version") != "" || r.URL.Query().Get("artifact") != "" {
+		p, err := a.packageCenterStore()
+		if err != nil {
+			http.Error(w, "安装包不可用", 503)
+			return
+		}
+		var item packageArtifact
+		if key := r.URL.Query().Get("artifact"); key != "" {
+			p.mu.Lock()
+			item = p.artifacts[key]
+			p.mu.Unlock()
+			if item.Path == "" {
+				http.NotFound(w, r)
+				return
+			}
+			err = verifyArtifact(item)
+		} else {
+			item, err = a.packageArtifact(p, r.URL.Query().Get("version"), r.URL.Query().Get("arch"))
+		}
+		if err != nil {
+			http.Error(w, err.Error(), 503)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		kind := item.Arch
+		if kind == "" {
+			kind = "istore"
+		}
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": "RemoteGate-" + item.Manifest.PackageVersion + "-" + kind + ".run"}))
+		http.ServeFile(w, r, item.Path)
 		return
 	}
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(installerPath())}))
@@ -116,29 +200,5 @@ func (a *app) installScript(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	fmt.Fprintf(w, `#!/bin/sh
-set -eu
-umask 077
-[ "$(id -u)" = 0 ] || { echo 'Please run as root'; exit 1; }
-command -v opkg >/dev/null || { echo 'Requires iStoreOS/OpenWrt with opkg'; exit 1; }
-command -v sha256sum >/dev/null || { echo 'sha256sum is required'; exit 1; }
-dir=$(mktemp -d /tmp/remotegate-setup.XXXXXX)
-trap 'rm -f "$dir/package.run"; rmdir "$dir"' EXIT
-echo '[1/3] Downloading RemoteGate...'
-curl -fSL %s -o "$dir/package.run"
-echo '%x  '"$dir/package.run" | sha256sum -c -
-echo '[2/3] Installing plugin...'
-sh "$dir/package.run"
-echo '[3/3] Configuring connection...'
-uci set remotegate.main=remotegate
-uci set remotegate.main.server=%s
-uci set remotegate.main.device_id=%s
-uci set remotegate.main.token=%s
-uci set remotegate.main.enabled=1
-uci commit remotegate
-chmod 600 /etc/config/remotegate
-/etc/init.d/remotegate enable
-/etc/init.d/remotegate restart
-echo 'Installed. Check device online status in the console.'
-`, shellQuote(t.Server+"/downloads/remotegate.run"), sum, shellQuote(t.Server), shellQuote(t.DeviceID), shellQuote(t.Token))
+	_, _ = w.Write([]byte(installScriptText(t, fmt.Sprintf("%x", sum), len(data))))
 }

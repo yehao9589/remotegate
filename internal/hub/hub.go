@@ -24,6 +24,7 @@ type Client struct {
 	Since                   time.Time
 	CanUpdate               bool
 	CanRemote               bool
+	CanManageUpdate         bool
 	conn                    *websocket.Conn
 	writeMu                 sync.Mutex
 	pending                 sync.Map
@@ -72,6 +73,7 @@ func (h *Hub) Attach(deviceID, name, version string, conn *websocket.Conn, updat
 	c := &Client{DeviceID: deviceID, Name: name, Version: version, Since: time.Now().UTC(), conn: conn}
 	c.CanUpdate = len(updater) > 0 && updater[0]
 	c.CanRemote = len(updater) > 1 && updater[1]
+	c.CanManageUpdate = len(updater) > 2 && updater[2]
 	c.lastActiveAt = c.Since
 	h.mu.Lock()
 	old := h.clients[deviceID]
@@ -284,6 +286,7 @@ type Status struct {
 	Since                   time.Time
 	CanUpdate               bool
 	CanRemote               bool
+	CanManageUpdate         bool
 	LastActiveAt, LatencyAt time.Time
 	LatencyMs               *int64
 }
@@ -294,7 +297,7 @@ func (h *Hub) Statuses() map[string]Status {
 	out := make(map[string]Status, len(h.clients))
 	for id, c := range h.clients {
 		c.metricsMu.Lock()
-		status := Status{DeviceID: c.DeviceID, Name: c.Name, Version: c.Version, Since: c.Since, CanUpdate: c.CanUpdate, CanRemote: c.CanRemote, LastActiveAt: c.lastActiveAt, LatencyAt: c.latencyAt}
+		status := Status{DeviceID: c.DeviceID, Name: c.Name, Version: c.Version, Since: c.Since, CanUpdate: c.CanUpdate, CanRemote: c.CanRemote, CanManageUpdate: c.CanManageUpdate, LastActiveAt: c.lastActiveAt, LatencyAt: c.latencyAt}
 		if !c.latencyAt.IsZero() {
 			ms := c.latency.Milliseconds()
 			status.LatencyMs = &ms

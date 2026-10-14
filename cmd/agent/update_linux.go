@@ -11,6 +11,14 @@ import (
 
 func detachUpdateProcess(command *exec.Cmd) { command.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 
+func availableStorage(path string) (uint64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, err
+	}
+	return uint64(stat.Bavail) * uint64(stat.Bsize), nil
+}
+
 func prepareUpdateInstaller(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.WaitDelay = 5 * time.Second

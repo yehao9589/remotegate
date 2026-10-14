@@ -131,7 +131,15 @@ func updateRequest(ctx context.Context, cfg Config, path string) (*http.Response
 	if err != nil {
 		return nil, err
 	}
-	u.Path = path
+	resource, err := url.Parse(path)
+	if err != nil || resource.IsAbs() || resource.Host != "" || !strings.HasPrefix(resource.Path, "/api/agent/update") {
+		return nil, errors.New("更新资源路径无效")
+	}
+	u.Path, u.RawQuery = resource.Path, resource.RawQuery
+	query := u.Query()
+	query.Set("arch", runtime.GOARCH)
+	query.Set("tools", "1")
+	u.RawQuery = query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
@@ -145,17 +153,30 @@ func updateRequest(ctx context.Context, cfg Config, path string) (*http.Response
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		resp.Body.Close()
-		return nil, fmt.Errorf("服务端更新资源不可用（HTTP %d）", resp.StatusCode)
+		return nil, fmt.Errorf("服务端更新资源不可用（HTTP %d）：%s", resp.StatusCode, strings.TrimSpace(string(message)))
 	}
 	return resp, nil
 }
 
 func fetchUpdateManifest(ctx context.Context, cfg Config) (update.Manifest, error) {
+	return fetchUpdateManifestTarget(ctx, cfg, update.Manifest{})
+}
+
+func updateResource(resource string, m update.Manifest) string {
+	path := "/api/agent/update" + resource
+	if m.Artifact != "" && m.Grant != "" {
+		path += "?" + url.Values{"artifact": {m.Artifact}, "grant": {m.Grant}}.Encode()
+	}
+	return path
+}
+
+func fetchUpdateManifestTarget(ctx context.Context, cfg Config, expected update.Manifest) (update.Manifest, error) {
 	var manifest update.Manifest
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	resp, err := updateRequest(ctx, cfg, "/api/agent/update")
+	resp, err := updateRequest(ctx, cfg, updateResource("", expected))
 	if err != nil {
 		return manifest, err
 	}
@@ -217,14 +238,25 @@ func startAgentUpdate(ctx context.Context, cfg Config, expected update.Manifest)
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		return updateView{}, errors.New("在线更新需要在 OpenWrt 路由器以 root 运行")
 	}
-	view, err := checkAgentUpdate(ctx, cfg, routerUpdatePaths)
+	view := updateView{InstalledVersion: installedPackage(routerUpdatePaths), State: readUpdateState(routerUpdatePaths)}
+	manifest, err := fetchUpdateManifestTarget(ctx, cfg, expected)
+	view.Manifest = &manifest
 	if err != nil {
 		return view, err
 	}
-	if expected.PackageVersion != view.Manifest.PackageVersion || expected.SHA256 != view.Manifest.SHA256 {
+	comparison, err := update.Compare(manifest.PackageVersion, view.InstalledVersion)
+	if err != nil {
+		return view, err
+	}
+	view.Available = comparison > 0
+	if expected.PackageVersion != manifest.PackageVersion || expected.SHA256 != manifest.SHA256 || expected.Rollback != manifest.Rollback {
 		return view, errors.New("服务端安装包已变化，请重新检查更新")
 	}
-	if !view.Available {
+	if manifest.Rollback {
+		if comparison >= 0 || strings.Split(view.InstalledVersion, "-")[0] != manifest.AgentVersion {
+			return view, errors.New("回退目标必须是客户端版本相同的较早安装包")
+		}
+	} else if !view.Available {
 		return view, errors.New("当前插件已是此服务器提供的版本，或版本更高")
 	}
 	if _, err = exec.LookPath("opkg"); err != nil {
@@ -232,6 +264,12 @@ func startAgentUpdate(ctx context.Context, cfg Config, expected update.Manifest)
 	}
 	if _, err = os.Stat(routerUpdatePaths.Configuration); err != nil {
 		return view, errors.New("未找到现有插件配置，请先安装 LuCI 插件")
+	}
+	for _, path := range []string{os.TempDir(), filepath.Dir(routerUpdatePaths.Configuration)} {
+		free, err := availableStorage(path)
+		if err != nil || free < uint64(manifest.Size)*4+(16<<20) {
+			return view, errors.New("路由器可用空间不足，请先清理空间")
+		}
 	}
 	if err = acquireUpdate(routerUpdatePaths); err != nil {
 		return view, err
@@ -313,7 +351,7 @@ func startAgentUpdate(ctx context.Context, cfg Config, expected update.Manifest)
 }
 
 func downloadUpdate(ctx context.Context, cfg Config, manifest update.Manifest, destination string) error {
-	resp, err := updateRequest(ctx, cfg, "/api/agent/update/package")
+	resp, err := updateRequest(ctx, cfg, updateResource("/package", manifest))
 	if err != nil {
 		return err
 	}
@@ -355,7 +393,11 @@ func performUpdate(ctx context.Context, plan updatePlan, dir string, paths updat
 	if err != nil {
 		return err
 	}
-	if comparison <= 0 {
+	if plan.Manifest.Rollback {
+		if comparison >= 0 || strings.Split(installedPackage(paths), "-")[0] != plan.Manifest.AgentVersion {
+			return errors.New("回退目标与当前客户端不兼容")
+		}
+	} else if comparison <= 0 {
 		return errors.New("更新目标不是更高版本，已停止更新")
 	}
 	configuration, err := os.ReadFile(paths.Configuration)
@@ -419,6 +461,17 @@ func runUpdateWorker(dir string) error {
 	wasEnabled := exec.Command(routerUpdatePaths.Service, "enabled").Run() == nil
 	return performUpdate(ctx, plan, dir, routerUpdatePaths, func(ctx context.Context, path string) error {
 		command := exec.CommandContext(ctx, "/bin/sh", path, "--update")
+		if plan.Manifest.Rollback {
+			_, payload, err := update.PackagePayload(path, runtime.GOARCH)
+			if err != nil {
+				return err
+			}
+			ipk := filepath.Join(dir, "rollback.ipk")
+			if err = os.WriteFile(ipk, payload, 0600); err != nil {
+				return err
+			}
+			command = exec.CommandContext(ctx, "opkg", "--force-downgrade", "--force-reinstall", "install", ipk)
+		}
 		prepareUpdateInstaller(command)
 		logFile, err := os.OpenFile(filepath.Join(routerUpdatePaths.StateDir, "install.log"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 		if err != nil {
@@ -441,6 +494,10 @@ func runUpdateWorker(dir string) error {
 
 func updateControl(ctx context.Context, cfg Config, msg protocol.Message) protocol.Message {
 	response := protocol.Message{Type: "response", ID: msg.ID, Status: 200}
+	if msg.Type == "update-preflight" {
+		response.Body, _ = json.Marshal(agentPreflight(ctx, cfg, routerUpdatePaths))
+		return response
+	}
 	view := updateView{InstalledVersion: installedPackage(routerUpdatePaths), State: readUpdateState(routerUpdatePaths)}
 	if msg.Type == "update-start" {
 		var expected update.Manifest

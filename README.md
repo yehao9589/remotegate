@@ -1,6 +1,6 @@
 # RemoteGate
 
-**[部署方式导航](DEPLOYMENT.md)** · [宝塔部署](docs/deployment/baota.md) · [泛域名证书与检测](docs/deployment/external-https.md) · [SSH 与文件管理](docs/deployment/remote-access.md) · [版本下载](https://github.com/yehao9589/remotegate/releases)
+**[部署方式导航](DEPLOYMENT.md)** · [宝塔部署](docs/deployment/baota.md) · [泛域名证书与检测](docs/deployment/external-https.md) · [SSH 与文件管理](docs/deployment/remote-access.md) · [安装与更新中心](docs/deployment/install-center.md) · [版本下载](https://github.com/yehao9589/remotegate/releases)
 
 RemoteGate 是一个面向 iStoreOS/OpenWrt 的自建远程访问 MVP。路由器上的 Agent 主动连接国内服务器；浏览器访问不同域名时，服务端把 HTTP 请求通过这条长连接转给对应设备和内网地址。
 

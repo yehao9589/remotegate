@@ -177,6 +177,12 @@ func TestRemoteUpdateUsesFrozenPackageAndReportsReconnection(t *testing.T) {
 	if view.State.Phase != "succeeded" || view.Available {
 		t.Fatal(view)
 	}
+	a.updateMu.Lock()
+	staleActive := a.deviceUpdates[device.ID].State.Active()
+	a.updateMu.Unlock()
+	if staleActive {
+		t.Fatal("confirmed reconnect left the updater slot active")
+	}
 	go func() {
 		var msg protocol.Message
 		if reconnected.ReadJSON(&msg) != nil {

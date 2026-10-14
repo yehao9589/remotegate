@@ -36,7 +36,7 @@ const consoleIconPaths={
 };
 function uiIcon(name){return `<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${consoleIconPaths[name]||consoleIconPaths.globe}</svg>`}
 function consoleBrand(){return `<span class="brand-symbol" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M9 25V9a4 4 0 0 1 4-4h10v20" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M5 25h22M14 12h13m-4-4 4 4-4 4M14 18h6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>RemoteGate</span>`}
-const consolePageVisuals={overview:{icon:'monitor',caption:'DEVICE WORKSPACE'},domains:{icon:'globe',caption:'DOMAINS & CERTIFICATES'},packages:{icon:'package',caption:'PACKAGES & VERSIONS'},deploy:{icon:'network',caption:'CONNECT & DEPLOY'},security:{icon:'shield',caption:'ACCOUNT & SECURITY'}};
+const consolePageVisuals={overview:{icon:'monitor',caption:'DEVICE WORKSPACE'},domains:{icon:'globe',caption:'DOMAINS & CERTIFICATES'},packages:{icon:'package',caption:'INSTALL & UPDATE'},deploy:{icon:'network',caption:'CONNECT & DEPLOY'},security:{icon:'shield',caption:'ACCOUNT & SECURITY'}};
 function updateConsoleVisuals(){
  const visual=consolePageVisuals[page]||consolePageVisuals.overview;
  $('#pageEmblem').innerHTML=uiIcon(visual.icon);
