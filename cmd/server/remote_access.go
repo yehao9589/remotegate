@@ -45,8 +45,9 @@ type remoteSession struct {
 	once               sync.Once
 }
 type remoteConnectInput struct {
-	Action, Host, Username, Password, PrivateKey, Passphrase, Fingerprint string
-	Port                                                                  int
+	Action, Host, Username, PrivateKey, Passphrase, Fingerprint string
+	Password                                                    *string
+	Port                                                        int
 }
 
 func (a *app) remoteManager() *remoteManager {
@@ -182,8 +183,9 @@ func (a *app) deviceRemoteConnect(w http.ResponseWriter, r *http.Request, device
 			return
 		}
 		auth = ssh.PublicKeys(signer)
-	} else if input.Password != "" && len(input.Password) <= 4096 {
-		auth = ssh.Password(input.Password)
+	} else if input.Password != nil && len(*input.Password) <= 4096 {
+		// An explicitly blank password still uses the target's SSH authentication policy.
+		auth = ssh.Password(*input.Password)
 	} else {
 		conn.Close()
 		http.Error(w, "请输入 SSH 密码或私钥", 400)

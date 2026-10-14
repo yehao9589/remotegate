@@ -37,6 +37,15 @@ test('a changed administrator login closes its terminal and file session',async(
  f.context.authTransition++;f.context.renderWorkbench();
  assert.equal(disposed,1);assert.equal(c.closed,true);assert.equal(f.eval('remoteContext'),null);assert.equal(f.deleted[0],'/api/admin/remote/old-session');
 });
+test('password authentication explicitly sends a blank password',async()=>{
+ const f=fixture();f.context.openRemote('router','files');const c=f.eval('remoteContext');
+ assert.match(f.node('#remoteContents').innerHTML,/<input id="remotePassword"[^>]*>/);
+ assert.doesNotMatch(f.node('#remoteContents').innerHTML.match(/<input id="remotePassword"[^>]*>/)[0],/required/);
+ c.fp={host:'127.0.0.1',port:22,fingerprint:'SHA256:fixture'};f.node('#remoteTrust').checked=true;
+ f.node('#remotePassword').value='';await f.context.connectRemote(c);
+ assert.equal(Object.hasOwn(f.requests[0].body,'password'),true);assert.equal(f.requests[0].body.password,'');
+ assert.equal(c.session.id,'session-one');f.context.closeRemote(c);
+});
 test('expired SSH sessions give a recovery message instead of a raw 404',async()=>{
  const f=fixture();f.context.openRemote('router','files');const c=f.eval('remoteContext');c.session={id:'expired'};
  f.context.api=async()=>{const error=Error('404 page not found');error.status=404;throw error};

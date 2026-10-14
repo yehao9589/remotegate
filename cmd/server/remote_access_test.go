@@ -39,6 +39,11 @@ type remoteFixture struct {
 
 func newRemoteFixture(t *testing.T) *remoteFixture {
 	t.Helper()
+	return newRemoteFixtureWithSSH(t, testssh.New)
+}
+
+func newRemoteFixtureWithSSH(t *testing.T, createSSH func() (*testssh.Server, error)) *remoteFixture {
+	t.Helper()
 	a := freshAuthApp(t)
 	login := authCall(a, "/api/auth/setup", setupBody, "", nil)
 	requireStatus(t, login, 200)
@@ -47,7 +52,7 @@ func newRemoteFixture(t *testing.T) *remoteFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sshServer, err := testssh.New()
+	sshServer, err := createSSH()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,6 +135,48 @@ func (f *remoteFixture) connect(t *testing.T) map[string]any {
 		t.Fatal(err)
 	}
 	return session
+}
+
+func TestRemoteSSHEmptyPasswordAuthentication(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		createSSH   func() (*testssh.Server, error)
+		credentials map[string]any
+		wrongKey    bool
+		status      int
+	}{
+		{"empty-password-accepted", func() (*testssh.Server, error) { return testssh.NewWithPassword("") }, map[string]any{"password": ""}, false, 200},
+		{"none-auth-accepted", testssh.NewWithoutAuth, map[string]any{"password": ""}, false, 200},
+		{"password-required", testssh.New, map[string]any{"password": ""}, false, 502},
+		{"missing-password", testssh.NewWithoutAuth, nil, false, 400},
+		{"null-password", testssh.NewWithoutAuth, map[string]any{"password": nil}, false, 400},
+		{"empty-private-key", testssh.NewWithoutAuth, map[string]any{"privateKey": ""}, false, 400},
+		{"oversized-password", testssh.NewWithoutAuth, map[string]any{"password": strings.Repeat("x", 4097)}, false, 400},
+		{"changed-fingerprint", testssh.NewWithoutAuth, map[string]any{"password": ""}, true, 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRemoteFixtureWithSSH(t, tc.createSSH)
+			input := map[string]any{"action": "connect", "host": f.host, "port": f.port, "username": testssh.Username, "fingerprint": f.ssh.Fingerprint}
+			for key, value := range tc.credentials {
+				input[key] = value
+			}
+			if tc.wrongKey {
+				input["fingerprint"] = "SHA256:untrusted"
+			}
+			connected := remoteTestCall(f.app, f.cookie, "/api/admin/devices/"+f.device+"/remote", input)
+			requireStatus(t, connected, tc.status)
+			if tc.wrongKey && !strings.Contains(connected.Body.String(), "指纹") {
+				t.Fatal("fingerprint failure not reported", connected.Body.String())
+			}
+			if tc.status == 200 {
+				var session map[string]any
+				if err := json.Unmarshal(connected.Body.Bytes(), &session); err != nil {
+					t.Fatal(err)
+				}
+				requireStatus(t, remoteTestCall(f.app, f.cookie, "/api/admin/remote/"+session["id"].(string)+"/files", map[string]string{"action": "list"}), 200)
+			}
+		})
+	}
 }
 
 func TestRemoteSSHHostPinningSessionOwnershipAndTerminal(t *testing.T) {

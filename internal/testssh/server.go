@@ -32,6 +32,28 @@ type Server struct {
 }
 
 func New() (*Server, error) {
+	return NewWithPassword(Password)
+}
+
+func NewWithPassword(password string) (*Server, error) {
+	return newServer(&ssh.ServerConfig{PasswordCallback: func(metadata ssh.ConnMetadata, supplied []byte) (*ssh.Permissions, error) {
+		if metadata.User() == Username && string(supplied) == password {
+			return nil, nil
+		}
+		return nil, errors.New("fixture authentication rejected")
+	}})
+}
+
+func NewWithoutAuth() (*Server, error) {
+	return newServer(&ssh.ServerConfig{NoClientAuth: true, NoClientAuthCallback: func(metadata ssh.ConnMetadata) (*ssh.Permissions, error) {
+		if metadata.User() == Username {
+			return nil, nil
+		}
+		return nil, errors.New("fixture username rejected")
+	}})
+}
+
+func newServer(config *ssh.ServerConfig) (*Server, error) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -44,12 +66,6 @@ func New() (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	config := &ssh.ServerConfig{PasswordCallback: func(metadata ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-		if metadata.User() == Username && string(password) == Password {
-			return nil, nil
-		}
-		return nil, errors.New("fixture authentication rejected")
-	}}
 	config.AddHostKey(signer)
 	server := &Server{listener: listener, config: config, handlers: sftp.InMemHandler(), connections: make(map[net.Conn]bool), keys: make(map[string]bool), Fingerprint: ssh.FingerprintSHA256(signer.PublicKey())}
 	config.PublicKeyCallback = func(metadata ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
