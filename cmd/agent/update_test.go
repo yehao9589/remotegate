@@ -58,6 +58,40 @@ func TestDownloadIntegrityAndRedirectRejection(t *testing.T) {
 	}
 }
 
+func TestAuthorizedRollbackPreservesConfigurationAndRejectsCrossVersion(t *testing.T) {
+	cfg, manifest := updateFixture(t, "rollback fixture")
+	manifest.Rollback = true
+	manifest.Artifact = manifest.SHA256
+	manifest.Grant = strings.Repeat("a", 64)
+	dir := t.TempDir()
+	paths := updatePaths{StateDir: filepath.Join(dir, "status"), Configuration: filepath.Join(dir, "configuration"), Version: filepath.Join(dir, "version")}
+	original := []byte("config remotegate 'main'\n option token 'existing-secret'\n option remote_access '0'\n")
+	_ = os.WriteFile(paths.Configuration, original, 0600)
+	_ = os.WriteFile(paths.Version, []byte("0.1.8-2"), 0600)
+	err := performUpdate(context.Background(), updatePlan{Config: cfg, Manifest: manifest, State: update.Status{ID: "rollback", StartedAt: time.Now(), ToVersion: manifest.PackageVersion}}, dir, paths, func(context.Context, string) error {
+		_ = os.WriteFile(paths.Configuration, []byte("changed"), 0600)
+		return os.WriteFile(paths.Version, []byte(manifest.PackageVersion), 0600)
+	}, func(bool) error { return nil }, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _ := os.ReadFile(paths.Configuration)
+	if string(current) != string(original) {
+		t.Fatal("rollback changed connection configuration")
+	}
+	bad := manifest
+	bad.AgentVersion = "0.1.7"
+	bad.PackageVersion = "0.1.7-1"
+	if err = performUpdate(context.Background(), updatePlan{Config: cfg, Manifest: bad}, t.TempDir(), paths, func(context.Context, string) error { t.Fatal("cross-version rollback installed"); return nil }, func(bool) error { return nil }, false); err == nil {
+		t.Fatal("cross-version rollback accepted")
+	}
+	bad = manifest
+	bad.Grant = ""
+	if bad.Validate() == nil {
+		t.Fatal("rollback without scoped approval accepted")
+	}
+}
+
 func TestUpdateRequiresVerifiedTLSForPublicServers(t *testing.T) {
 	cfg := Config{DeviceID: "router", Token: "secret"}
 	for _, address := range []string{"http://console.example.com", "https://user:pass@console.example.com", "https://console.example.com/path", "https://console.example.com?x=1"} {

@@ -49,6 +49,11 @@ type app struct {
 	deviceUpdates     map[string]pluginUpdateView
 	updatePackage     *verifiedUpdatePackage
 	operators         *operatorResolver
+	remoteMu          sync.Mutex
+	remote            *remoteManager
+	centerMu          sync.Mutex
+	center            *packageCenter
+	centerErr         error
 }
 
 func main() {
@@ -78,6 +83,7 @@ func main() {
 	a.certDir = filepath.Join(filepath.Dir(statePath), "certificates")
 	a.certManagers = make(map[string]*certificateManager)
 	a.httpsSettingsPath = filepath.Join(filepath.Dir(statePath), "https.json")
+	go a.maintainPackageOperations(context.Background())
 	a.startCertificateServices()
 	if err := a.bootstrapCertificate(os.Getenv); err != nil {
 		log.Printf("首次 HTTPS 配置失败：%v；本机初始化入口仍可使用", err)
@@ -112,8 +118,11 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/admin/domains/check", a.admin(a.domainCheck))
 	mux.HandleFunc("/api/admin/domains/", a.admin(a.domainByID))
 	mux.HandleFunc("/api/admin/package", a.admin(a.packageInfo))
+	mux.HandleFunc("/api/admin/package-center", a.admin(a.packageCenterHTTP))
+	mux.HandleFunc("/api/admin/package-center/", a.admin(a.packageCenterHTTP))
 	mux.HandleFunc("/api/admin/install", a.admin(a.createInstall))
 	mux.HandleFunc("/install/", a.installScript)
+	mux.HandleFunc("/api/install/report", a.installReportHTTP)
 	mux.HandleFunc("/downloads/remotegate.run", a.installerDownload)
 	mux.HandleFunc("/api/agent/connect", a.connectAgent)
 	mux.HandleFunc("/api/agent/update", a.agentUpdateResource)
@@ -122,6 +131,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/admin/state", a.admin(a.state))
 	mux.HandleFunc("/api/admin/devices", a.admin(a.devices))
 	mux.HandleFunc("/api/admin/devices/", a.admin(a.deviceByID))
+	mux.HandleFunc("/api/admin/remote/", a.admin(a.remoteSessionHTTP))
+	mux.HandleFunc("/api/admin/remote-assets/", a.admin(a.remoteAssets))
 	mux.HandleFunc("/api/admin/probe", a.admin(a.probe))
 	mux.HandleFunc("/api/admin/mappings", a.admin(a.mappings))
 	mux.HandleFunc("/api/admin/mappings/", a.admin(a.mappingByID))
@@ -169,6 +180,10 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideJS = append(guideJS, updateJS...)
 		deviceJS, _ := webFS.ReadFile("web/device-center.js")
 		guideJS = append(guideJS, deviceJS...)
+		remoteJS, _ := webFS.ReadFile("web/remote-access.js")
+		guideJS = append(guideJS, remoteJS...)
+		packageJS, _ := webFS.ReadFile("web/package-center.js")
+		guideJS = append(guideJS, packageJS...)
 		guideCSS, _ := webFS.ReadFile("web/install-guide.css")
 		consoleCSS, _ := webFS.ReadFile("web/console.css")
 		guideCSS = append(guideCSS, consoleCSS...)
@@ -184,6 +199,12 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideCSS = append(guideCSS, updateCSS...)
 		deviceCSS, _ := webFS.ReadFile("web/device-center.css")
 		guideCSS = append(guideCSS, deviceCSS...)
+		terminalCSS, _ := webFS.ReadFile("web/vendor/xterm.css")
+		guideCSS = append(guideCSS, terminalCSS...)
+		remoteCSS, _ := webFS.ReadFile("web/remote-access.css")
+		guideCSS = append(guideCSS, remoteCSS...)
+		packageCSS, _ := webFS.ReadFile("web/package-center.css")
+		guideCSS = append(guideCSS, packageCSS...)
 		page := strings.Replace(string(data), "/* INSTALL_GUIDE_JS */", string(guideJS), 1)
 		page = strings.Replace(page, "/* INSTALL_GUIDE_CSS */", string(guideCSS), 1)
 		page = a.renderConsoleAuth(page, r)
@@ -264,7 +285,7 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(protocol.MaxBodyBytes + (1 << 20))
-	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1")
+	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1")
 	if err := a.store.RecordConnection(id, c.Since, info); err != nil {
 		log.Printf("device connection information failed: %v", err)
 	}
@@ -325,20 +346,22 @@ func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 	statuses := a.hub.Statuses()
 	type view struct {
 		config.Device
-		Online       bool          `json:"online"`
-		Version      string        `json:"version,omitempty"`
-		ConnectedAt  time.Time     `json:"connectedAt,omitempty"`
-		CanUpdate    bool          `json:"canUpdate"`
-		LastActiveAt time.Time     `json:"lastActiveAt,omitempty"`
-		LatencyAt    time.Time     `json:"latencyAt,omitempty"`
-		LatencyMs    *int64        `json:"latencyMs,omitempty"`
-		Network      deviceNetwork `json:"network"`
+		Online          bool          `json:"online"`
+		Version         string        `json:"version,omitempty"`
+		ConnectedAt     time.Time     `json:"connectedAt,omitempty"`
+		CanUpdate       bool          `json:"canUpdate"`
+		CanRemote       bool          `json:"canRemote"`
+		CanManageUpdate bool          `json:"canManageUpdate"`
+		LastActiveAt    time.Time     `json:"lastActiveAt,omitempty"`
+		LatencyAt       time.Time     `json:"latencyAt,omitempty"`
+		LatencyMs       *int64        `json:"latencyMs,omitempty"`
+		Network         deviceNetwork `json:"network"`
 	}
 	devices := make([]view, 0, len(state.Devices))
 	for _, d := range state.Devices {
 		d.TokenHash = ""
 		s, online := statuses[d.ID]
-		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)})
+		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, CanRemote: s.CanRemote, CanManageUpdate: s.CanManageUpdate, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)})
 	}
 	writeJSON(w, map[string]any{"devices": devices, "mappings": state.Mappings})
 }
@@ -367,6 +390,10 @@ func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 func (a *app) deviceByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/admin/devices/")
 	if deviceID, operation, ok := strings.Cut(id, "/"); ok {
+		if operation == "remote" {
+			a.deviceRemoteConnect(w, r, deviceID)
+			return
+		}
 		if operation == "health" || operation == "reconnect" {
 			a.deviceConnectionAction(w, r, deviceID, operation)
 			return

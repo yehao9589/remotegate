@@ -1,6 +1,8 @@
 # RemoteGate
 
-**[部署方式导航](DEPLOYMENT.md)** · [宝塔部署](docs/deployment/baota.md) · [泛域名证书与检测](docs/deployment/external-https.md) · [版本下载](https://github.com/yehao9589/remotegate/releases)
+[![最新版本](https://img.shields.io/github/v/release/yehao9589/remotegate?label=最新版本)](https://github.com/yehao9589/remotegate/releases/latest) · [中文更新记录](CHANGELOG.md) · [版本发布流程](docs/releasing.md)
+
+**[部署方式导航](DEPLOYMENT.md)** · [宝塔部署](docs/deployment/baota.md) · [泛域名证书与检测](docs/deployment/external-https.md) · [SSH 与文件管理](docs/deployment/remote-access.md) · [安装与更新中心](docs/deployment/install-center.md) · [版本下载](https://github.com/yehao9589/remotegate/releases)
 
 RemoteGate 是一个面向 iStoreOS/OpenWrt 的自建远程访问 MVP。路由器上的 Agent 主动连接国内服务器；浏览器访问不同域名时，服务端把 HTTP 请求通过这条长连接转给对应设备和内网地址。
 
@@ -10,7 +12,7 @@ lucky.example.com  ─┼─> RemoteGate Server <==TLS/WebSocket==> OpenWrt Agen
 nas.example.com    ─┘                                                   └─> 192.168.1.20:5000
 ```
 
-## 第一版能力
+## 功能
 
 - 设备创建、独立 Token、在线状态和断线重连
 - 一个设备配置多个访问域名；每条映射独立保存公网协议、端口、内网目标、备注和启停状态
@@ -22,8 +24,10 @@ nas.example.com    ─┘                                                   └�
 - OpenWrt `procd` 开机守护和 OpenClash/防火墙重载触发器
 - 首次安装通过网页创建管理员，密码以 bcrypt 哈希保存，登录使用 HttpOnly 会话 Cookie
 - 公网 HTTPS 检测：证书在宝塔 / 反向代理申请、部署与续期，后台分别验证主域名和映射实际返回的证书；原有内置 HTTPS 服务保留兼容
+- 网页 SSH 终端与 SFTP 文件管理：使用设备或内网 NAS 现有 SSH 账号，通过设备隧道连接；插件默认启用，首次连接核对主机指纹，凭据不保存
+- 文件浏览、搜索、上传下载、新建文件夹、重命名与非递归删除；文件上传分片处理，下载为流式传输
 
-当前版本不支持目标站点的 WebSocket、流式下载、SSH/RDP/VNC 和多服务端高可用。这些属于后续版本。
+HTTP 域名映射暂不支持目标站点的 WebSocket 或超过 16 MiB 的响应体，RDP/VNC 和多服务端高可用也尚未支持。SFTP 文件传输使用独立的流式通道。
 
 ## 服务端启动
 
@@ -39,7 +43,7 @@ docker compose up -d
 
 编排使用 Linux host 网络，HTTP 只监听 `127.0.0.1:18088`，不需要数据库。已有宝塔网站时按[宝塔部署](docs/deployment/baota.md)启动容器，在宝塔申请并启用主域名与泛域名证书，再通过 RemoteGate 检测。原有独立 HTTPS 启动配置保留兼容，选择对应教程，不混用步骤。
 
-常规部署默认使用 `ghcr.io/yehao9589/remotegate:stable`，跟随最新通过检查的构建。宝塔 compose 与 `.env` 都使用 `:stable`；旧 `.env` 的固定版本会覆盖 compose 默认值。更新时需要重新拉取镜像并重新部署，单纯重启不会升级，数据目录保持不变。只有需要锁定版本时才使用 `:v版本号`。
+常规部署默认使用 `ghcr.io/yehao9589/remotegate:stable`，跟随最新正式发布的版本。宝塔 compose 与 `.env` 都使用 `:stable`；旧 `.env` 的固定版本会覆盖 compose 默认值。更新时需要重新拉取镜像并重新部署，单纯重启不会升级，数据目录保持不变。只有需要锁定版本时才使用 `:v版本号`。
 
 从 v0.1.3 开始，本机宝塔默认反代可直接使用 `CONSOLE_HOST`，同域名默认 HTTP/HTTPS 入口均可安装和登录；自定义外部端口用 `PUBLIC_URL` 指定，不带后台路径。切换协议无需反复改配置，登录 Cookie 跟随实际访问协议。来源校验仍然启用，不自动信任外部客户端或转发请求头。使用方式见部署指南；旧版镜像需先升级。
 
@@ -69,11 +73,13 @@ DNS 中可以将 `*.remote.example.com` 解析到服务器公网 IP。将 `CONSO
 
 ### iStore 手动安装包
 
-运行 `go run ./scripts/package-istore.go`，生成 `dist/RemoteGate-0.1.0-3-istore.run`，可在 iStore 的“手动安装”中上传。升级会保留 `/etc/config/remotegate` 中的连接配置。
+运行 `go run ./scripts/package-istore.go`，生成 `dist/RemoteGate-<版本>-istore.run`，可在 iStore 的“手动安装”中上传。升级会保留 `/etc/config/remotegate` 中的连接配置。
 
 路由器“服务 → RemoteGate”页面包含运行状态、插件版本、折叠的三步接入说明、基础配置和高级设置。状态刷新只更新概览，不会覆盖未保存的表单。进程运行状态不等同于隧道在线状态，后者在服务端设备工作台确认。出口网卡默认留空。
 
 v0.1.8 起支持从路由器页面或管理后台“更新插件”在线升级。安装包随服务端镜像提供，确认后下载校验、保留设备配置并重连；旧版首次升级需执行一次后台生成的保留配置命令。详见[插件在线更新](docs/deployment/router.md#插件在线更新)。
+
+SSH 与文件管理需要支持此功能的插件，默认开启；若此前手动关闭，可在路由器页面重新启用并保存应用。文件管理还要求目标 SSH 服务提供 SFTP，OpenWrt 可安装 `openssh-sftp-server`。详见[连接与使用](docs/deployment/remote-access.md)。
 
 界面源文件位于 `deploy/openwrt/luci/`，与安装包使用同一份文件。测试虚拟机的后台为 `http://localhost:18080/cgi-bin/luci/admin/services/remotegate`，虚拟机连接宿主机服务器时填写 `http://10.0.2.2:18088`。
 

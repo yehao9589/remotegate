@@ -25,11 +25,14 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 FROM alpine:3.24
 RUN apk add --no-cache ca-certificates curl su-exec libcap && adduser -D -H -u 10001 remotegate
-COPY --from=server /out/remotegate-server /usr/local/bin/remotegate-server
-COPY --from=packages /out/packages/ /opt/remotegate/packages/
-COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh && \
+COPY --link --chmod=0755 deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# Installing and granting the low-port capability in one layer avoids copying
+# the whole binary into a second layer when setcap changes its metadata.
+RUN --mount=type=bind,from=server,source=/out/remotegate-server,target=/tmp/remotegate-server \
+    cp /tmp/remotegate-server /usr/local/bin/remotegate-server && \
+    chmod 0755 /usr/local/bin/remotegate-server && \
     setcap cap_net_bind_service=+ep /usr/local/bin/remotegate-server
+COPY --link --from=packages /out/packages/ /opt/remotegate/packages/
 VOLUME ["/data"]
 EXPOSE 443
 ENV LISTEN_ADDR=127.0.0.1:18088 HTTPS_LISTEN_ADDR=:443 STATE_PATH=/data/state.json \

@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 import re
 import tarfile
+from release_metadata import load_release
 
 release = json.loads(Path("internal/buildinfo/release.json").read_text(encoding="utf-8"))
-version = release["version"]
+metadata = load_release()
+version = metadata["version"]
 assert re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version)
 package_version = f"{version}-{release['packageRevision']}"
 tag = "v" + version
@@ -29,7 +31,7 @@ with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
 
 bundle = output / f"RemoteGate-{tag}-compose.tar.gz"
 with tarfile.open(bundle, "w:gz") as archive:
-    for name in ("docker-compose.yml", "docker-compose.https.yml", "DEPLOYMENT.md", "README.md", "CHANGELOG.md"):
+    for name in ("docker-compose.yml", "docker-compose.https.yml", "DEPLOYMENT.md", "README.md", "CHANGELOG.md", "docs/releasing.md"):
         archive.add(name, arcname=name)
     for guide in sorted(Path("docs/deployment").rglob("*.md")):
         archive.add(guide, arcname=guide.as_posix())
@@ -44,9 +46,7 @@ with tarfile.open(bundle, "w:gz") as archive:
 checksum_file = output / f"SHA256SUMS-{tag}.txt"
 assert {path.name for path in output.iterdir()} <= {bundle.name, checksum_file.name}, "Unexpected Release asset"
 checksum_file.write_text(f"{hashlib.sha256(bundle.read_bytes()).hexdigest()}  {bundle.name}\n", encoding="utf-8")
-changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
-section = re.search(r"(?ms)^## " + re.escape(tag) + r"(?:[^\n]*)\n(.*?)(?=^## |\Z)", changelog)
-assert section, "Release notes missing from CHANGELOG.md"
-notes = section.group(1).strip() + f"\n\nRelease 附件仅提供服务端部署包。路由器插件请从管理后台下载，或执行后台生成的一键安装命令。\n\n下载附件后可使用 `sha256sum -c SHA256SUMS-{tag}.txt` 检查完整性。\n"
+notes = metadata["notes"] + f"\n\nRelease 附件仅提供服务端部署包。路由器插件请从管理后台下载，或执行后台生成的一键安装命令。\n\n下载附件后可使用 `sha256sum -c SHA256SUMS-{tag}.txt` 检查完整性。\n"
 Path("dist/release-notes.md").write_text(notes, encoding="utf-8")
+Path("dist/release-title.txt").write_text(f"RemoteGate {tag} · {metadata['title']}\n", encoding="utf-8")
 print("Prepared", tag, "Release assets and checksums")

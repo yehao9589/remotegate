@@ -1,4 +1,10 @@
-name: Test and publish RemoteGate
+name: RemoteGate · 检查与发布
+run-name: >-
+  ${{ github.event_name == 'pull_request'
+      && format('检查 · {0}', github.event.pull_request.title)
+      || startsWith(github.ref, 'refs/tags/v')
+      && format('发布 RemoteGate {0}', github.ref_name)
+      || format('构建 · {0}', github.event.head_commit.message || github.ref_name) }}
 
 on:
   push:
@@ -16,6 +22,7 @@ concurrency:
 
 jobs:
   checks:
+    name: 代码与版本检查
     outputs:
       version: ${{ steps.release.outputs.version }}
       built_at: ${{ steps.release.outputs.built_at }}
@@ -23,25 +30,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - name: Validate release version and notes
+      - name: 核对版本与中文更新说明
         id: release
-        env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
         run: |
-          python3 - <<'PY'
-          import json, os, re
-          from datetime import datetime, timezone
-          from pathlib import Path
-          version=json.loads(Path('internal/buildinfo/release.json').read_text())['version']
-          assert re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)',version)
-          if os.environ['REF_TYPE']=='tag':
-              assert os.environ['REF_NAME']=='v'+version, 'Tag and release.json must match'
-          assert '## v'+version+' ' in Path('CHANGELOG.md').read_text(), 'Update CHANGELOG.md before publishing'
-          with open(os.environ['GITHUB_OUTPUT'],'a') as output:
-              output.write('version='+version+'\n')
-              output.write('built_at='+datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')+'\n')
-          PY
+          python3 scripts/release_metadata.py
+          python3 -m unittest discover -s scripts -p 'test_release_metadata.py'
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.x"
@@ -60,8 +53,11 @@ jobs:
           node --test scripts/test-https-deploy.cjs
           node --test scripts/test-plugin-update.cjs
           node --test scripts/test-device-center.cjs
+          node --test scripts/test-remote-access.cjs
+          node --test scripts/test-package-center.cjs
 
   container-test:
+    name: 容器部署验证
     needs: checks
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -89,6 +85,10 @@ jobs:
             APP_BUILD_TIME=${{ needs.checks.outputs.built_at }}
           cache-from: type=gha,scope=smoke
           cache-to: type=gha,mode=max,scope=smoke
+      - name: Verify compact image layers
+        run: |
+          docker image save remotegate:smoke --output /tmp/remotegate-image.tar
+          python3 scripts/check-image-layers.py /tmp/remotegate-image.tar
       - name: Validate Compose and start a fresh installation
         run: |
           docker compose config --quiet
@@ -112,6 +112,7 @@ jobs:
           docker compose down
 
   publish:
+    name: 发布容器镜像
     if: github.event_name != 'pull_request'
     needs: [checks, container-test]
     runs-on: ubuntu-latest
@@ -133,8 +134,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=stable,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=ref,event=tag
             type=sha,format=long
           labels: |
@@ -154,6 +155,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=publish
 
   release:
+    name: 发布版本与更新说明
     if: startsWith(github.ref, 'refs/tags/v')
     needs: publish
     runs-on: ubuntu-latest
@@ -190,7 +192,7 @@ jobs:
               exit 0
             fi
           else
-            gh release create "$TAG" --verify-tag --draft --title "RemoteGate $TAG" --notes-file dist/release-notes.md
+            gh release create "$TAG" --verify-tag --draft --title "$(cat dist/release-title.txt)" --notes-file dist/release-notes.md
           fi
           gh release upload "$TAG" dist/releases/"$TAG"/* --clobber
-          gh release edit "$TAG" --draft=false --latest
+          gh release edit "$TAG" --title "$(cat dist/release-title.txt)" --notes-file dist/release-notes.md --draft=false --latest

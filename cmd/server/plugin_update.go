@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/local/remotegate/internal/buildinfo"
-	"github.com/local/remotegate/internal/protocol"
 	"github.com/local/remotegate/internal/update"
 )
 
@@ -28,6 +26,8 @@ type pluginUpdateView struct {
 	CanUpdate        bool             `json:"canUpdate"`
 	State            update.Status    `json:"state"`
 	Error            string           `json:"error,omitempty"`
+	Locked           bool             `json:"locked"`
+	CanManageUpdate  bool             `json:"canManageUpdate"`
 }
 
 type verifiedUpdatePackage struct {
@@ -89,8 +89,51 @@ func (a *app) agentUpdateResource(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if _, ok := a.store.Authenticate(r.Header.Get("X-RemoteGate-Device-ID"), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); !ok || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+	deviceID := r.Header.Get("X-RemoteGate-Device-ID")
+	if _, ok := a.store.Authenticate(deviceID, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); !ok || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 		http.Error(w, "invalid device credentials", 401)
+		return
+	}
+	p, err := a.packageCenterStore()
+	if err != nil {
+		http.Error(w, "安装与更新配置不可用", 503)
+		return
+	}
+	if p.locked(deviceID) {
+		http.Error(w, "此设备已锁定版本，请在安装与更新中心解除锁定", 409)
+		return
+	}
+	if r.URL.Query().Get("grant") != "" || r.URL.Query().Get("artifact") != "" {
+		item, rollback, err := a.grantedArtifact(p, deviceID, r.URL.Query().Get("artifact"), r.URL.Query().Get("grant"))
+		if err != nil {
+			http.Error(w, err.Error(), 403)
+			return
+		}
+		if r.URL.Path == "/api/agent/update" {
+			m := item.Manifest
+			m.Artifact, m.Grant, m.Rollback = m.SHA256, r.URL.Query().Get("grant"), rollback
+			writeJSON(w, m)
+		} else {
+			http.ServeFile(w, r, item.Path)
+		}
+		return
+	}
+	if r.URL.Query().Get("tools") == "1" {
+		arch := update.Architecture(r.URL.Query().Get("arch"))
+		if arch == "" {
+			http.Error(w, "不支持此 CPU 架构", 400)
+			return
+		}
+		item, err := a.packageArtifact(p, "", arch)
+		if err != nil {
+			http.Error(w, err.Error(), 503)
+			return
+		}
+		if r.URL.Path == "/api/agent/update" {
+			writeJSON(w, item.Manifest)
+		} else {
+			http.ServeFile(w, r, item.Path)
+		}
 		return
 	}
 	manifest, err := a.loadUpdatePackage()
@@ -122,18 +165,37 @@ func (a *app) pluginUpdateView(id string) (pluginUpdateView, bool) {
 	}
 	status, online := a.hub.Statuses()[id]
 	view.Online, view.CanUpdate = online, online && status.CanUpdate
+	view.CanManageUpdate = online && status.CanManageUpdate
+	p, centerErr := a.packageCenterStore()
+	if centerErr == nil {
+		view.Locked = p.locked(id)
+	}
 	a.updateMu.Lock()
 	previous := a.deviceUpdates[id]
 	a.updateMu.Unlock()
 	if previous.State.ID != "" {
 		view.State = previous.State
+	} else if centerErr == nil {
+		view.State = p.latestUpdateState(id)
 	}
-	if previous.State.Active() && online && view.InstalledVersion == previous.State.ToVersion {
+	if view.State.Active() && online && status.Since.After(view.State.StartedAt) && view.InstalledVersion == view.State.ToVersion {
 		view.State.Phase = "succeeded"
 		view.State.Message = "插件更新完成，设备已重新连接"
-	} else if !previous.State.Active() && (view.State.Phase == "checking" || view.State.Phase == "downloading" || view.State.Phase == "installing" || view.State.Phase == "restarting") {
+	} else if !view.State.Active() && (view.State.Phase == "checking" || view.State.Phase == "downloading" || view.State.Phase == "installing" || view.State.Phase == "restarting") {
 		view.State.Phase = "failed"
 		view.State.Message = "等待设备更新超时，请在路由器页面检查更新状态"
+	}
+	if previous.State.ID != "" && view.State.Phase != previous.State.Phase {
+		a.updateMu.Lock()
+		cached := a.deviceUpdates[id]
+		if cached.State.ID == previous.State.ID {
+			cached.State = view.State
+			a.deviceUpdates[id] = cached
+		}
+		a.updateMu.Unlock()
+		if centerErr == nil {
+			p.rememberUpdateState(id, view.State)
+		}
 	}
 	manifest, err := a.loadUpdatePackage()
 	if err != nil {
@@ -141,18 +203,27 @@ func (a *app) pluginUpdateView(id string) (pluginUpdateView, bool) {
 		return view, true
 	}
 	view.Manifest = &manifest
+	if view.CanManageUpdate && centerErr == nil {
+		for _, device := range a.store.Snapshot().Devices {
+			if device.ID == id && update.Architecture(device.Info.Arch) != "" {
+				if item, err := a.packageArtifact(p, "", update.Architecture(device.Info.Arch)); err == nil {
+					view.Manifest = &item.Manifest
+				}
+			}
+		}
+	}
 	if view.InstalledVersion != "" {
 		comparison, err := update.Compare(manifest.PackageVersion, view.InstalledVersion)
 		view.Available = err == nil && comparison > 0
 	} else {
 		view.Available = true
 	}
+	view.Available = view.Available && !view.Locked
 	return view, true
 }
 
 func (a *app) rememberPluginUpdate(id string, view pluginUpdateView) pluginUpdateView {
 	a.updateMu.Lock()
-	defer a.updateMu.Unlock()
 	if a.deviceUpdates == nil {
 		a.deviceUpdates = make(map[string]pluginUpdateView)
 	}
@@ -161,6 +232,10 @@ func (a *app) rememberPluginUpdate(id string, view pluginUpdateView) pluginUpdat
 		view.State = previous.State
 	}
 	a.deviceUpdates[id] = view
+	a.updateMu.Unlock()
+	if p, err := a.packageCenterStore(); err == nil {
+		p.rememberUpdateState(id, view.State)
+	}
 	return view
 }
 
@@ -174,75 +249,51 @@ func (a *app) devicePluginUpdate(w http.ResponseWriter, r *http.Request, id stri
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method == http.MethodGet && !view.CanUpdate {
+	if r.Method == http.MethodGet {
+		view, err := a.refreshPackageUpdate(r.Context(), id)
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
 		writeJSON(w, view)
 		return
 	}
-	if r.Method == http.MethodPost {
-		if !view.Online {
-			http.Error(w, "设备离线，请先恢复连接", 409)
-			return
-		}
-		if !view.CanUpdate {
-			http.Error(w, "旧版插件尚不支持远程更新，请先安装一次带在线更新功能的新版", 409)
-			return
-		}
-		if view.Manifest == nil {
-			http.Error(w, view.Error, 503)
-			return
-		}
-		var requested update.Manifest
-		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&requested) != nil || requested.PackageVersion != view.Manifest.PackageVersion || requested.SHA256 != view.Manifest.SHA256 {
-			http.Error(w, "安装包已变化，请重新检查更新", 409)
-			return
-		}
-		if !view.Available {
-			http.Error(w, "当前插件已是此服务器提供的版本，或版本更高", 409)
-			return
-		}
-		if view.State.Active() {
-			http.Error(w, "已有插件更新正在进行", 409)
-			return
-		}
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	message := protocol.Message{Type: "update-status", ID: makeID()}
-	if r.Method == http.MethodPost {
-		message.Type = "update-start"
-		message.Deadline = time.Now().Add(18 * time.Second).UnixMilli()
-		message.Body, _ = json.Marshal(view.Manifest)
-	}
-	response, err := a.hub.Request(ctx, id, message)
-	if err != nil || response.Error != "" {
-		message := "设备暂时无法响应，请稍后复检"
-		if response.Error != "" {
-			message = response.Error
-		}
-		if r.Method == http.MethodPost {
-			http.Error(w, message, 502)
-			return
-		}
-		view.Error = message
-		writeJSON(w, view)
+	if !view.Online || !view.CanUpdate || view.Locked || !view.Available || view.State.Active() {
+		http.Error(w, "设备离线、版本锁定、正在更新或没有可用更新", 409)
 		return
 	}
-	var routerView pluginUpdateView
-	if len(response.Body) > 16384 || json.Unmarshal(response.Body, &routerView) != nil {
-		http.Error(w, "设备返回的更新状态无效", 502)
+	if view.Manifest == nil {
+		http.Error(w, view.Error, 503)
 		return
 	}
-	view.InstalledVersion = routerView.InstalledVersion
-	// A reboot clears /var/run. The new version reconnecting still confirms a
-	// completed update even if the router's temporary status file was cleared.
-	if routerView.State.Phase != "idle" || (!view.State.Active() && view.State.Phase != "succeeded") {
-		view.State = routerView.State
+	var requested update.Manifest
+	if decodePackageInput(w, r, &requested) != nil || requested.PackageVersion != view.Manifest.PackageVersion || requested.SHA256 != view.Manifest.SHA256 || requested.Rollback || requested.Grant != "" {
+		http.Error(w, "安装包已变化，请重新检查更新", 409)
+		return
 	}
-	if view.Manifest != nil {
-		comparison, err := update.Compare(view.Manifest.PackageVersion, view.InstalledVersion)
-		view.Available = err == nil && comparison > 0
+	p, err := a.packageCenterStore()
+	if err != nil {
+		http.Error(w, "安装配置不可用", 503)
+		return
 	}
-	view = a.rememberPluginUpdate(id, view)
+	arch := ""
+	if view.CanManageUpdate {
+		for _, d := range a.store.Snapshot().Devices {
+			if d.ID == id {
+				arch = update.Architecture(d.Info.Arch)
+			}
+		}
+	}
+	item, err := a.packageArtifact(p, "", arch)
+	if err != nil {
+		http.Error(w, err.Error(), 503)
+		return
+	}
+	view, err = a.startPackageUpdate(r.Context(), id, item, false)
+	if err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
 	writeJSON(w, view)
 }
 
@@ -267,6 +318,10 @@ func (a *app) bootstrapPluginUpdate(w http.ResponseWriter, r *http.Request, id s
 	view, exists := a.pluginUpdateView(id)
 	if !exists {
 		http.NotFound(w, r)
+		return
+	}
+	if view.Locked {
+		http.Error(w, "此设备已锁定版本，请先解除锁定", 409)
 		return
 	}
 	if view.Manifest == nil {

@@ -60,6 +60,8 @@ type Store struct {
 	state   State
 }
 
+func (s *Store) Directory() string { return filepath.Dir(s.path) }
+
 func Open(path string) (*Store, error) {
 	s := &Store{path: path}
 	data, err := os.ReadFile(path)

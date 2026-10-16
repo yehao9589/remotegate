@@ -17,6 +17,9 @@ type Manifest struct {
 	SHA256         string   `json:"sha256"`
 	Size           int64    `json:"size"`
 	Architectures  []string `json:"architectures"`
+	Artifact       string   `json:"artifact,omitempty"`
+	Grant          string   `json:"grant,omitempty"`
+	Rollback       bool     `json:"rollback,omitempty"`
 }
 
 var versionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([1-9][0-9]*))?$`)
@@ -67,6 +70,15 @@ func (m Manifest) Validate() error {
 	if !strings.Contains(m.PackageVersion, "-") || m.AgentVersion != strings.Split(m.PackageVersion, "-")[0] || m.PackageName != "luci-app-remotegate" || !hashPattern.MatchString(m.SHA256) || m.Size <= 0 || m.Size > MaxPackageSize {
 		return errors.New("服务端安装包清单无效，请更新服务端镜像")
 	}
+	if m.Artifact != "" && !hashPattern.MatchString(m.Artifact) {
+		return errors.New("安装包标识无效")
+	}
+	if m.Grant != "" && !hashPattern.MatchString(m.Grant) {
+		return errors.New("更新授权无效")
+	}
+	if m.Rollback && (m.Artifact == "" || m.Grant == "") {
+		return errors.New("版本回退需要后台授权")
+	}
 	return nil
 }
 
@@ -86,4 +98,17 @@ func (s Status) Active() bool {
 		return time.Since(s.StartedAt) < 10*time.Minute
 	}
 	return false
+}
+
+type Check struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
+type Preflight struct {
+	OK           bool    `json:"ok"`
+	Architecture string  `json:"architecture"`
+	Checks       []Check `json:"checks"`
 }
