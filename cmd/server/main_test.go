@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ func TestHostRequestTravelsThroughAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.PutMapping(config.Mapping{Host: "router.example.com", DeviceID: d.ID, Target: "http://127.0.0.1:80", Enabled: true})
+	_, err = store.PutMapping(config.Mapping{AccessMode: "public", Host: "router.example.com", DeviceID: d.ID, Target: "http://127.0.0.1:80", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +59,59 @@ func TestHostRequestTravelsThroughAgent(t *testing.T) {
 	<-done
 }
 
+func TestMaximumHTTPBodyTravelsThroughAgent(t *testing.T) {
+	store, err := config.Open(t.TempDir() + "/state.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, token, err := store.CreateDevice("large-response")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.PutMapping(config.Mapping{Host: "large.example.com", DeviceID: d.ID, Target: "http://127.0.0.1:80", Enabled: true, AccessMode: "public"}); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{store: store, hub: hub.New()}
+	ts := agentTestServer(t, a)
+	defer ts.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/api/agent/connect?device_id="+d.ID+"&token="+token, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetReadLimit(protocol.MaxMessageBytes)
+	result := make(chan error, 1)
+	go func() {
+		var request protocol.Message
+		if err := conn.ReadJSON(&request); err != nil {
+			result <- err
+			return
+		}
+		if len(request.Body) != protocol.MaxBodyBytes {
+			result <- io.ErrUnexpectedEOF
+			return
+		}
+		result <- conn.WriteJSON(protocol.Message{Type: "response", ID: request.ID, Status: 200, Body: request.Body})
+	}()
+	request, err := http.NewRequest("POST", ts.URL+"/", bytes.NewReader(bytes.Repeat([]byte{'x'}, protocol.MaxBodyBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "large.example.com"
+	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != 200 || len(body) != protocol.MaxBodyBytes {
+		t.Fatal("Maximum body was truncated or rejected", response.StatusCode, len(body), err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUnmatchedProxyHostExplainsMappingFailure(t *testing.T) {
 	a := freshAuthApp(t)
 	a.consoleHost = "console.example.com"
@@ -66,7 +120,7 @@ func TestUnmatchedProxyHostExplainsMappingFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = a.store.PutMapping(config.Mapping{Host: "router.example.com", DeviceID: device.ID, Target: "http://127.0.0.1:80", Enabled: true}); err != nil {
+	if _, err = a.store.PutMapping(config.Mapping{AccessMode: "public", Host: "router.example.com", DeviceID: device.ID, Target: "http://127.0.0.1:80", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {

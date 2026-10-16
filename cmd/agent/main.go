@@ -133,16 +133,11 @@ func run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer conn.Close()
+	conn.SetReadLimit(protocol.MaxMessageBytes)
 	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopClose()
 	log.Printf("connected to %s", u.Host)
-	client := &http.Client{
-		Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}},
-		Timeout:   55 * time.Second,
-		// Redirects must be returned to the remote browser. Following them here
-		// loses authentication cookies set by applications such as LuCI.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	client := targetHTTPClient(cfg)
 	sessionContext, stopSession := context.WithCancel(ctx)
 	var writeMu sync.Mutex
 	send := func(result protocol.Message) error {
@@ -227,7 +222,7 @@ func handle(client *http.Client, cfg Config, msg protocol.Message) protocol.Mess
 func handleWithContext(ctx context.Context, client *http.Client, cfg Config, msg protocol.Message) protocol.Message {
 	out := protocol.Message{Type: "response", ID: msg.ID}
 	base, err := url.Parse(msg.Target)
-	if err != nil {
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Hostname() == "" || base.User != nil {
 		out.Error = "invalid mapping target"
 		return out
 	}
@@ -236,7 +231,7 @@ func handleWithContext(ctx context.Context, client *http.Client, cfg Config, msg
 		return out
 	}
 	rel, err := url.Parse(msg.Path)
-	if err != nil {
+	if err != nil || rel.IsAbs() || rel.Host != "" || !strings.HasPrefix(msg.Path, "/") || rel.Fragment != "" {
 		out.Error = "invalid request path"
 		return out
 	}

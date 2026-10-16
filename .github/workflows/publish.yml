@@ -26,6 +26,7 @@ jobs:
     outputs:
       version: ${{ steps.release.outputs.version }}
       built_at: ${{ steps.release.outputs.built_at }}
+      package_version: ${{ steps.release.outputs.package_version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -37,16 +38,18 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_release_metadata.py'
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.26.x"
+          go-version: "1.26.9"
           cache: true
       - name: Run tests and vet
         run: |
           go test -race ./...
           go vet ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
           for file in cmd/server/web/*.js deploy/openwrt/luci/page.js; do node --check "$file"; done
           node scripts/check-console.cjs
           node --test scripts/test-mapping-editor.cjs
           node --test scripts/test-auth.cjs
+          node --test scripts/test-mapping-access.cjs
           node --test scripts/test-refresh.cjs
           node --test scripts/test-clipboard.cjs
           node --test scripts/test-domain-https.cjs
@@ -98,6 +101,12 @@ jobs:
           mkdir -p dist
           docker cp "$container_id:/opt/remotegate/packages/." dist/
           python3 scripts/release-assets.py
+      - name: Check packaged router scripts and CPU architectures
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y lua5.1
+          lua5.1 scripts/test-router-model.lua deploy/openwrt/luci/model.lua
+          python3 scripts/check-router-packages.py "dist/RemoteGate-${{ needs.checks.outputs.package_version }}-istore.run"
       - name: Verify restart preserves administrator, domains and certificates
         run: |
           docker compose restart

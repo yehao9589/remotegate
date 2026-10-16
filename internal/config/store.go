@@ -34,14 +34,17 @@ type Device struct {
 }
 
 type Mapping struct {
-	Note         string `json:"note,omitempty"`
-	ID           string `json:"id"`
-	Host         string `json:"host"`
-	DeviceID     string `json:"deviceId"`
-	Target       string `json:"target"`
-	PublicScheme string `json:"publicScheme,omitempty"`
-	PublicPort   int    `json:"publicPort,omitempty"`
-	Enabled      bool   `json:"enabled"`
+	AccessMode       string `json:"accessMode"`
+	AccessConsoleURL string `json:"accessConsoleURL,omitempty"`
+	AccessRevision   string `json:"accessRevision,omitempty"`
+	Note             string `json:"note,omitempty"`
+	ID               string `json:"id"`
+	Host             string `json:"host"`
+	DeviceID         string `json:"deviceId"`
+	Target           string `json:"target"`
+	PublicScheme     string `json:"publicScheme,omitempty"`
+	PublicPort       int    `json:"publicPort,omitempty"`
+	Enabled          bool   `json:"enabled"`
 }
 
 var mappingHostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -76,6 +79,10 @@ func Open(path string) (*Store, error) {
 	}
 	migrated := false
 	for i := range s.state.Mappings {
+		if s.state.Mappings[i].AccessMode == "" {
+			s.state.Mappings[i].AccessMode = "admin"
+			migrated = true
+		}
 		beforeScheme, beforePort := s.state.Mappings[i].PublicScheme, s.state.Mappings[i].PublicPort
 		applyMappingPublicDefaults(&s.state.Mappings[i])
 		migrated = migrated || beforeScheme != s.state.Mappings[i].PublicScheme || beforePort != s.state.Mappings[i].PublicPort
@@ -223,6 +230,9 @@ func (s *Store) PutMapping(m Mapping) (Mapping, error) {
 	if m.PublicPort < 1 || m.PublicPort > 65535 {
 		return Mapping{}, errors.New("公网端口范围为 1–65535")
 	}
+	if err := normalizeMappingAccess(&m); err != nil {
+		return Mapping{}, err
+	}
 	if m.ID == "" {
 		m.ID, _ = randomToken(9)
 	}
@@ -244,12 +254,26 @@ func (s *Store) PutMapping(m Mapping) (Mapping, error) {
 	}
 	for i, existing := range s.state.Mappings {
 		if existing.ID == m.ID {
+			if err := mappingAccessRevision(&m, &existing); err != nil {
+				return Mapping{}, err
+			}
 			s.state.Mappings[i] = m
-			return m, s.saveLocked()
+			if err := s.saveLocked(); err != nil {
+				s.state.Mappings[i] = existing
+				return Mapping{}, err
+			}
+			return m, nil
 		}
 	}
+	if err := mappingAccessRevision(&m, nil); err != nil {
+		return Mapping{}, err
+	}
 	s.state.Mappings = append(s.state.Mappings, m)
-	return m, s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		s.state.Mappings = s.state.Mappings[:len(s.state.Mappings)-1]
+		return Mapping{}, err
+	}
+	return m, nil
 }
 
 func applyMappingPublicDefaults(m *Mapping) {

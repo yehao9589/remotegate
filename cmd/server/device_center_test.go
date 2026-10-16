@@ -38,7 +38,7 @@ func TestDeviceManagementLegacyPingReconnectAndPreferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mapping, err := a.store.PutMapping(config.Mapping{Host: "router.example.com", DeviceID: device.ID, Target: "http://127.0.0.1:80", Enabled: true})
+	mapping, err := a.store.PutMapping(config.Mapping{AccessMode: "public", Host: "router.example.com", DeviceID: device.ID, Target: "http://127.0.0.1:80", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}

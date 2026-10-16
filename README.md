@@ -23,6 +23,7 @@ nas.example.com    ─┘                                                   └�
 - Linux Agent 可设置 `SO_BINDTODEVICE` 与 `SO_MARK`
 - OpenWrt `procd` 开机守护和 OpenClash/防火墙重载触发器
 - 首次安装通过网页创建管理员，密码以 bcrypt 哈希保存，登录使用 HttpOnly 会话 Cookie
+- [映射访问保护](docs/deployment/mapping-access.md)：新增及已有映射默认验证后台身份，授权仅对当前映射生效；可单独改为公开访问
 - 公网 HTTPS 检测：证书在宝塔 / 反向代理申请、部署与续期，后台分别验证主域名和映射实际返回的证书；原有内置 HTTPS 服务保留兼容
 - 网页 SSH 终端与 SFTP 文件管理：使用设备或内网 NAS 现有 SSH 账号，通过设备隧道连接；插件默认启用，首次连接核对主机指纹，凭据不保存
 - 文件浏览、搜索、上传下载、新建文件夹、重命名与非递归删除；文件上传分片处理，下载为流式传输
@@ -68,6 +69,8 @@ DNS 中可以将 `*.remote.example.com` 解析到服务器公网 IP。将 `CONSO
 1. 添加设备，保存页面仅显示一次的设备 ID 和 Token。
 2. 在设备卡片内添加域名映射，例如公网 `https://router.remote.example.com/` → 内网 `http://127.0.0.1:80`。默认 HTTPS / 443，证书由公网入口提供；使用其他端口时按实际入口填写。
 3. 从后台获取一键安装命令，或下载插件在 iStore 手动安装。完整操作见[路由器接入教程](docs/deployment/router.md)。
+
+映射默认要求 RemoteGate 后台登录；首次打开会前往后台验证，有效登录会自动返回原网站。退出后台、登录过期或修改账号安全设置后，原访问授权失效。需要对所有人开放的网站，可在映射编辑中选择“公开访问”。目标网站自身的登录仍然有效，详见[映射访问保护](docs/deployment/mapping-access.md)。
 
 ## 构建 OpenWrt Agent
 

@@ -221,8 +221,9 @@ func connectCenterDevice(t *testing.T, a *app, device config.Device, token, vers
 }
 func TestCompatibleRollbackRequiresCapabilityAndScopedApproval(t *testing.T) {
 	a, device, token, cookie := centerFixture(t)
-	_, old := writeCenterPackage(t, filepath.Dir(installerPath()), buildinfo.Version()+"-1")
-	conn := connectCenterDevice(t, a, device, token, buildinfo.PackageVersion())
+	_, old := writeCenterPackage(t, filepath.Dir(installerPath()), buildinfo.Version()+"-2")
+	installed := buildinfo.Version() + "-3"
+	conn := connectCenterDevice(t, a, device, token, installed)
 	finished := make(chan update.Manifest, 1)
 	go func() {
 		var msg protocol.Message
@@ -232,7 +233,7 @@ func TestCompatibleRollbackRequiresCapabilityAndScopedApproval(t *testing.T) {
 		var m update.Manifest
 		_ = json.Unmarshal(msg.Body, &m)
 		finished <- m
-		body, _ := json.Marshal(pluginUpdateView{State: update.Status{ID: "rollback-op", Phase: "checking", FromVersion: buildinfo.PackageVersion(), ToVersion: old.PackageVersion, StartedAt: time.Now()}})
+		body, _ := json.Marshal(pluginUpdateView{State: update.Status{ID: "rollback-op", Phase: "checking", FromVersion: installed, ToVersion: old.PackageVersion, StartedAt: time.Now()}})
 		_ = conn.WriteJSON(protocol.Message{Type: "response", ID: msg.ID, Status: 200, Body: body})
 	}()
 	r := packageCall(a, cookie, "POST", "/api/admin/package-center/rollback", map[string]string{"deviceId": device.ID, "version": old.PackageVersion})

@@ -189,7 +189,7 @@ func testHTTPSMappingReachesConnectedDevice(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = a.store.PutMapping(config.Mapping{Host: "router.example.com", DeviceID: device.ID, Target: "http://127.0.0.1:8080", PublicScheme: "https", PublicPort: 8443, Enabled: true})
+	_, err = a.store.PutMapping(config.Mapping{AccessMode: "public", Host: "router.example.com", DeviceID: device.ID, Target: "http://127.0.0.1:8080", PublicScheme: "https", PublicPort: 8443, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,7 +16,7 @@ function joinMappingTarget(address,port){const u=new URL(address);if(!['http:','
 
 function mappingDraft(){
  const f=new FormData($('#editor')),item=editing.item;
- return {...item,deviceId:item.deviceId||f.get('deviceId'),_mappingDraft:{host:f.get('host'),domainSuffix:f.get('domainSuffix'),publicScheme:f.get('publicScheme'),publicPort:f.get('publicPort'),targetAddress:f.get('targetAddress'),targetPort:f.get('targetPort'),note:f.get('note'),enabled:f.has('enabled')}};
+ return {...item,deviceId:item.deviceId||f.get('deviceId'),_mappingDraft:{host:f.get('host'),domainSuffix:f.get('domainSuffix'),publicScheme:f.get('publicScheme'),publicPort:f.get('publicPort'),accessMode:f.get('accessMode'),targetAddress:f.get('targetAddress'),targetPort:f.get('targetPort'),note:f.get('note'),enabled:f.has('enabled')}};
 }
 
 const baseOpenMappingEditor=openEditor;
@@ -37,11 +37,15 @@ openEditor=(type,item={})=>{
  <p class="mapping-preview" id="mappingPreview" role="status" aria-live="polite"></p>
  <div id="mappingHTTPSAdvice" class="mapping-https-advice" role="status" hidden></div>
  <details class="mapping-help"><summary>DNS 与证书要求</summary><p>主机名填 @ 表示使用域名后缀本身。预览仅组合地址；DNS 须解析到服务器，并配置对应公网入口。HTTPS 证书须覆盖完整访问域名。</p></details>
+ <div class="mapping-access-setting"><label>访问权限<select name="accessMode"><option value="admin">需要后台登录（推荐）</option><option value="public">公开访问</option></select></label><p id="mappingAccessHint" role="status"></p></div>
  <div class="mapping-target"><label>内网地址<input name="targetAddress" type="url" required value="${esc(draft?.targetAddress??target.address)}" placeholder="http://127.0.0.1"></label><label>内网端口<input name="targetPort" type="number" min="1" max="65535" step="1" required value="${esc(draft?.targetPort??target.port)}" placeholder="80"></label></div>
  <label>备注<input name="note" maxlength="200" value="${esc(draft?.note??item.note??'')}"></label><label class="check"><input name="enabled" type="checkbox" ${(draft?.enabled??item.enabled)!==false?'checked':''}> 启用映射</label>`;
  const suffixInput=$('#mappingDomainSuffix'),hostInput=$('#fields [name=host]'),schemeInput=$('#fields [name=publicScheme]'),portInput=$('#fields [name=publicPort]');
  let httpsAdvice;
  schemeInput.value=draft?.publicScheme??scheme;portInput.value=draft?.publicPort??port;
+ const accessInput=$('#fields [name=accessMode]');accessInput.value=draft?.accessMode??item.accessMode??'admin';
+ function accessHint(){const needsLogin=accessInput.value==='admin';$('#mappingAccessHint').textContent=needsLogin?'先验证 RemoteGate 后台身份，再访问内网网站。已登录时自动通过；退出或登录过期后需重新验证。公网入口请使用 HTTPS。':'任何人都可打开这个地址；是否登录由目标网站自身控制。'}
+ accessInput.onchange=accessHint;accessHint();
  function preview(){
   const suffix=suffixInput.value,manual=suffix===customMappingDomain;
   $('#mappingHostLabel').textContent=manual?'完整访问域名':'子域名';hostInput.placeholder=manual?'例如 router.example.com':'例如 ceshi01';
@@ -85,7 +89,7 @@ $('#editor').onsubmit=async e=>{
   const f=new FormData(e.target),{_mappingDraft,...item}=editing.item,host=mappingHost(f.get('host'),f.get('domainSuffix'));
   const target=joinMappingTarget(f.get('targetAddress').trim(),f.get('targetPort')),publicPort=Number(f.get('publicPort'));
   if(!Number.isInteger(publicPort)||publicPort<1||publicPort>65535)throw Error('公网端口范围为 1–65535');
-  await api('mappings','POST',{...item,host,deviceId:item.deviceId||f.get('deviceId'),target,publicScheme:f.get('publicScheme'),publicPort,note:f.get('note'),enabled:f.has('enabled')});
+  await api('mappings','POST',{...item,host,deviceId:item.deviceId||f.get('deviceId'),target,publicScheme:f.get('publicScheme'),publicPort,accessMode:f.get('accessMode'),note:f.get('note'),enabled:f.has('enabled')});
   $('#modal').close();await refresh();toast('映射已保存');
  }catch(err){$('#formError').textContent=err.message}finally{$('#save').disabled=false}
 };

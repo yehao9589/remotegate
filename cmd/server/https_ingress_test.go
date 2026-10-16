@@ -35,7 +35,7 @@ func TestSharedHTTPSPreservesBaotaCertificateAndUsesManagedMappingCertificate(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = a.store.PutMapping(config.Mapping{Host: "router.example.com", DeviceID: device.ID, Target: "http://127.0.0.1:80", Enabled: true}); err != nil {
+	if _, err = a.store.PutMapping(config.Mapping{AccessMode: "public", Host: "router.example.com", DeviceID: device.ID, Target: "http://127.0.0.1:80", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	baotaCert, baotaKey := testCertificate(t, "example.com", time.Now().Add(24*time.Hour), "example.com", "other.example.org")

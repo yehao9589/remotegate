@@ -339,9 +339,9 @@ func (a *app) bootstrapPluginUpdate(w http.ResponseWriter, r *http.Request, id s
 		http.Error(w, "invalid request", 400)
 		return
 	}
-	u, err := parsePublicURL(input.Server)
+	u, err := parseInstallerServer(input.Server)
 	if err != nil {
-		http.Error(w, "请输入路由器可以访问的服务端 HTTP/HTTPS 地址", 400)
+		http.Error(w, err.Error(), 400)
 		return
 	}
 	keyBytes := make([]byte, 32)
