@@ -1,5 +1,7 @@
 # RemoteGate
 
+[![最新版本](https://img.shields.io/github/v/release/yehao9589/remotegate?label=最新版本)](https://github.com/yehao9589/remotegate/releases/latest) · [中文更新记录](CHANGELOG.md) · [版本发布流程](docs/releasing.md)
+
 **[部署方式导航](DEPLOYMENT.md)** · [宝塔部署](docs/deployment/baota.md) · [泛域名证书与检测](docs/deployment/external-https.md) · [SSH 与文件管理](docs/deployment/remote-access.md) · [安装与更新中心](docs/deployment/install-center.md) · [版本下载](https://github.com/yehao9589/remotegate/releases)
 
 RemoteGate 是一个面向 iStoreOS/OpenWrt 的自建远程访问 MVP。路由器上的 Agent 主动连接国内服务器；浏览器访问不同域名时，服务端把 HTTP 请求通过这条长连接转给对应设备和内网地址。
@@ -41,7 +43,7 @@ docker compose up -d
 
 编排使用 Linux host 网络，HTTP 只监听 `127.0.0.1:18088`，不需要数据库。已有宝塔网站时按[宝塔部署](docs/deployment/baota.md)启动容器，在宝塔申请并启用主域名与泛域名证书，再通过 RemoteGate 检测。原有独立 HTTPS 启动配置保留兼容，选择对应教程，不混用步骤。
 
-常规部署默认使用 `ghcr.io/yehao9589/remotegate:stable`，跟随最新通过检查的构建。宝塔 compose 与 `.env` 都使用 `:stable`；旧 `.env` 的固定版本会覆盖 compose 默认值。更新时需要重新拉取镜像并重新部署，单纯重启不会升级，数据目录保持不变。只有需要锁定版本时才使用 `:v版本号`。
+常规部署默认使用 `ghcr.io/yehao9589/remotegate:stable`，跟随最新正式发布的版本。宝塔 compose 与 `.env` 都使用 `:stable`；旧 `.env` 的固定版本会覆盖 compose 默认值。更新时需要重新拉取镜像并重新部署，单纯重启不会升级，数据目录保持不变。只有需要锁定版本时才使用 `:v版本号`。
 
 从 v0.1.3 开始，本机宝塔默认反代可直接使用 `CONSOLE_HOST`，同域名默认 HTTP/HTTPS 入口均可安装和登录；自定义外部端口用 `PUBLIC_URL` 指定，不带后台路径。切换协议无需反复改配置，登录 Cookie 跟随实际访问协议。来源校验仍然启用，不自动信任外部客户端或转发请求头。使用方式见部署指南；旧版镜像需先升级。
 
