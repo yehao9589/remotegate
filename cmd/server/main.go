@@ -49,6 +49,8 @@ type app struct {
 	deviceUpdates     map[string]pluginUpdateView
 	updatePackage     *verifiedUpdatePackage
 	operators         *operatorResolver
+	remoteMu          sync.Mutex
+	remote            *remoteManager
 }
 
 func main() {
@@ -122,6 +124,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/admin/state", a.admin(a.state))
 	mux.HandleFunc("/api/admin/devices", a.admin(a.devices))
 	mux.HandleFunc("/api/admin/devices/", a.admin(a.deviceByID))
+	mux.HandleFunc("/api/admin/remote/", a.admin(a.remoteSessionHTTP))
+	mux.HandleFunc("/api/admin/remote-assets/", a.admin(a.remoteAssets))
 	mux.HandleFunc("/api/admin/probe", a.admin(a.probe))
 	mux.HandleFunc("/api/admin/mappings", a.admin(a.mappings))
 	mux.HandleFunc("/api/admin/mappings/", a.admin(a.mappingByID))
@@ -169,6 +173,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideJS = append(guideJS, updateJS...)
 		deviceJS, _ := webFS.ReadFile("web/device-center.js")
 		guideJS = append(guideJS, deviceJS...)
+		remoteJS, _ := webFS.ReadFile("web/remote-access.js")
+		guideJS = append(guideJS, remoteJS...)
 		guideCSS, _ := webFS.ReadFile("web/install-guide.css")
 		consoleCSS, _ := webFS.ReadFile("web/console.css")
 		guideCSS = append(guideCSS, consoleCSS...)
@@ -184,6 +190,10 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideCSS = append(guideCSS, updateCSS...)
 		deviceCSS, _ := webFS.ReadFile("web/device-center.css")
 		guideCSS = append(guideCSS, deviceCSS...)
+		terminalCSS, _ := webFS.ReadFile("web/vendor/xterm.css")
+		guideCSS = append(guideCSS, terminalCSS...)
+		remoteCSS, _ := webFS.ReadFile("web/remote-access.css")
+		guideCSS = append(guideCSS, remoteCSS...)
 		page := strings.Replace(string(data), "/* INSTALL_GUIDE_JS */", string(guideJS), 1)
 		page = strings.Replace(page, "/* INSTALL_GUIDE_CSS */", string(guideCSS), 1)
 		page = a.renderConsoleAuth(page, r)
@@ -264,7 +274,7 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(protocol.MaxBodyBytes + (1 << 20))
-	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1")
+	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1")
 	if err := a.store.RecordConnection(id, c.Since, info); err != nil {
 		log.Printf("device connection information failed: %v", err)
 	}
@@ -329,6 +339,7 @@ func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 		Version      string        `json:"version,omitempty"`
 		ConnectedAt  time.Time     `json:"connectedAt,omitempty"`
 		CanUpdate    bool          `json:"canUpdate"`
+		CanRemote    bool          `json:"canRemote"`
 		LastActiveAt time.Time     `json:"lastActiveAt,omitempty"`
 		LatencyAt    time.Time     `json:"latencyAt,omitempty"`
 		LatencyMs    *int64        `json:"latencyMs,omitempty"`
@@ -338,7 +349,7 @@ func (a *app) state(w http.ResponseWriter, _ *http.Request) {
 	for _, d := range state.Devices {
 		d.TokenHash = ""
 		s, online := statuses[d.ID]
-		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)})
+		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, CanRemote: s.CanRemote, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)})
 	}
 	writeJSON(w, map[string]any{"devices": devices, "mappings": state.Mappings})
 }
@@ -367,6 +378,10 @@ func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 func (a *app) deviceByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/admin/devices/")
 	if deviceID, operation, ok := strings.Cut(id, "/"); ok {
+		if operation == "remote" {
+			a.deviceRemoteConnect(w, r, deviceID)
+			return
+		}
 		if operation == "health" || operation == "reconnect" {
 			a.deviceConnectionAction(w, r, deviceID, operation)
 			return

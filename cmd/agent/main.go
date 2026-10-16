@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -14,12 +15,15 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/local/remotegate/internal/buildinfo"
 	"github.com/local/remotegate/internal/protocol"
+	"github.com/local/remotegate/internal/tcpbridge"
 )
 
 type Config struct {
@@ -30,6 +34,7 @@ type Config struct {
 	Mark               int    `json:"mark,omitempty"`
 	InsecureTLS        bool   `json:"insecureTls,omitempty"`
 	AllowPublicTargets bool   `json:"allowPublicTargets,omitempty"`
+	RemoteAccess       bool   `json:"remoteAccess"`
 }
 
 func main() {
@@ -98,6 +103,9 @@ func run(ctx context.Context, cfg Config) error {
 	q.Set("token", cfg.Token)
 	q.Set("version", buildinfo.Version())
 	q.Set("info", "1")
+	if remoteTransportAllowed(cfg) {
+		q.Set("remote", "1")
+	}
 	q.Set("os", runtime.GOOS)
 	q.Set("arch", runtime.GOARCH)
 	q.Set("interface", cfg.Interface)
@@ -134,27 +142,81 @@ func run(ctx context.Context, cfg Config) error {
 		// loses authentication cookies set by applications such as LuCI.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+	sessionContext, stopSession := context.WithCancel(ctx)
+	var writeMu sync.Mutex
+	send := func(result protocol.Message) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if err := conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			return err
+		}
+		err := conn.WriteJSON(result)
+		if err != nil {
+			_ = conn.Close()
+		}
+		return err
+	}
+	bridge := tcpbridge.New(sessionContext, remoteTransportAllowed(cfg), send)
+	var workers sync.WaitGroup
+	queue := make(chan protocol.Message, 32)
+	var queuedBytes atomic.Int64
+	for i := 0; i < 4; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-sessionContext.Done():
+					return
+				case msg := <-queue:
+					var result protocol.Message
+					if msg.Type == "request" {
+						result = handleWithContext(sessionContext, client, cfg, msg)
+					} else {
+						result = updateControl(sessionContext, cfg, msg)
+					}
+					_ = send(result)
+					queuedBytes.Add(-queuedMessageBytes(msg))
+				}
+			}
+		}()
+	}
+	defer func() { stopSession(); _ = conn.Close(); bridge.Close(); workers.Wait(); client.CloseIdleConnections() }()
 	for {
 		var msg protocol.Message
 		if err = conn.ReadJSON(&msg); err != nil {
 			return err
 		}
+		if bridge.Handle(msg) {
+			continue
+		}
 		if msg.Type != "request" && msg.Type != "update-start" && msg.Type != "update-status" {
 			continue
 		}
-		var result protocol.Message
-		if msg.Type == "request" {
-			result = handleWithContext(ctx, client, cfg, msg)
-		} else {
-			result = updateControl(ctx, cfg, msg)
+		size := queuedMessageBytes(msg)
+		if queuedBytes.Add(size) > protocol.MaxBodyBytes+(1<<20) {
+			queuedBytes.Add(-size)
+			_ = send(protocol.Message{Type: "response", ID: msg.ID, Error: "device is busy, please retry"})
+			continue
 		}
-		if err = conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
-			return err
-		}
-		if err = conn.WriteJSON(result); err != nil {
-			return err
+		select {
+		case queue <- msg:
+		default:
+			queuedBytes.Add(-size)
+			_ = send(protocol.Message{Type: "response", ID: msg.ID, Error: "device is busy, please retry"})
 		}
 	}
+}
+
+func queuedMessageBytes(msg protocol.Message) int64 {
+	size := len(msg.Body) + len(msg.Target) + len(msg.Path) + len(msg.Method) + 2048
+	for key, values := range msg.Headers {
+		size += len(key)
+		for _, value := range values {
+			size += len(value)
+		}
+	}
+	return int64(size)
 }
 
 func handle(client *http.Client, cfg Config, msg protocol.Message) protocol.Message {
@@ -178,7 +240,7 @@ func handleWithContext(ctx context.Context, client *http.Client, cfg Config, msg
 		return out
 	}
 	target := base.ResolveReference(rel)
-	req, err := http.NewRequestWithContext(ctx, msg.Method, target.String(), strings.NewReader(string(msg.Body)))
+	req, err := http.NewRequestWithContext(ctx, msg.Method, target.String(), bytes.NewReader(msg.Body))
 	if err != nil {
 		out.Error = err.Error()
 		return out

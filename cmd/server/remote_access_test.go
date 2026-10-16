@@ -1,0 +1,447 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/json"
+	"encoding/pem"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/local/remotegate/internal/protocol"
+	"github.com/local/remotegate/internal/tcpbridge"
+	"github.com/local/remotegate/internal/testssh"
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
+)
+
+type remoteFixture struct {
+	app           *app
+	device, token string
+	cookie        *http.Cookie
+	serverURL     string
+	ssh           *testssh.Server
+	host          string
+	port          int
+}
+
+func newRemoteFixture(t *testing.T) *remoteFixture {
+	t.Helper()
+	return newRemoteFixtureWithSSH(t, testssh.New)
+}
+
+func newRemoteFixtureWithSSH(t *testing.T, createSSH func() (*testssh.Server, error)) *remoteFixture {
+	t.Helper()
+	a := freshAuthApp(t)
+	login := authCall(a, "/api/auth/setup", setupBody, "", nil)
+	requireStatus(t, login, 200)
+	cookie := login.Result().Cookies()[0]
+	device, token, err := a.store.CreateDevice("SSH fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshServer, err := createSSH()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sshServer.Close)
+	server := agentTestServer(t, a)
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect?device_id="+device.ID+"&token="+token+"&remote=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var writer sync.Mutex
+	bridge := tcpbridge.New(ctx, true, func(msg protocol.Message) error { writer.Lock(); defer writer.Unlock(); return conn.WriteJSON(msg) })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			var msg protocol.Message
+			if conn.ReadJSON(&msg) != nil {
+				return
+			}
+			bridge.Handle(msg)
+		}
+	}()
+	t.Cleanup(func() {
+		a.remoteMu.Lock()
+		manager := a.remote
+		a.remoteMu.Unlock()
+		if manager != nil {
+			manager.closeOwner(sha256.Sum256([]byte(cookie.Value)))
+		}
+		cancel()
+		conn.Close()
+		bridge.Close()
+		<-done
+	})
+	waitDevice(t, a, device.ID, true)
+	host, portText, _ := net.SplitHostPort(sshServer.Address())
+	port, _ := strconv.Atoi(portText)
+	return &remoteFixture{a, device.ID, token, cookie, server.URL, sshServer, host, port}
+}
+
+func remoteTestCall(a *app, cookie *http.Cookie, url string, body any) *httptest.ResponseRecorder {
+	var data io.Reader
+	method := "GET"
+	if body != nil {
+		raw, _ := json.Marshal(body)
+		data = bytes.NewReader(raw)
+		method = "POST"
+	}
+	r := httptest.NewRequest(method, "http://console.localhost"+url, data)
+	r.RemoteAddr = "127.0.0.1:3456"
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Origin", "https://console.localhost")
+	if cookie != nil {
+		r.AddCookie(cookie)
+	}
+	w := httptest.NewRecorder()
+	a.routes().ServeHTTP(w, r)
+	return w
+}
+func (f *remoteFixture) connect(t *testing.T) map[string]any {
+	t.Helper()
+	url := "/api/admin/devices/" + f.device + "/remote"
+	probe := remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "fingerprint", "host": f.host, "port": f.port})
+	requireStatus(t, probe, 200)
+	var fingerprint map[string]string
+	if err := json.Unmarshal(probe.Body.Bytes(), &fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint["fingerprint"] != f.ssh.Fingerprint {
+		t.Fatal("fingerprint changed in transit")
+	}
+	connected := remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "connect", "host": f.host, "port": f.port, "username": testssh.Username, "password": testssh.Password, "fingerprint": fingerprint["fingerprint"]})
+	requireStatus(t, connected, 200)
+	if strings.Contains(connected.Body.String(), testssh.Password) || strings.Contains(connected.Body.String(), f.token) {
+		t.Fatal("connection secret leaked")
+	}
+	var session map[string]any
+	if err := json.Unmarshal(connected.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func TestRemoteSSHEmptyPasswordAuthentication(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		createSSH   func() (*testssh.Server, error)
+		credentials map[string]any
+		wrongKey    bool
+		status      int
+	}{
+		{"empty-password-accepted", func() (*testssh.Server, error) { return testssh.NewWithPassword("") }, map[string]any{"password": ""}, false, 200},
+		{"none-auth-accepted", testssh.NewWithoutAuth, map[string]any{"password": ""}, false, 200},
+		{"password-required", testssh.New, map[string]any{"password": ""}, false, 502},
+		{"missing-password", testssh.NewWithoutAuth, nil, false, 400},
+		{"null-password", testssh.NewWithoutAuth, map[string]any{"password": nil}, false, 400},
+		{"empty-private-key", testssh.NewWithoutAuth, map[string]any{"privateKey": ""}, false, 400},
+		{"oversized-password", testssh.NewWithoutAuth, map[string]any{"password": strings.Repeat("x", 4097)}, false, 400},
+		{"changed-fingerprint", testssh.NewWithoutAuth, map[string]any{"password": ""}, true, 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRemoteFixtureWithSSH(t, tc.createSSH)
+			input := map[string]any{"action": "connect", "host": f.host, "port": f.port, "username": testssh.Username, "fingerprint": f.ssh.Fingerprint}
+			for key, value := range tc.credentials {
+				input[key] = value
+			}
+			if tc.wrongKey {
+				input["fingerprint"] = "SHA256:untrusted"
+			}
+			connected := remoteTestCall(f.app, f.cookie, "/api/admin/devices/"+f.device+"/remote", input)
+			requireStatus(t, connected, tc.status)
+			if tc.wrongKey && !strings.Contains(connected.Body.String(), "指纹") {
+				t.Fatal("fingerprint failure not reported", connected.Body.String())
+			}
+			if tc.status == 200 {
+				var session map[string]any
+				if err := json.Unmarshal(connected.Body.Bytes(), &session); err != nil {
+					t.Fatal(err)
+				}
+				requireStatus(t, remoteTestCall(f.app, f.cookie, "/api/admin/remote/"+session["id"].(string)+"/files", map[string]string{"action": "list"}), 200)
+			}
+		})
+	}
+}
+
+func TestRemoteSSHHostPinningSessionOwnershipAndTerminal(t *testing.T) {
+	f := newRemoteFixture(t)
+	url := "/api/admin/devices/" + f.device + "/remote"
+	requireStatus(t, remoteTestCall(f.app, nil, url, map[string]string{"action": "fingerprint"}), 401)
+	wrongKey := remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "connect", "host": f.host, "port": f.port, "username": testssh.Username, "password": testssh.Password, "fingerprint": "SHA256:untrusted"})
+	requireStatus(t, wrongKey, 502)
+	if !strings.Contains(wrongKey.Body.String(), "指纹") {
+		t.Fatal(wrongKey.Body.String())
+	}
+	session := f.connect(t)
+	id := session["id"].(string)
+	ticket := session["terminalTicket"].(string)
+	newLogin := httptest.NewRecorder()
+	f.app.auth.issueSession(newLogin, httptest.NewRequest("POST", "http://console.localhost/login", nil), "owner")
+	otherCookie := newLogin.Result().Cookies()[0]
+	requireStatus(t, remoteTestCall(f.app, otherCookie, "/api/admin/remote/"+id+"/files", map[string]string{"action": "list"}), 404)
+	headers := http.Header{"Cookie": {f.cookie.Name + "=" + f.cookie.Value}, "Origin": {f.serverURL}}
+	conn, response, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(f.serverURL, "http")+"/api/admin/remote/"+id+"/terminal?ticket="+ticket, headers)
+	if err != nil {
+		t.Fatal(err, response)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if err = conn.WriteJSON(map[string]any{"type": "resize", "cols": 120, "rows": 35}); err != nil {
+		t.Fatal(err)
+	}
+	if err = conn.WriteJSON(map[string]string{"type": "input", "data": "测试 SSH\r"}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	for !strings.Contains(output.String(), "SSH 通道已响应：测试 SSH") {
+		_, body, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatal("terminal did not respond", err, output.String())
+		}
+		output.Write(body)
+	}
+	replay, reply, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(f.serverURL, "http")+"/api/admin/remote/"+id+"/terminal?ticket="+ticket, headers)
+	if err == nil {
+		replay.Close()
+		t.Fatal("terminal ticket replay accepted")
+	}
+	if reply.StatusCode != 409 {
+		t.Fatal(reply.StatusCode)
+	}
+	reply.Body.Close()
+	requireStatus(t, remoteTestCall(f.app, f.cookie, "/api/auth/logout", map[string]any{}), 204)
+	requireStatus(t, remoteTestCall(f.app, otherCookie, "/api/admin/remote/"+id+"/files", map[string]string{"action": "list"}), 404)
+}
+
+func TestRemoteSFTPChunkedUploadDownloadAndMutations(t *testing.T) {
+	f := newRemoteFixture(t)
+	session := f.connect(t)
+	id := session["id"].(string)
+	url := "/api/admin/remote/" + id + "/files"
+	list := remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "list"})
+	requireStatus(t, list, 200)
+	// Exceed the old HTTP mapping's 16 MB body limit through streamed SSH data.
+	data := bytes.Repeat([]byte("远程文件内容-0123456789\n"), 750000)
+	start := remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "upload-start", "path": "/", "name": "upload.bin", "size": len(data)})
+	requireStatus(t, start, 200)
+	var upload struct{ UploadID string }
+	json.Unmarshal(start.Body.Bytes(), &upload)
+	for offset := 0; offset < len(data); {
+		end := offset + remoteUploadChunk
+		if end > len(data) {
+			end = len(data)
+		}
+		input := map[string]any{"action": "upload-part", "uploadId": upload.UploadID, "offset": offset, "data": data[offset:end]}
+		reply := remoteTestCall(f.app, f.cookie, url, input)
+		requireStatus(t, reply, 200)
+		if offset == 0 {
+			requireStatus(t, remoteTestCall(f.app, f.cookie, url, input), 200)
+		}
+		offset = end
+	}
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "upload-finish", "uploadId": upload.UploadID}), 200)
+	prepared := remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "download", "path": "/upload.bin"})
+	requireStatus(t, prepared, 200)
+	var download map[string]string
+	json.Unmarshal(prepared.Body.Bytes(), &download)
+	got := remoteTestCall(f.app, f.cookie, download["url"], nil)
+	requireStatus(t, got, 200)
+	if sha256.Sum256(got.Body.Bytes()) != sha256.Sum256(data) {
+		t.Fatal("file bytes changed across SSH tunnel")
+	}
+	requireStatus(t, remoteTestCall(f.app, f.cookie, download["url"], nil), 410)
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "mkdir", "path": "/", "name": "测试目录"}), 200)
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "rename", "path": "/upload.bin", "name": "重命名.bin"}), 200)
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "delete", "path": "/重命名.bin"}), 200)
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "delete", "path": "/测试目录"}), 200)
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "delete", "path": "/"}), 400)
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "mkdir", "path": "/", "name": "../escape"}), 400)
+}
+
+func TestRemotePrivateKeyAuthAndPublicHTTPRejection(t *testing.T) {
+	f := newRemoteFixture(t)
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.ssh.AllowKey(signer.PublicKey())
+	block, err := ssh.MarshalPrivateKeyWithPassphrase(private, "fixture", []byte("fixture-key-password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := map[string]any{"action": "connect", "host": f.host, "port": f.port, "username": testssh.Username, "privateKey": string(pem.EncodeToMemory(block)), "passphrase": "fixture-key-password", "fingerprint": f.ssh.Fingerprint}
+	url := "/api/admin/devices/" + f.device + "/remote"
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, input), 200)
+	snapshot, _ := json.Marshal(f.app.store.Snapshot())
+	if bytes.Contains(snapshot, []byte("PRIVATE KEY")) || bytes.Contains(snapshot, []byte("fixture-key-password")) {
+		t.Fatal("SSH credentials persisted")
+	}
+	input["passphrase"] = "wrong"
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, input), 400)
+	raw, _ := json.Marshal(input)
+	request := httptest.NewRequest("POST", "http://console.example.com"+url, bytes.NewReader(raw))
+	request.Header.Set("Origin", "http://console.example.com")
+	request.AddCookie(f.cookie)
+	response := httptest.NewRecorder()
+	f.app.routes().ServeHTTP(response, request)
+	requireStatus(t, response, 400)
+}
+
+func TestCanceledSFTPUploadKeepsOriginalFile(t *testing.T) {
+	f := newRemoteFixture(t)
+	session := f.connect(t)
+	url := "/api/admin/remote/" + session["id"].(string) + "/files"
+	create := func(name string, data []byte, replace bool) string {
+		t.Helper()
+		started := remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "upload-start", "path": "/", "name": name, "size": len(data), "replace": replace})
+		requireStatus(t, started, 200)
+		var result struct{ UploadID string }
+		json.Unmarshal(started.Body.Bytes(), &result)
+		requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "upload-part", "uploadId": result.UploadID, "offset": 0, "data": data}), 200)
+		return result.UploadID
+	}
+	first := create("original.txt", []byte("original contents"), false)
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "upload-finish", "uploadId": first}), 200)
+	second := create("original.txt", []byte("replacement"), true)
+	requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "upload-cancel", "uploadId": second}), 200)
+	prepared := remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "download", "path": "/original.txt"})
+	requireStatus(t, prepared, 200)
+	var link map[string]string
+	json.Unmarshal(prepared.Body.Bytes(), &link)
+	download := remoteTestCall(f.app, f.cookie, link["url"], nil)
+	requireStatus(t, download, 200)
+	if download.Body.String() != "original contents" {
+		t.Fatal("cancelled upload replaced original")
+	}
+	list := remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "list", "path": "/"})
+	requireStatus(t, list, 200)
+	if strings.Contains(list.Body.String(), ".remotegate-upload-") {
+		t.Fatal("cancelled upload left a temporary file")
+	}
+}
+
+type privateFileInfo struct{ os.FileInfo }
+
+func (f privateFileInfo) Mode() os.FileMode { return f.FileInfo.Mode()&os.ModeType | 0600 }
+func (f privateFileInfo) Uid() uint32       { return 123 }
+func (f privateFileInfo) Gid() uint32       { return 456 }
+
+type privateLister struct{ sftp.ListerAt }
+
+func (l privateLister) ListAt(files []os.FileInfo, offset int64) (int, error) {
+	n, err := l.ListerAt.ListAt(files, offset)
+	for i := 0; i < n; i++ {
+		files[i] = privateFileInfo{files[i]}
+	}
+	return n, err
+}
+
+type privateFileList struct{ sftp.FileLister }
+
+func (l privateFileList) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
+	files, err := l.FileLister.Filelist(r)
+	if err == nil && r.Method == "Stat" && r.Filepath == "/private.txt" {
+		return privateLister{files}, nil
+	}
+	return files, err
+}
+
+type observedFileCommands struct {
+	sftp.FileCmder
+	observed chan *sftp.Request
+	deny     bool
+}
+
+func (c observedFileCommands) Filecmd(r *sftp.Request) error {
+	if r.Method == "Setstat" {
+		c.observed <- r
+		if c.deny {
+			return os.ErrPermission
+		}
+	}
+	return c.FileCmder.Filecmd(r)
+}
+func (c observedFileCommands) PosixRename(r *sftp.Request) error {
+	return c.FileCmder.(sftp.PosixRenameFileCmder).PosixRename(r)
+}
+
+func TestSFTPReplacementPreservesPrivateFileMetadataAndRefusesDeniedChanges(t *testing.T) {
+	for _, deny := range []bool{false, true} {
+		t.Run(strconv.FormatBool(deny), func(t *testing.T) {
+			f := newRemoteFixture(t)
+			observed := make(chan *sftp.Request, 8)
+			f.ssh.WrapSFTP(func(h sftp.Handlers) sftp.Handlers {
+				h.FileList = privateFileList{h.FileList}
+				h.FileCmd = observedFileCommands{h.FileCmd, observed, deny}
+				return h
+			})
+			session := f.connect(t)
+			url := "/api/admin/remote/" + session["id"].(string) + "/files"
+			start := func(data string, replace bool) string {
+				response := remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "upload-start", "path": "/", "name": "private.txt", "size": len(data), "replace": replace})
+				requireStatus(t, response, 200)
+				var result struct{ UploadID string }
+				json.Unmarshal(response.Body.Bytes(), &result)
+				requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]any{"action": "upload-part", "uploadId": result.UploadID, "offset": 0, "data": []byte(data)}), 200)
+				return result.UploadID
+			}
+			// A confirmed overwrite may race with removal of the old destination.
+			first := start("original", true)
+			requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "upload-finish", "uploadId": first}), 200)
+			second := start("replacement", true)
+			status := 200
+			if deny {
+				status = 502
+			}
+			requireStatus(t, remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "upload-finish", "uploadId": second}), status)
+			var owner, mode bool
+			for len(observed) > 0 {
+				r := <-observed
+				attrs := r.Attributes()
+				flags := r.AttrFlags()
+				if flags.UidGid {
+					owner = attrs.UID == 123 && attrs.GID == 456
+				}
+				if flags.Permissions {
+					mode = attrs.Mode&0777 == 0600
+				}
+			}
+			if !owner || (!deny && !mode) {
+				t.Fatal("original file metadata was not preserved before replacement")
+			}
+			prepared := remoteTestCall(f.app, f.cookie, url, map[string]string{"action": "download", "path": "/private.txt"})
+			requireStatus(t, prepared, 200)
+			var link map[string]string
+			json.Unmarshal(prepared.Body.Bytes(), &link)
+			got := remoteTestCall(f.app, f.cookie, link["url"], nil)
+			requireStatus(t, got, 200)
+			expected := "replacement"
+			if deny {
+				expected = "original"
+			}
+			if got.Body.String() != expected {
+				t.Fatal("metadata failure changed original contents")
+			}
+		})
+	}
+}

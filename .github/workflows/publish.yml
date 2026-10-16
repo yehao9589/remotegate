@@ -60,6 +60,7 @@ jobs:
           node --test scripts/test-https-deploy.cjs
           node --test scripts/test-plugin-update.cjs
           node --test scripts/test-device-center.cjs
+          node --test scripts/test-remote-access.cjs
 
   container-test:
     needs: checks

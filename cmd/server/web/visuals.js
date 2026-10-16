@@ -1,5 +1,7 @@
 // One local icon set keeps navigation, status and actions visually consistent.
 const consoleIconPaths={
+	terminal:'<rect x="2" y="3" width="20" height="18" rx="3"/><path d="m6 8 4 4-4 4m7 0h5"/>',
+	file:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"/><path d="M14 2v6h6M8 13h8m-8 4h6"/>',
 	 pin:'<path d="m16 3 5 5-4 2-1 5-3 1-5-5 1-3 5-1 2-4ZM11 16l-7 7"/>',
 	 eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
  monitor:'<rect x="3" y="3" width="18" height="13" rx="2.5"/><path d="M8 21h8m-4-5v5"/>',
