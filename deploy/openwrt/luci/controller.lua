@@ -12,10 +12,39 @@ function status()
  local version = require("nixio.fs").readfile("/usr/share/remotegate/version") or "未知"
  luci.http.header("Cache-Control", "no-store")
  luci.http.prepare_content("application/json")
- luci.http.write_json({running=luci.sys.call("pidof remotegate-agent >/dev/null 2>&1")==0, enabled=c.enabled=="1", configured=bool(c.server) and bool(c.device_id) and bool(c.token), server=c.server or "", deviceId=c.device_id or "", version=version:gsub("%s+$", "")})
+ local running = luci.sys.call("pidof remotegate-agent >/dev/null 2>&1")==0
+ luci.http.write_json({running=running, enabled=c.enabled=="1", configured=bool(c.server) and bool(c.device_id) and bool(c.token), server=c.server or "", deviceId=c.device_id or "", version=version:gsub("%s+$", ""), connection=connection_state(c,running)})
 end
 function bool(value)
  return value ~= nil and value ~= ""
+end
+
+function connection_state(c, running)
+ if c.enabled~="1" then return {state="disabled"} end
+ if not bool(c.server) or not bool(c.device_id) or not bool(c.token) then return {state="unconfigured"} end
+ if not running then return {state="stopped"} end
+ local fs=require("nixio.fs")
+ local raw=fs.readfile("/var/run/remotegate/connection.json")
+ if not raw or #raw>8192 then return {state="unknown"} end
+ local ok, value=pcall(require("luci.jsonc").parse,raw)
+ if not ok or type(value)~="table" then return {state="unknown"} end
+ local pid=tonumber(value.pid)
+ if not pid or pid<1 or pid~=math.floor(pid) or pid>1073741824 then return {state="unknown"} end
+ local command=fs.readfile("/proc/"..string.format("%d",pid).."/cmdline") or ""
+ local expected="/usr/sbin/remotegate-agent\0"
+ if command~=expected.."/var/run/remotegate/agent.json\0" and command~=expected.."/etc/remotegate/agent.json\0" then return {state="unknown"} end
+ if value.deviceId~=c.device_id or value.server~=(c.server or ""):gsub("/+$","") then return {state="unknown"} end
+ local allowed={connecting=true,connected=true,reconnecting=true,stopped=true}
+ if not allowed[value.state] then return {state="unknown"} end
+ local result={state=value.state}
+ for _,key in ipairs({"connectedAt","lastAttemptAt","lastHeartbeatAt","nextRetryAt","lastError","lastErrorAt","serverIP","dnsMode"}) do
+  if type(value[key])=="string" and #value[key]<=1500 then result[key]=value[key] end
+ end
+ local age=os.time()-(tonumber(value.updatedUnix) or 0)
+ if value.state=="connected" and (age>90 or age< -90) then
+  result.state="reconnecting";result.lastError="隧道心跳状态超过 90 秒未更新，等待客户端重新连接"
+ end
+ return result
 end
 
 local function update_reply(value)

@@ -1,3 +1,12 @@
+function remotegateConnectionView(status){
+ var connection=status.connection||{},state=connection.state||(!status.enabled?'disabled':!status.running?'stopped':'unknown');
+ var labels={connected:'已连接服务器',connecting:'正在连接',reconnecting:'连接已断开 · 重连中',disabled:'未启用',stopped:'客户端未运行',unconfigured:'连接配置未完成',unknown:'等待连接状态上报',unavailable:'连接状态读取失败'};
+ function time(value){var date=value&&new Date(value);return date&&!isNaN(date.getTime())?date.toLocaleString('zh-CN',{hour12:false}):'尚未成功连接'}
+ var note=state==='connected'?(connection.dnsMode==='encrypted'?'检测到 Fake-IP 或系统解析失败，已通过加密 DNS 获取真实地址并建立直连。':'隧道已建立，连接状态由客户端实际握手与心跳上报。'):state==='unconfigured'?'请保存服务器地址、设备 ID 和令牌后启用服务。':state==='disabled'?'开启远程访问并保存应用后连接。':state==='stopped'?'服务已启用，但客户端进程未运行，请检查路由器系统日志。':state==='unavailable'?'暂时无法确认隧道状态，请检查路由器连接或重新登录。':state==='unknown'?'客户端进程正在运行，等待真实连接状态上报。':'客户端会自动重试，无需重复安装或重新添加设备。';
+ if(state==='connected'&&connection.serverIP)note+=' 直连地址：'+connection.serverIP;
+ if(state==='reconnecting'&&connection.nextRetryAt)note+=' 下次重试：'+time(connection.nextRetryAt)+'。';
+ return {state:state,label:labels[state]||labels.unknown,className:state==='connected'?'is-running':state==='reconnecting'||state==='connecting'?'is-retrying':'',connectedAt:time(connection.connectedAt),note:note,error:state==='connected'||state==='disabled'?'':connection.lastError||''};
+}
 (function(){
  'use strict';
  var script=document.currentScript,statusURL=script ? script.getAttribute('data-status-url') : location.pathname.replace(/\/$/,'')+'/status';
@@ -13,9 +22,11 @@
  function consoleLink(address){var parsed;try{parsed=new URL(address);if(!/^https?:$/.test(parsed.protocol)||parsed.username||parsed.password)throw Error('bad URL');if(parsed.hostname==='10.0.2.2'&&/^(localhost|127\.0\.0\.1)$/.test(location.hostname))parsed.hostname=location.hostname}catch(e){parsed=null}root.querySelectorAll('.rg-console').forEach(function(a){a.hidden=!parsed;if(parsed)a.href=parsed.origin+'/'})}
  consoleLink(document.getElementById('rg-server').textContent.trim());
  function message(text){var el=document.getElementById('rg-message');el.textContent=text;el.hidden=!text}
- function refresh(){if(busy||document.hidden)return;busy=true;var button=document.getElementById('rg-refresh');button.disabled=true;button.textContent='刷新中…';fetch(statusURL,{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw Error('请重新登录路由器后台');return r.json()}).then(function(s){var badge=document.getElementById('rg-state');badge.classList.toggle('is-running',s.running);badge.replaceChildren();badge.appendChild(document.createElement('i'));badge.appendChild(document.createTextNode(s.running?'客户端运行中':s.enabled?'等待客户端启动':'服务未启用'));document.getElementById('rg-server').textContent=s.server||'尚未配置';document.getElementById('rg-device').textContent=s.deviceId||'尚未绑定';document.getElementById('rg-status-note').textContent=!s.configured?'请先填写服务器地址、设备 ID 和令牌，保存并应用后连接。':'客户端运行状态与隧道在线状态不同；可在管理后台查看设备是否在线。';consoleLink(s.server);message('')}).catch(function(e){message('状态读取失败：'+e.message)}).finally(function(){busy=false;button.disabled=false;button.textContent='↻ 刷新状态'})}
+ function renderConnection(s){var view=remotegateConnectionView(s),badge=document.getElementById('rg-state');badge.className=view.className;badge.replaceChildren();badge.appendChild(document.createElement('i'));badge.appendChild(document.createTextNode(view.label));if(view.state!=='unavailable'){document.getElementById('rg-server').textContent=s.server||'尚未配置';document.getElementById('rg-device').textContent=s.deviceId||'尚未绑定';document.getElementById('rg-connection').textContent=view.connectedAt;consoleLink(s.server)}document.getElementById('rg-status-note').textContent=view.note;var error=document.getElementById('rg-connection-error');error.textContent=view.error;error.hidden=!view.error}
+ function refresh(){if(busy||document.hidden)return;busy=true;var button=document.getElementById('rg-refresh');button.disabled=true;button.textContent='刷新中…';var controller=new AbortController(),timeout=setTimeout(function(){controller.abort()},10000);fetch(statusURL,{credentials:'same-origin',cache:'no-store',signal:controller.signal}).then(function(r){if(!r.ok)throw Error('请重新登录路由器后台');return r.json()}).then(function(s){renderConnection(s);message('')}).catch(function(e){renderConnection({connection:{state:'unavailable'}});message('状态读取失败：'+(e.name==='AbortError'?'请求超时，请检查网络后重试':e.message))}).finally(function(){clearTimeout(timeout);busy=false;button.disabled=false;button.textContent='↻ 刷新状态'})}
  document.getElementById('rg-refresh').addEventListener('click',refresh);
- window.setInterval(refresh,10000);
+ window.setInterval(refresh,5000);
+ refresh();
  document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh()});
  var updateBusy=false,updateView=null,updateTimer=null;
  var checkButton=document.getElementById('rg-update-check'),startButton=document.getElementById('rg-update-start'),updateText=document.getElementById('rg-update-state');

@@ -62,13 +62,21 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	status := newConnectionReporter(routerConnectionPath, cfg)
+	defer status.stopped()
+	serverDial := newServerDialer(cfg, status.resolution)
 	var backoff time.Duration
 	for ctx.Err() == nil {
 		started := time.Now()
-		if err = run(ctx, cfg); err != nil && ctx.Err() == nil {
-			log.Printf("connection ended: %v", err)
+		status.attempting()
+		err = runSession(ctx, cfg, serverDial.DialContext, status)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("connection ended: %s", safeConnectionError(err, cfg.Token))
 		}
 		backoff = nextReconnectDelay(backoff, time.Since(started))
+		if ctx.Err() == nil {
+			status.disconnected(err, backoff)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -88,6 +96,10 @@ func nextReconnectDelay(previous, sessionDuration time.Duration) time.Duration {
 }
 
 func run(ctx context.Context, cfg Config) error {
+	return runSession(ctx, cfg, newServerDialer(cfg, nil).DialContext, nil)
+}
+
+func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, status *connectionReporter) error {
 	u, err := url.Parse(cfg.ServerURL)
 	if err != nil {
 		return err
@@ -124,7 +136,7 @@ func run(ctx context.Context, cfg Config) error {
 	}
 	u.RawQuery = q.Encode()
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.InsecureTLS}}
-	dialer.NetDialContext = boundDialer(cfg.Interface, cfg.Mark).DialContext
+	dialer.NetDialContext = serverDial
 	conn, resp, err := dialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
 		if resp != nil {
@@ -134,6 +146,17 @@ func run(ctx context.Context, cfg Config) error {
 	}
 	defer conn.Close()
 	conn.SetReadLimit(protocol.MaxMessageBytes)
+	conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	ping := conn.PingHandler()
+	conn.SetPingHandler(func(data string) error {
+		if err := ping(data); err != nil {
+			return err
+		}
+		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		status.heartbeat()
+		return nil
+	})
+	status.connected()
 	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopClose()
 	log.Printf("connected to %s", u.Host)

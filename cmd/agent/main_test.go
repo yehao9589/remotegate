@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -80,6 +81,58 @@ func TestIdleAgentStopsWhenContextIsCancelled(t *testing.T) {
 	case <-ended:
 	case <-time.After(time.Second):
 		t.Fatal("cancelled agent remained blocked on an idle socket")
+	}
+}
+
+func TestSessionReportsActualHandshakeAndHeartbeat(t *testing.T) {
+	allowPing := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		select {
+		case <-allowPing:
+		case <-time.After(5 * time.Second):
+			return
+		}
+		if err := conn.WriteControl(websocket.PingMessage, []byte("probe"), time.Now().Add(time.Second)); err != nil {
+			return
+		}
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cfg := Config{ServerURL: server.URL, DeviceID: "test", Token: "test-secret"}
+	path := t.TempDir() + "/connection.json"
+	status := newConnectionReporter(path, cfg)
+	status.attempting()
+	ended := make(chan error, 1)
+	go func() { ended <- runSession(ctx, cfg, (&net.Dialer{}).DialContext, status) }()
+	waitFor := func(heartbeat bool) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			status.mu.Lock()
+			snapshot := status.state
+			status.mu.Unlock()
+			if snapshot.State == "connected" && snapshot.ConnectedAt != "" && (!heartbeat || snapshot.LastHeartbeatAt != "") {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatal("Actual session did not report its handshake/heartbeat")
+	}
+	waitFor(false)
+	close(allowPing)
+	waitFor(true)
+	cancel()
+	select {
+	case <-ended:
+	case <-time.After(time.Second):
+		t.Fatal("Session did not stop after cancellation")
 	}
 }
 
