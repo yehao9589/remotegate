@@ -123,7 +123,7 @@ func updateBase(cfg Config) (*url.URL, error) {
 }
 
 func updateClient(cfg Config) *http.Client {
-	return &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: boundDialer(cfg.Interface, cfg.Mark).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}, Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: newServerDialer(cfg, nil).DialContext, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}, Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 func updateRequest(ctx context.Context, cfg Config, path string) (*http.Response, error) {

@@ -58,6 +58,7 @@ jobs:
           node --test scripts/test-device-center.cjs
           node --test scripts/test-remote-access.cjs
           node --test scripts/test-package-center.cjs
+          node --test scripts/test-router-connection.cjs
 
   container-test:
     name: 容器部署验证
@@ -106,6 +107,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y lua5.1
           lua5.1 scripts/test-router-model.lua deploy/openwrt/luci/model.lua
+          lua5.1 scripts/test-router-status.lua deploy/openwrt/luci/controller.lua
           python3 scripts/check-router-packages.py "dist/RemoteGate-${{ needs.checks.outputs.package_version }}-istore.run"
       - name: Verify restart preserves administrator, domains and certificates
         run: |
