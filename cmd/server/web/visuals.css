@@ -6,6 +6,9 @@ body[data-page=packages]{--module:#b77825;--module-soft:#fff5e6;--module-rgb:183
 body[data-page=deploy]{--module:#168c8e;--module-soft:#e8f7f5;--module-rgb:22,140,142}
 body[data-page=security]{--module:#517493;--module-soft:#edf4f9;--module-rgb:81,116,147}
 .ui-icon{display:inline-block;width:18px;height:18px;flex-shrink:0;vertical-align:-4px;pointer-events:none}
+button[data-copy-feedback]{flex-shrink:0;white-space:nowrap}button[data-copy-feedback] .ui-icon{margin:0}
+body button[data-copy-feedback=success],body button[data-copy-feedback=success]:hover{color:#198b73;background:#eaf7f2}
+body button[data-copy-feedback=error],body button[data-copy-feedback=error]:hover{color:#bd6666;background:#fff1f1}
 .intro-mark:before{display:none}.setup-methods b{display:flex;align-items:center;gap:7px}.setup-methods b .ui-icon{width:18px;height:18px;margin:0;color:#5d80c3}.detection-symbol .ui-icon{width:30px;height:30px}
 button .ui-icon,a .ui-icon{margin-right:5px}button.icon-button .ui-icon,.mapping-actions .ui-icon,.mapping-address .ui-icon,.dc-edit .ui-icon{margin:0}
 #shell aside{background:radial-gradient(ellipse at 0% 0%,#31517940,transparent 60%),linear-gradient(168deg,#152139,#101c2e 72%,#152a36);border-right:0;box-shadow:5px 0 25px #12213708}

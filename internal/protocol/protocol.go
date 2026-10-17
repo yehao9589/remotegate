@@ -3,6 +3,9 @@ package protocol
 import "net/http"
 
 const MaxBodyBytes = 16 << 20
+
+// JSON encodes Body as base64; the wire frame needs more space than the body.
+const MaxMessageBytes = ((MaxBodyBytes + 2) / 3 * 4) + (1 << 20)
 const MaxStreamBytes = 32 << 10
 const MaxDeviceStreams = 4
 const StreamWindowBytes = 4 * MaxStreamBytes

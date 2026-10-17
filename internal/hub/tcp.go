@@ -57,10 +57,8 @@ func (h *Hub) OpenTCP(ctx context.Context, deviceID, target string) (net.Conn, e
 		return nil, err
 	}
 	id := "tcp:" + hex.EncodeToString(nonce[:])
-	stream := &tcpConn{client: c, id: id, target: target, incoming: make(chan []byte, 8), done: make(chan struct{}), changed: make(chan struct{}, 1)}
+	stream := &tcpConn{client: c, id: id, target: target, incoming: make(chan []byte, 8), done: make(chan struct{}), changed: make(chan struct{}, 1), credit: protocol.StreamWindowBytes, creditChanged: make(chan struct{}, 1), creditReady: make(chan struct{}, 1)}
 	c.streams.Store(id, stream)
-	stream.credit = protocol.StreamWindowBytes
-	stream.creditChanged, stream.creditReady = make(chan struct{}, 1), make(chan struct{}, 1)
 	reply, err := h.requestTo(ctx, c, protocol.Message{Type: "tcp-open", ID: id, Target: target})
 	if err == nil && reply.Error != "" {
 		err = errors.New(reply.Error)

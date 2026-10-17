@@ -422,7 +422,8 @@ func (a *app) authLogout(w http.ResponseWriter, r *http.Request) {
 	if !authJSON(w, r, &in) {
 		return
 	}
-	if owner, valid := a.remoteOwner(r); valid {
+	owner, authenticated := a.remoteOwner(r)
+	if authenticated {
 		a.remoteMu.Lock()
 		manager := a.remote
 		a.remoteMu.Unlock()
@@ -438,6 +439,9 @@ func (a *app) authLogout(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		a.auth.mu.Unlock()
+	}
+	if authenticated {
+		a.revokeMappingAccess()
 	}
 	clearAdminCookies(w)
 	w.WriteHeader(204)

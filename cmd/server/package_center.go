@@ -307,9 +307,9 @@ func (a *app) packageCenterHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if input.Server != "" {
-			u, err := parsePublicURL(input.Server)
+			u, err := parseInstallerServer(input.Server)
 			if err != nil {
-				http.Error(w, "请输入有效的服务器地址", 400)
+				http.Error(w, err.Error(), 400)
 				return
 			}
 			input.Server = strings.TrimRight(u.String(), "/")

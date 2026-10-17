@@ -29,8 +29,12 @@ function selectCopySource(source){
 }
 
 async function copyText(text,{button,source,status,success='已复制'}={}){
- const prior=button&&copyButtonTimers.get(button),label=prior?.label??button?.innerHTML,disabled=button?.disabled,focused=document.activeElement;
- if(button){clearTimeout(prior?.timer);button.disabled=true;button.textContent='复制中…'}
+ const prior=button&&copyButtonTimers.get(button),original=prior?.original??{label:button?.innerHTML,iconOnly:Boolean(button?.querySelector?.('svg')&&!button.textContent.trim()),title:button?.getAttribute?.('title'),ariaLabel:button?.getAttribute?.('aria-label')},disabled=button?.disabled,focused=document.activeElement;
+ if(button){
+  clearTimeout(prior?.timer);button.disabled=true;
+  if(original.iconOnly){button.innerHTML=original.label;button.dataset.copyFeedback='pending';button.setAttribute('title','正在复制');button.setAttribute('aria-label','正在复制')}
+  else button.textContent='复制中…';
+ }
  let copied=false;
  if(typeof text==='string'&&text.length){
   try{if(window.isSecureContext&&typeof navigator.clipboard?.writeText==='function'){await navigator.clipboard.writeText(text);copied=true}}catch{}
@@ -41,9 +45,17 @@ async function copyText(text,{button,source,status,success='已复制'}={}){
  if(status)status.textContent=message;
  if(typeof toast==='function')toast(message);
  if(button){
-  button.disabled=disabled;button.textContent=copied?'已复制':'复制失败';
+  button.disabled=disabled;
+  if(original.iconOnly){button.innerHTML=uiIcon(copied?'check':'close');button.dataset.copyFeedback=copied?'success':'error';button.setAttribute('title',copied?'已复制':'复制失败');button.setAttribute('aria-label',copied?'已复制':'复制失败')}
+  else button.textContent=copied?'已复制':'复制失败';
   if(focused===button&&button.isConnected)button.focus({preventScroll:true});
-  copyButtonTimers.set(button,{label,timer:setTimeout(()=>{if(button.isConnected)button.innerHTML=label;copyButtonTimers.delete(button)},1800)});
+  copyButtonTimers.set(button,{original,timer:setTimeout(()=>{
+   if(button.isConnected){
+    button.innerHTML=original.label;
+    if(original.iconOnly){delete button.dataset.copyFeedback;for(const [name,value] of [['title',original.title],['aria-label',original.ariaLabel]]){if(value==null)button.removeAttribute(name);else button.setAttribute(name,value)}}
+   }
+   copyButtonTimers.delete(button);
+  },1800)});
  }
  return copied;
 }

@@ -41,3 +41,16 @@ func TestInstallTicketSingleUse(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallerRequiresHTTPSForPublicServer(t *testing.T) {
+	for _, value := range []string{"http://console.example.com", "http://8.8.8.8", "https://user:secret@example.com", "https://example.com:65536", "https://example.com/admin", "https://example.com?token=secret"} {
+		if _, err := parseInstallerServer(value); err == nil {
+			t.Fatal("Unsafe installer origin accepted", value)
+		}
+	}
+	for _, value := range []string{"https://console.example.com", "http://127.0.0.1:18088", "http://10.0.2.2:18088", "http://localhost:18088", "http://[::1]:18088"} {
+		if _, err := parseInstallerServer(value); err != nil {
+			t.Fatal(value, err)
+		}
+	}
+}

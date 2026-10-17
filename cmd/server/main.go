@@ -54,6 +54,8 @@ type app struct {
 	centerMu          sync.Mutex
 	center            *packageCenter
 	centerErr         error
+	mappingMu         sync.Mutex
+	mappingAccess     *mappingAccessManager
 }
 
 func main() {
@@ -137,7 +139,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/admin/mappings", a.admin(a.mappings))
 	mux.HandleFunc("/api/admin/mappings/", a.admin(a.mappingByID))
 	mux.HandleFunc("/", a.root)
-	return a.withPublicURL(mux)
+	return a.withPublicURL(a.mappingAccessHandler(mux))
 }
 
 func (a *app) root(w http.ResponseWriter, r *http.Request) {
@@ -168,6 +170,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideJS = append(guideJS, domainJS...)
 		authJS, _ := webFS.ReadFile("web/auth.js")
 		guideJS = append(guideJS, authJS...)
+		accessJS, _ := webFS.ReadFile("web/mapping-access.js")
+		guideJS = append(guideJS, accessJS...)
 		securityJS, _ := webFS.ReadFile("web/security.js")
 		guideJS = append(guideJS, securityJS...)
 		visualJS, _ := webFS.ReadFile("web/visuals.js")
@@ -187,6 +191,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideCSS, _ := webFS.ReadFile("web/install-guide.css")
 		consoleCSS, _ := webFS.ReadFile("web/console.css")
 		guideCSS = append(guideCSS, consoleCSS...)
+		accessCSS, _ := webFS.ReadFile("web/mapping-access.css")
+		guideCSS = append(guideCSS, accessCSS...)
 		certCSS, _ := webFS.ReadFile("web/certificates.css")
 		guideCSS = append(guideCSS, certCSS...)
 		domainCSS, _ := webFS.ReadFile("web/domain-center.css")
@@ -234,7 +240,7 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 	id := makeID()
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	resp, err := a.hub.Request(ctx, mapping.DeviceID, protocol.Message{Type: "request", ID: id, Method: r.Method, Target: mapping.Target, Path: r.URL.RequestURI(), Headers: protocol.FilterHeaders(r.Header), Body: body})
+	resp, err := a.hub.Request(ctx, mapping.DeviceID, protocol.Message{Type: "request", ID: id, Method: r.Method, Target: mapping.Target, Path: r.URL.RequestURI(), Headers: mappingProxyHeaders(r), Body: body})
 	if err != nil {
 		if errors.Is(err, hub.ErrOffline) {
 			http.Error(w, "device offline", http.StatusBadGateway)
@@ -250,8 +256,15 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 	rewriteLocation(resp.Headers, mapping.Target, r)
 	for key, values := range resp.Headers {
 		for _, value := range values {
+			if strings.EqualFold(key, "Set-Cookie") && !mappingProxyCookie(value) {
+				continue
+			}
 			w.Header().Add(key, value)
 		}
+	}
+	if mapping.AccessMode != "public" {
+		accessNoStore(w)
+		w.Header().Add("Vary", "Cookie")
 	}
 	status := resp.Status
 	if status < 100 {
@@ -284,7 +297,7 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		log.Printf("device activation failed: %v", err)
 		return
 	}
-	conn.SetReadLimit(protocol.MaxBodyBytes + (1 << 20))
+	conn.SetReadLimit(protocol.MaxMessageBytes)
 	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1")
 	if err := a.store.RecordConnection(id, c.Since, info); err != nil {
 		log.Printf("device connection information failed: %v", err)
@@ -341,7 +354,13 @@ func (a *app) admin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (a *app) state(w http.ResponseWriter, _ *http.Request) {
+func (a *app) state(w http.ResponseWriter, r *http.Request) {
+	if origin, err := a.accessConsoleFromAdmin(r); err == nil {
+		if err = a.store.BindMappingAccessConsole(origin.String()); err != nil {
+			http.Error(w, "认证地址保存失败，请检查数据目录写入权限", 500)
+			return
+		}
+	}
 	state := a.store.Snapshot()
 	statuses := a.hub.Statuses()
 	type view struct {
@@ -478,9 +497,23 @@ func (a *app) mappings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var m config.Mapping
-	if json.NewDecoder(r.Body).Decode(&m) != nil {
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&m) != nil {
 		http.Error(w, "bad json", 400)
 		return
+	}
+	host := hostOnly(strings.TrimSpace(m.Host))
+	console, _ := a.configuredAccessConsole()
+	if strings.EqualFold(host, hostOnly(r.Host)) || (console != nil && strings.EqualFold(host, console.Hostname())) {
+		http.Error(w, "映射域名不能与管理后台域名相同，请使用独立子域名", 400)
+		return
+	}
+	if m.AccessMode != "public" {
+		origin, err := a.accessConsoleFromAdmin(r)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		m.AccessConsoleURL = origin.String()
 	}
 	created, err := a.store.PutMapping(m)
 	if err != nil {

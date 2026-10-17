@@ -9,6 +9,7 @@ import (
 	"github.com/local/remotegate/internal/buildinfo"
 	"github.com/local/remotegate/internal/update"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,6 +37,18 @@ func installerPath() string {
 	return env("INSTALLER_PATH", filepath.Join("dist", buildinfo.PackageFilename()))
 }
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+
+func parseInstallerServer(value string) (*url.URL, error) {
+	u, err := parsePublicURL(value)
+	if err != nil {
+		return nil, err
+	}
+	ip := net.ParseIP(u.Hostname())
+	if u.Scheme != "https" && u.Hostname() != "localhost" && (ip == nil || !(ip.IsLoopback() || ip.IsPrivate())) {
+		return nil, fmt.Errorf("公网安装与升级请使用 HTTPS 服务端地址，避免连接凭据和安装脚本通过明文传输")
+	}
+	return u, nil
+}
 func (a *app) createInstall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
@@ -69,11 +82,12 @@ func (a *app) createInstall(w http.ResponseWriter, r *http.Request) {
 	if in.Server == "" {
 		in.Server = profile.Server
 	}
-	u, e := url.Parse(in.Server)
-	if e != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		http.Error(w, "请输入可被路由器访问的 HTTP/HTTPS 服务端地址", 400)
+	u, e := parseInstallerServer(in.Server)
+	if e != nil {
+		http.Error(w, e.Error(), 400)
 		return
 	}
+	in.Server = u.String()
 	if _, e = os.Stat(installerPath()); e != nil {
 		http.Error(w, "服务端尚未部署安装包", 503)
 		return
