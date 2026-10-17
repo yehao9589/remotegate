@@ -18,6 +18,31 @@ test('an online device cannot confirm installation before the target version is 
  await f.context.checkGuide();assert.equal(f.eval('guide.step'),2);
  phase='succeeded';await f.context.checkGuide();assert.equal(f.eval('guide.step'),3,f.node('#detectMessage').textContent);
 });
+
+test('manual enrollment after a failed SSH install does not wait for the failed operation',async()=>{
+ const f=fixture(),manual={dataset:{method:'manual'}};
+ f.context.document.querySelectorAll=()=>[manual];
+ f.context.render=()=>{};
+ f.context.action=async()=>{};
+ vm.runInContext(fs.readFileSync('cmd/server/web/install-guide.js','utf8'),f.context);
+ f.eval("guide={r:{device:{id:'router',name:'Fixture'},token:'fixture-only'},step:1,mode:'ssh',server:'https://example.test',profiles:[{id:'standard',name:'Standard'}],profileId:'standard',command:'consumed command',expires:'expired',operationId:'failed-install',operation:{state:{phase:'failed'}},checking:false}");
+ f.context.renderGuide();manual.onclick();
+ assert.equal(f.eval('guide.operationId'),'');assert.equal(f.eval('guide.command'),'');assert.equal(f.eval('guide.expires'),'');
+ assert.equal(f.eval('guide.r.device.id'),'router');assert.equal(f.eval('guide.r.token'),'fixture-only');
+ f.eval('guide.step=2');f.node('#modal').open=true;
+ f.context.api=async path=>{assert.equal(path,'state','manual detection queried an obsolete SSH operation');return {devices:[{id:'router',online:true}]}};
+ await f.context.checkGuide();assert.equal(f.eval('guide.step'),3);
+});
+
+test('selecting the current install method preserves its active operation',()=>{
+ const f=fixture(),ssh={dataset:{method:'ssh'}};
+ f.context.document.querySelectorAll=()=>[ssh];
+ f.context.action=async()=>{};
+ vm.runInContext(fs.readFileSync('cmd/server/web/install-guide.js','utf8'),f.context);
+ f.eval("guide={r:{device:{id:'router',name:'Fixture'}},step:1,mode:'ssh',server:'https://example.test',profiles:[{id:'standard',name:'Standard'}],profileId:'standard',command:'active command',operationId:'active-install'}");
+ f.context.renderGuide();ssh.onclick();
+ assert.equal(f.eval('guide.operationId'),'active-install');assert.equal(f.eval('guide.command'),'active command');
+});
 test('package comparison handles revisions, unknown versions and large version numbers',()=>{
  const f=fixture();assert.equal(f.context.packageCompare('0.1.10-3','0.1.10-2'),1);assert.equal(f.context.packageCompare('0.1.9-9','0.1.10-1'),-1);assert.equal(f.context.packageCompare('unknown','0.1.10-1'),null);
  assert.equal(f.context.packageCompare('9007199254740993.0.0-1','9007199254740992.0.0-1'),1);

@@ -108,6 +108,7 @@ jobs:
           sudo apt-get install -y lua5.1
           lua5.1 scripts/test-router-model.lua deploy/openwrt/luci/model.lua
           lua5.1 scripts/test-router-status.lua deploy/openwrt/luci/controller.lua
+          python3 -m unittest discover -s scripts -p 'test_router_lifecycle.py'
           python3 scripts/check-router-packages.py "dist/RemoteGate-${{ needs.checks.outputs.package_version }}-istore.run"
       - name: Verify restart preserves administrator, domains and certificates
         run: |

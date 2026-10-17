@@ -31,6 +31,11 @@ with tempfile.TemporaryDirectory() as directory, tarfile.open(fileobj=io.BytesIO
         with tarfile.open(fileobj=io.BytesIO(control), mode="r:gz") as files:
             assert f"Version: {manifest['packageVersion']}\n".encode() in read(files, "control")
             assert read(files, "conffiles") == b"/etc/config/remotegate\n"
+            postinst = read(files, "postinst")
+            assert postinst == Path("deploy/openwrt/remotegate.postinst").read_bytes().replace(b"\r\n", b"\n")
+            target = Path(directory) / (arch + "-postinst")
+            target.write_bytes(postinst)
+            subprocess.run(["sh", "-n", str(target)], check=True)
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as files:
             binary = read(files, "usr/sbin/remotegate-agent")
             assert binary[:4] == b"\x7fELF" and binary[5] == 1
