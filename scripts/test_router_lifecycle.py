@@ -13,18 +13,30 @@ class RouterLifecycleTests(unittest.TestCase):
             config = root / "configuration"
             original = b"config remotegate 'main'\n option device_id 'existing'\n option token 'fixture-only'\n"
             config.write_bytes(original)
+            cache = root / "cache"
+            cache.write_text("old index")
+            (root / "cache.legacy.json").write_text("old versioned index")
+            modules = root / "modules"
+            modules.mkdir()
+            (modules / "controller").write_text("old compiled controller")
+            rpc_log, rpc = root / "rpc-calls", root / "rpc"
+            rpc.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "' + str(rpc_log) + '"\n', encoding="utf-8")
+            rpc.chmod(0o700)
             log, service, generator, hook = [root / name for name in ("calls", "service", "generator", "postinst")]
             service.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "' + str(log) + '"\n' + ('[ "$1" != restart ]\n' if not restart_ok else 'exit 0\n'), encoding="utf-8")
             generator.write_text('#!/bin/sh\nexit ' + ('0' if configured else '1') + '\n', encoding="utf-8")
             service.chmod(0o700)
             generator.chmod(0o700)
             script = Path("deploy/openwrt/remotegate.postinst").read_text(encoding="utf-8")
-            for original_path, replacement in (("/etc/config/remotegate", config), ("/etc/init.d/remotegate", service), ("/usr/libexec/remotegate-config", generator), ("/tmp/luci-indexcache", root / "cache")):
+            for original_path, replacement in (("/etc/config/remotegate", config), ("/etc/init.d/remotegate", service), ("/usr/libexec/remotegate-config", generator), ("/tmp/luci-indexcache", cache), ("/tmp/luci-modulecache", modules), ("/etc/init.d/rpcd", rpc)):
                 script = script.replace(original_path, str(replacement))
             hook.write_text(script, encoding="utf-8")
             env = dict(os.environ, IPKG_INSTROOT="/offline-image" if offline_root else "")
             result = subprocess.run(["sh", str(hook)], env=env, capture_output=True, text=True, check=True)
             self.assertEqual(config.read_bytes(), original, "Existing identity was changed")
+            for path in (cache, root / "cache.legacy.json", modules):
+                self.assertEqual(path.exists(), offline_root, "LuCI cache was not refreshed correctly")
+            self.assertEqual(rpc_log.read_text().splitlines() if rpc_log.exists() else [], [] if offline_root else ["reload"])
             return log.read_text().splitlines() if log.exists() else [], result.stdout
 
     def test_configured_router_starts_without_another_save(self):

@@ -1,7 +1,11 @@
 #!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
 chmod 600 /etc/config/remotegate
-rm -f /tmp/luci-indexcache
+# Refresh generated LuCI indexes and compiled modules, including 21.02 caches.
+# No router configuration or login sessions are removed.
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
+rm -rf /tmp/luci-modulecache/
+/etc/init.d/rpcd reload >/dev/null 2>&1 || true
 /etc/init.d/remotegate enable
 if /usr/libexec/remotegate-config >/dev/null 2>&1; then
  if /etc/init.d/remotegate restart >/dev/null 2>&1; then

@@ -43,6 +43,22 @@ test('selecting the current install method preserves its active operation',()=>{
  f.context.renderGuide();ssh.onclick();
  assert.equal(f.eval('guide.operationId'),'active-install');assert.equal(f.eval('guide.command'),'active command');
 });
+
+test('manual credentials copy individually and together using the current server address',async()=>{
+ const f=fixture(),copies=[];
+ f.context.document.querySelectorAll=()=>[];
+ f.context.action=async()=>{};
+ f.context.copyText=async(text)=>copies.push(text);
+ vm.runInContext(fs.readFileSync('cmd/server/web/install-guide.js','utf8'),f.context);
+ f.eval("guide={r:{device:{id:'router-id',name:'Fixture'},token:'fixture-token<&>'},step:1,mode:'manual',server:'https://example.test',profiles:[{id:'standard',name:'Standard'}],profileId:'standard'}");
+ f.context.renderGuide();
+ assert.equal(f.node('#manualToken').textContent,'fixture-token<&>');
+ assert.doesNotMatch(f.node('#methodBody').innerHTML,/fixture-token/,'credential was interpolated into HTML');
+ f.node('#installServer').oninput({target:{value:' https://updated.example.test '}});
+ assert.equal(f.node('#manualServer').textContent,'https://updated.example.test');
+ for(const id of ['#copyManualServer','#copyManualDevice','#copyManualToken','#copyManualAll'])await f.node(id).onclick({currentTarget:f.node(id)});
+ assert.deepEqual(copies,['https://updated.example.test','router-id','fixture-token<&>','服务器：https://updated.example.test\n设备 ID：router-id\n设备 Token：fixture-token<&>']);
+});
 test('package comparison handles revisions, unknown versions and large version numbers',()=>{
  const f=fixture();assert.equal(f.context.packageCompare('0.1.10-3','0.1.10-2'),1);assert.equal(f.context.packageCompare('0.1.9-9','0.1.10-1'),-1);assert.equal(f.context.packageCompare('unknown','0.1.10-1'),null);
  assert.equal(f.context.packageCompare('9007199254740993.0.0-1','9007199254740992.0.0-1'),1);

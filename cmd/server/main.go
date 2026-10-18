@@ -264,6 +264,11 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 	}
 	if mapping.AccessMode != "public" {
 		accessNoStore(w)
+		// no-referrer makes browsers send Origin: null on same-origin form
+		// navigations, which would fail the mapping's write-origin check.
+		// Auth callbacks retain no-referrer; application pages keep their origin
+		// for local forms while still hiding it from other sites.
+		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Add("Vary", "Cookie")
 	}
 	status := resp.Status
