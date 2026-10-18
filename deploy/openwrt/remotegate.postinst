@@ -1,0 +1,19 @@
+#!/bin/sh
+[ -n "$IPKG_INSTROOT" ] && exit 0
+chmod 600 /etc/config/remotegate
+# Refresh generated LuCI indexes and compiled modules, including 21.02 caches.
+# No router configuration or login sessions are removed.
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*
+rm -rf /tmp/luci-modulecache/
+/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+/etc/init.d/remotegate enable
+if /usr/libexec/remotegate-config >/dev/null 2>&1; then
+ if /etc/init.d/remotegate restart >/dev/null 2>&1; then
+  echo 'Installed. Existing connection configuration preserved; client restarted.'
+ else
+  echo 'Installed, but the client failed to start. Check the RemoteGate status and system log.'
+ fi
+else
+ echo 'Installed. Open Services -> RemoteGate, enter credentials, then Save & Apply.'
+fi
+exit 0

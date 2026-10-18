@@ -115,14 +115,7 @@ reload_service() { /usr/libexec/remotegate-route-guard refresh; stop; start; }
 			panic(err)
 		}
 		data := archive(append(append([]entry{}, files...), entry{"usr/sbin/remotegate-agent", b, 0755}))
-		control := archive([]entry{text("control", fmt.Sprintf("Package: luci-app-remotegate\nVersion: %s\nArchitecture: all\nMaintainer: RemoteGate\nSection: net\nPriority: optional\nDepends: luci-base, luci-compat\nDescription: RemoteGate agent and LuCI configuration (%s)\n", buildinfo.PackageVersion(), arch), 0644), text("conffiles", "/etc/config/remotegate\n", 0644), text("postinst", `#!/bin/sh
-[ -n "$IPKG_INSTROOT" ] && exit 0
-chmod 600 /etc/config/remotegate
-rm -f /tmp/luci-indexcache
-/etc/init.d/remotegate enable
-echo 'Installed. Open Services -> RemoteGate, enter credentials, then Save & Apply.'
-exit 0
-`, 0755), text("prerm", `#!/bin/sh
+		control := archive([]entry{text("control", fmt.Sprintf("Package: luci-app-remotegate\nVersion: %s\nArchitecture: all\nMaintainer: RemoteGate\nSection: net\nPriority: optional\nDepends: luci-base, luci-compat\nDescription: RemoteGate agent and LuCI configuration (%s)\n", buildinfo.PackageVersion(), arch), 0644), text("conffiles", "/etc/config/remotegate\n", 0644), source("postinst", "deploy/openwrt/remotegate.postinst", 0755), text("prerm", `#!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
 /etc/init.d/remotegate stop
 /etc/init.d/remotegate disable

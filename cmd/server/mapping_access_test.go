@@ -263,6 +263,33 @@ func TestMappingProxyNeverForwardsGatewayCredentials(t *testing.T) {
 	}
 }
 
+func TestMappingAccessAllowsLocalLoginFormsAndRejectsForeignOrigins(t *testing.T) {
+	f := newAccessFixture(t)
+	visitor := completeAccess(t, f)
+	for _, origin := range []string{"https://router.example.com", "https://router.example.com:443", "https://ROUTER.example.com", "http://router.example.com", "https://router.example.com:8443", "https://evil.example.com", "null"} {
+		t.Run(origin, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "https://router.example.com/cgi-bin/luci/", strings.NewReader("luci_username=root&luci_password=fixture-only"))
+			r.AddCookie(visitor)
+			r.Header.Set("Origin", origin)
+			r.Header.Set("Sec-Fetch-Site", "same-origin")
+			w := httptest.NewRecorder()
+			f.app.routes().ServeHTTP(w, r)
+			want := http.StatusForbidden
+			if origin == "https://router.example.com" || origin == "https://router.example.com:443" || origin == "https://ROUTER.example.com" {
+				want = http.StatusBadGateway // Authorization passed; fixture device is offline.
+			}
+			requireStatus(t, w, want)
+		})
+	}
+	r := httptest.NewRequest("POST", "https://router.example.com/cgi-bin/luci/", nil)
+	r.AddCookie(visitor)
+	r.Header.Set("Origin", "https://router.example.com")
+	r.Header.Set("Sec-Fetch-Site", "cross-site")
+	w := httptest.NewRecorder()
+	f.app.routes().ServeHTTP(w, r)
+	requireStatus(t, w, http.StatusForbidden)
+}
+
 func TestMappingAccessAuthorizesRealTunnelAndKeepsApplicationLogin(t *testing.T) {
 	f := newAccessFixture(t)
 	d, token, err := f.app.store.CreateDevice("connected")
@@ -294,6 +321,9 @@ func TestMappingAccessAuthorizesRealTunnelAndKeepsApplicationLogin(t *testing.T)
 	requireStatus(t, w, 200)
 	if w.Body.String() != "private router page" || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal(w)
+	}
+	if w.Header().Get("Referrer-Policy") != "same-origin" {
+		t.Fatal("Application pages must preserve the Origin of local login forms")
 	}
 	if cookies := w.Result().Cookies(); len(cookies) != 1 || cookies[0].Name != "sysauth" {
 		t.Fatal(cookies)

@@ -26,11 +26,16 @@ test('a failed status request clears the previous connected badge',async()=>{
  const elements=new Map(),listeners={};
  function element(id){if(id==='rg-update-check'||id==='rg-update-start')return null;if(!elements.has(id))elements.set(id,{textContent:'',className:'',hidden:false,addEventListener(type,fn){listeners[id+':'+type]=fn},replaceChildren(){this.children=[]},appendChild(node){(this.children||=[]).push(node)}});return elements.get(id)}
  const root=element('cbi-remotegate');root.querySelectorAll=()=>[];
- let fail=false;
- const page=vm.createContext({document:{currentScript:null,readyState:'complete',hidden:false,body:{classList:{add(){}}},getElementById:element,createElement:()=>({}),createTextNode:text=>({text}),addEventListener(){}},location:{pathname:'/cgi-bin/luci/admin/services/remotegate'},window:{setInterval(){},addEventListener(){}},setTimeout,clearTimeout,AbortController,URL,fetch:async()=>{if(fail)throw Error('offline');return {ok:true,json:async()=>({enabled:true,running:true,connection:{state:'connected'}})}}});
+ let fail=false,legacy=false;
+ const page=vm.createContext({document:{currentScript:null,readyState:'complete',hidden:false,body:{classList:{add(){}}},getElementById:element,createElement:()=>({}),createTextNode:text=>({text}),addEventListener(){}},location:{pathname:'/cgi-bin/luci/admin/services/remotegate'},window:{setInterval(){},addEventListener(){}},setTimeout,clearTimeout,AbortController,URL,fetch:async()=>{if(fail)throw Error('offline');return {ok:true,json:async()=>({enabled:true,running:true,...(legacy?{}:{connection:{state:'connected'}})})}}});
  vm.runInContext(fs.readFileSync('deploy/openwrt/luci/page.js','utf8'),page);
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(element('rg-state').className,'is-running');
+ legacy=true;listeners['rg-refresh:click']();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(element('rg-state').className,'');
+ assert.match(element('rg-message').textContent,/接口未更新/);
+ legacy=false;
  fail=true;listeners['rg-refresh:click']();
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(element('rg-state').className,'');

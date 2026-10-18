@@ -1,5 +1,5 @@
 {
-  "version": "0.1.12",
-  "title": "直连兼容与插件连接状态",
+  "version": "0.1.13",
+  "title": "修复路由器登录与升级状态，完善手动接入",
   "packageRevision": 1
 }
