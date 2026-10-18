@@ -14,7 +14,7 @@ import (
 	"github.com/local/remotegate/internal/protocol"
 )
 
-func tunnelPair(t *testing.T, h *Hub) (*websocket.Conn, <-chan error) {
+func tunnelPair(t *testing.T, h *Hub, remote ...bool) (*websocket.Conn, <-chan error) {
 	t.Helper()
 	ended := make(chan error, 1)
 	attached := make(chan struct{}, 1)
@@ -24,7 +24,7 @@ func tunnelPair(t *testing.T, h *Hub) (*websocket.Conn, <-chan error) {
 		if err != nil {
 			return
 		}
-		c := h.Attach("router", "test", "0.1.3", conn)
+		c := h.Attach("router", "test", "0.1.3", conn, false, len(remote) > 0 && remote[0])
 		attached <- struct{}{}
 		err = h.ReadLoop(c)
 		h.Detach(c)
@@ -43,6 +43,29 @@ func tunnelPair(t *testing.T, h *Hub) (*websocket.Conn, <-chan error) {
 		t.Fatal("agent was not attached")
 	}
 	return conn, ended
+}
+
+func TestDisconnectOldSessionCannotCloseReplacement(t *testing.T) {
+	h := New()
+	_, oldEnded := tunnelPair(t, h)
+	old := h.Statuses()["router"]
+	_, currentEnded := tunnelPair(t, h)
+	select {
+	case <-oldEnded:
+	case <-time.After(time.Second):
+		t.Fatal("old connection did not close")
+	}
+	h.Disconnect("router", old.Since)
+	current, ok := h.Statuses()["router"]
+	if !ok || current.Since.Equal(old.Since) {
+		t.Fatal("old disconnect removed replacement")
+	}
+	h.Disconnect("router", current.Since)
+	select {
+	case <-currentEnded:
+	case <-time.After(time.Second):
+		t.Fatal("current connection did not close")
+	}
 }
 
 func TestIdleTunnelStaysOnlineAndForwardsAfterProxyIdleWindow(t *testing.T) {

@@ -115,6 +115,9 @@ func (c *tcpConn) send(msg protocol.Message, deadline time.Time) error {
 		_ = c.client.conn.Close()
 		return err
 	}
+	if msg.Type == "tcp-data" && c.client.record != nil {
+		c.client.record("", uint64(len(msg.Body)), 0)
+	}
 	return nil
 }
 

@@ -36,6 +36,13 @@ type Client struct {
 	latency                 time.Duration
 	heartbeat               string
 	heartbeatAt             time.Time
+	record                  func(string, uint64, uint64)
+}
+
+type pendingResponse struct {
+	reply   chan protocol.Message
+	mapping string
+	account bool
 }
 
 type pingResult struct {
@@ -53,17 +60,22 @@ type Hub struct {
 	pingInterval time.Duration
 	pongWait     time.Duration
 	writeWait    time.Duration
+	record       func(string, string, uint64, uint64)
 }
 
-func New() *Hub {
-	return &Hub{clients: make(map[string]*Client), pingInterval: 20 * time.Second, pongWait: 90 * time.Second, writeWait: 30 * time.Second}
+func New(recorder ...func(string, string, uint64, uint64)) *Hub {
+	h := &Hub{clients: make(map[string]*Client), pingInterval: 20 * time.Second, pongWait: 90 * time.Second, writeWait: 30 * time.Second}
+	if len(recorder) > 0 {
+		h.record = recorder[0]
+	}
+	return h
 }
 
-func (h *Hub) Disconnect(id string) {
+func (h *Hub) Disconnect(id string, since ...time.Time) {
 	h.mu.RLock()
 	c := h.clients[id]
 	h.mu.RUnlock()
-	if c != nil {
+	if c != nil && (len(since) == 0 || c.Since.Equal(since[0])) {
 		_ = c.conn.Close()
 		h.Detach(c)
 	}
@@ -71,6 +83,9 @@ func (h *Hub) Disconnect(id string) {
 
 func (h *Hub) Attach(deviceID, name, version string, conn *websocket.Conn, updater ...bool) *Client {
 	c := &Client{DeviceID: deviceID, Name: name, Version: version, Since: time.Now().UTC(), conn: conn}
+	if h.record != nil {
+		c.record = func(mapping string, up, down uint64) { h.record(deviceID, mapping, up, down) }
+	}
 	c.CanUpdate = len(updater) > 0 && updater[0]
 	c.CanRemote = len(updater) > 1 && updater[1]
 	c.CanManageUpdate = len(updater) > 2 && updater[2]
@@ -93,7 +108,7 @@ func (h *Hub) Detach(c *Client) {
 	h.mu.Unlock()
 	c.pending.Range(func(key, value any) bool {
 		if actual, ok := c.pending.LoadAndDelete(key); ok {
-			actual.(chan protocol.Message) <- protocol.Message{Type: "response", ID: key.(string), Error: "device disconnected"}
+			actual.(pendingResponse).reply <- protocol.Message{Type: "response", ID: key.(string), Error: "device disconnected"}
 		}
 		return true
 	})
@@ -151,12 +166,19 @@ func (h *Hub) ReadLoop(c *Client) error {
 		}
 		if msg.Type == "response" {
 			if ch, ok := c.pending.LoadAndDelete(msg.ID); ok {
-				ch.(chan protocol.Message) <- msg
+				pending := ch.(pendingResponse)
+				if pending.account && c.record != nil {
+					c.record(pending.mapping, 0, uint64(len(msg.Body)))
+				}
+				pending.reply <- msg
 			}
 		}
 		if msg.Type == "tcp-data" || msg.Type == "tcp-close" || msg.Type == "tcp-credit" {
 			if value, ok := c.streams.Load(msg.ID); ok {
 				stream := value.(*tcpConn)
+				if msg.Type == "tcp-data" && len(msg.Body) <= protocol.MaxStreamBytes && c.record != nil {
+					c.record("", 0, uint64(len(msg.Body)))
+				}
 				if msg.Type == "tcp-credit" {
 					if !stream.addCredit(msg.Status) {
 						stream.finish(errors.New("invalid stream credit"), true)
@@ -238,7 +260,7 @@ func (h *Hub) Ping(ctx context.Context, deviceID string) (time.Duration, error) 
 	}
 }
 
-func (h *Hub) Request(ctx context.Context, deviceID string, msg protocol.Message) (protocol.Message, error) {
+func (h *Hub) Request(ctx context.Context, deviceID string, msg protocol.Message, mapping ...string) (protocol.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return protocol.Message{}, err
 	}
@@ -248,12 +270,16 @@ func (h *Hub) Request(ctx context.Context, deviceID string, msg protocol.Message
 	if c == nil {
 		return protocol.Message{}, ErrOffline
 	}
-	return h.requestTo(ctx, c, msg)
+	return h.requestTo(ctx, c, msg, mapping...)
 }
 
-func (h *Hub) requestTo(ctx context.Context, c *Client, msg protocol.Message) (protocol.Message, error) {
+func (h *Hub) requestTo(ctx context.Context, c *Client, msg protocol.Message, mapping ...string) (protocol.Message, error) {
 	response := make(chan protocol.Message, 1)
-	c.pending.Store(msg.ID, response)
+	pending := pendingResponse{reply: response, account: msg.Type == "request"}
+	if len(mapping) > 0 {
+		pending.mapping = mapping[0]
+	}
+	c.pending.Store(msg.ID, pending)
 	defer c.pending.Delete(msg.ID)
 	c.writeMu.Lock()
 	if err := ctx.Err(); err != nil {
@@ -272,6 +298,9 @@ func (h *Hub) requestTo(ctx context.Context, c *Client, msg protocol.Message) (p
 	if err != nil {
 		_ = c.conn.Close()
 		return protocol.Message{}, err
+	}
+	if pending.account && c.record != nil {
+		c.record(pending.mapping, uint64(len(msg.Body)), 0)
 	}
 	select {
 	case result := <-response:

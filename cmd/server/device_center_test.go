@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/local/remotegate/internal/config"
 	"github.com/local/remotegate/internal/protocol"
+	"github.com/local/remotegate/internal/traffic"
 	"github.com/local/remotegate/internal/update"
 )
 
@@ -43,6 +44,26 @@ func TestDeviceManagementLegacyPingReconnectAndPreferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := "/api/admin/devices/" + device.ID
+	a.traffic = traffic.New()
+	a.traffic.Add(device.ID, mapping.ID, 123, 456)
+	requireStatus(t, authCall(a, path+"/status", "{}", "", nil), 401)
+	requireStatus(t, authCall(a, path+"/events", "", "", nil), 401)
+	requireStatus(t, authCall(a, path+"/status", "{}", "https://evil.example", cookie), 403)
+	requireStatus(t, authCall(a, path+"/status", "", "", cookie), 405)
+	requireStatus(t, authCall(a, path+"/events", "{}", "", cookie), 405)
+	requireStatus(t, authCall(a, "/api/admin/devices/missing/status", "{}", "", cookie), 404)
+	requireStatus(t, authCall(a, "/api/admin/devices/missing/events", "", "", cookie), 404)
+	offline := authCall(a, path+"/status", "{}", "", cookie)
+	requireStatus(t, offline, 200)
+	if !strings.Contains(offline.Body.String(), `"online":false`) || !strings.Contains(offline.Body.String(), `"uploadBytes":123`) {
+		t.Fatal("offline refresh lost real status/traffic", offline.Body.String())
+	}
+	empty := authCall(a, path+"/events", "", "", cookie)
+	requireStatus(t, empty, 200)
+	if !strings.Contains(empty.Body.String(), `"events":[]`) {
+		t.Fatal("invented old events", empty.Body.String())
+	}
+
 	requireStatus(t, authCall(a, path+"/health", "{}", "", nil), 401)
 	requireStatus(t, authCall(a, path+"/health", "{}", "https://evil.example", cookie), 403)
 	requireStatus(t, authCall(a, path+"/health", "", "", cookie), 405)
@@ -79,6 +100,16 @@ func TestDeviceManagementLegacyPingReconnectAndPreferences(t *testing.T) {
 	}
 	conn := connect(false)
 	defer func() { conn.Close(); waitDevice(t, a, device.ID, false) }()
+	refreshed := authCall(a, path+"/status", "{}", "", cookie)
+	requireStatus(t, refreshed, 200)
+	if !strings.Contains(refreshed.Body.String(), `"probe":"ok"`) || !strings.Contains(refreshed.Body.String(), `"online":true`) || strings.Contains(refreshed.Body.String(), device.TokenHash) || strings.Contains(refreshed.Body.String(), token) {
+		t.Fatal("bad single-device refresh", refreshed.Body.String())
+	}
+	events := authCall(a, path+"/events", "", "", cookie)
+	requireStatus(t, events, 200)
+	if !strings.Contains(events.Body.String(), `"state":"online"`) || strings.Contains(events.Body.String(), token) {
+		t.Fatal("bad history", events.Body.String())
+	}
 	ping := authCall(a, path+"/health", "{}", "", cookie)
 	requireStatus(t, ping, 200)
 	if !strings.Contains(ping.Body.String(), "latencyMs") {
@@ -116,6 +147,15 @@ func TestDeviceManagementLegacyPingReconnectAndPreferences(t *testing.T) {
 	requireStatus(t, authCall(a, path+"/reconnect", "{}", "", cookie), 200)
 	waitDevice(t, a, device.ID, false)
 	conn = connect(true)
+	history, _ := a.store.DeviceConnectionEvents(device.ID)
+	if len(history) != 3 || history[0].State != "online" || history[1].State != "offline" || history[1].Reason != "reconnect" {
+		t.Fatal("reconnect generated duplicate/wrong events", history)
+	}
+	historyState := authCall(a, "/api/admin/state", "", "", cookie)
+	if strings.Contains(historyState.Body.String(), "connectionEvents") {
+		t.Fatal("automatic state poll included full event history")
+	}
+
 	if _, ok := a.store.Authenticate(device.ID, token); !ok {
 		t.Fatal("reconnect invalidated credentials")
 	}
@@ -155,5 +195,31 @@ func TestConnectionSourceTrustAndInformationLimits(t *testing.T) {
 	a.connectAgent(response, request)
 	if response.Code != 400 || len(a.store.Snapshot().Devices) != 0 {
 		t.Fatal("invalid report activated device", response.Code)
+	}
+}
+
+func TestDeviceRefreshTimeoutKeepsConnectedTunnel(t *testing.T) {
+	a := freshAuthApp(t)
+	login := authCall(a, "/api/auth/setup", setupBody, "", nil)
+	cookie := login.Result().Cookies()[0]
+	d, token, _ := a.store.CreateDevice("silent router")
+	server := agentTestServer(t, a)
+	defer server.Close()
+	query := url.Values{"device_id": {d.ID}, "token": {token}, "version": {"0.1.3"}}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect?"+query.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { conn.Close(); waitDevice(t, a, d.ID, false) }()
+	waitDevice(t, a, d.ID, true)
+	// Do not read: neither control pongs nor the legacy fallback can respond.
+	result := authCall(a, "/api/admin/devices/"+d.ID+"/status", "{}", "", cookie)
+	requireStatus(t, result, 200)
+	if !strings.Contains(result.Body.String(), `"online":true`) || !strings.Contains(result.Body.String(), `"probe":"unresponsive"`) {
+		t.Fatal(result.Body.String())
+	}
+	events, _ := a.store.DeviceConnectionEvents(d.ID)
+	if len(events) != 1 || events[0].State != "online" {
+		t.Fatal("refresh fabricated offline event", events)
 	}
 }
