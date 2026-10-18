@@ -14,6 +14,24 @@ test('cards mask IDs, show honest legacy information and escape device notes',()
  assert.match(html,/rou••••one/);assert.match(html,/&lt;img/);assert.doesNotMatch(html,/<img/);assert.match(html,/升级插件后/);assert.match(html,/隧道延迟 待检测/);
  assert.match(html,/复制新增映射/);assert.match(html,/本次在线 1 分钟/);
 });
+
+test('device and mapping traffic show their own cumulative counters even while offline',()=>{
+ const f=fixture();f.context.state.traffic={since:'2026-10-19T00:00:00Z',devices:{'router-one':{uploadBytes:1024,downloadBytes:2048}},mappings:{'map-one':{uploadBytes:256,downloadBytes:768},other:{uploadBytes:999999,downloadBytes:999999}}};
+ f.context.state.devices[0].online=false;f.context.deviceCards();
+ const html=f.node('#deviceCards').innerHTML;
+ assert.match(html,/累计流量 <b>3.00 KiB/);assert.match(html,/↑ 上传 <b>1.00 KiB/);assert.match(html,/↓ 下载 <b>2.00 KiB/);
+ assert.match(html,/<th>使用流量<\/th>/);
+ const row=f.context.mappingTrafficHTML('map-one');assert.match(row,/1.00 KiB/);assert.match(row,/↑ 256 B/);assert.match(row,/↓ 768 B/);assert.doesNotMatch(row,/999999/);
+ assert.match(html,/之前的流量不回填/);assert.match(html,/SSH 和文件传输/);
+});
+
+test('traffic formatting handles zero, missing, invalid counters and large transfers',()=>{
+ const f=fixture();
+ for(const n of [0,undefined,-1,NaN,Infinity,'<script>'])assert.equal(f.context.trafficBytes(n),'0 B');
+ assert.equal(f.context.trafficBytes(1),'1 B');assert.equal(f.context.trafficBytes(1024**3),'1.00 GiB');assert.equal(f.context.trafficBytes(1024**4*4),'4.00 TiB');
+ assert.match(f.context.mappingTrafficHTML('missing'),/0 B/);
+ f.context.state.mappings=[];assert.match(f.context.deviceMappingRows(f.context.state.devices[0]),/colspan="5"/);
+});
 test('pin sorting, saved-note search and pinned filter work together',()=>{
  const f=fixture();f.context.state.devices.push({id:'pinned',name:'办公室',note:'NAS',online:false,pinned:true,info:{}});
  f.context.deviceCards();assert.ok(f.node('#deviceCards').innerHTML.indexOf('办公室')<f.node('#deviceCards').innerHTML.indexOf('主路由器'));

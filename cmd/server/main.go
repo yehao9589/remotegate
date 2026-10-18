@@ -23,6 +23,7 @@ import (
 	"github.com/local/remotegate/internal/config"
 	"github.com/local/remotegate/internal/hub"
 	"github.com/local/remotegate/internal/protocol"
+	"github.com/local/remotegate/internal/traffic"
 )
 
 //go:embed web/*
@@ -40,6 +41,7 @@ type app struct {
 	httpsSettingsPath string
 	store             *config.Store
 	hub               *hub.Hub
+	traffic           *traffic.Store
 	adminUser         string
 	adminPass         string
 	auth              *adminManager
@@ -74,7 +76,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	a := &app{store: store, hub: hub.New(), auth: auth, consoleHost: strings.ToLower(os.Getenv("CONSOLE_HOST"))}
+	totals, err := traffic.Open(filepath.Join(filepath.Dir(statePath), "traffic.json"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		if err := totals.Close(); err != nil {
+			log.Printf("流量统计保存失败：%v", err)
+		}
+	}()
+	a := &app{store: store, hub: hub.New(totals.Add), traffic: totals, auth: auth, consoleHost: strings.ToLower(os.Getenv("CONSOLE_HOST"))}
 	a.operators = newOperatorResolver(filepath.Join(filepath.Dir(statePath), "ip-networks.json"), !strings.EqualFold(os.Getenv("IP_OPERATOR_LOOKUP"), "false"))
 	if value := strings.TrimSpace(os.Getenv("PUBLIC_URL")); value != "" {
 		a.publicURL, err = parsePublicURL(value)
@@ -95,7 +106,10 @@ func main() {
 	if !auth.initialized() {
 		log.Print("首次启动：请打开管理后台创建管理员账号")
 	}
-	log.Fatal(server.ListenAndServe())
+	if err := a.serveUntilStopped(server); err != nil {
+		_ = totals.Close()
+		log.Fatal(err)
+	}
 }
 
 func (a *app) routes() http.Handler {
@@ -240,7 +254,7 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 	id := makeID()
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	resp, err := a.hub.Request(ctx, mapping.DeviceID, protocol.Message{Type: "request", ID: id, Method: r.Method, Target: mapping.Target, Path: r.URL.RequestURI(), Headers: mappingProxyHeaders(r), Body: body})
+	resp, err := a.hub.Request(ctx, mapping.DeviceID, protocol.Message{Type: "request", ID: id, Method: r.Method, Target: mapping.Target, Path: r.URL.RequestURI(), Headers: mappingProxyHeaders(r), Body: body}, mapping.ID)
 	if err != nil {
 		if errors.Is(err, hub.ErrOffline) {
 			http.Error(w, "device offline", http.StatusBadGateway)
@@ -387,7 +401,18 @@ func (a *app) state(w http.ResponseWriter, r *http.Request) {
 		s, online := statuses[d.ID]
 		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, CanRemote: s.CanRemote, CanManageUpdate: s.CanManageUpdate, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)})
 	}
-	writeJSON(w, map[string]any{"devices": devices, "mappings": state.Mappings})
+	totals := traffic.Snapshot{Devices: map[string]traffic.Counter{}, Mappings: map[string]traffic.Counter{}}
+	if a.traffic != nil {
+		all := a.traffic.Snapshot()
+		totals.Since, totals.Version = all.Since, all.Version
+		for _, d := range state.Devices {
+			totals.Devices[d.ID] = all.Devices[d.ID]
+		}
+		for _, m := range state.Mappings {
+			totals.Mappings[m.ID] = all.Mappings[m.ID]
+		}
+	}
+	writeJSON(w, map[string]any{"devices": devices, "mappings": state.Mappings, "traffic": totals})
 }
 
 func (a *app) devices(w http.ResponseWriter, r *http.Request) {
@@ -481,7 +506,7 @@ func (a *app) probe(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		start := time.Now()
-		resp, err := a.hub.Request(ctx, m.DeviceID, protocol.Message{Type: "request", ID: makeID(), Method: "HEAD", Target: m.Target, Path: "/"})
+		resp, err := a.hub.Request(ctx, m.DeviceID, protocol.Message{Type: "request", ID: makeID(), Method: "HEAD", Target: m.Target, Path: "/"}, m.ID)
 		if err != nil {
 			http.Error(w, err.Error(), 502)
 			return
