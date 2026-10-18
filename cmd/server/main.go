@@ -76,6 +76,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := store.RecoverConnections(time.Now()); err != nil {
+		log.Fatal(err)
+	}
 	totals, err := traffic.Open(filepath.Join(filepath.Dir(statePath), "traffic.json"))
 	if err != nil {
 		log.Fatal(err)
@@ -382,24 +385,10 @@ func (a *app) state(w http.ResponseWriter, r *http.Request) {
 	}
 	state := a.store.Snapshot()
 	statuses := a.hub.Statuses()
-	type view struct {
-		config.Device
-		Online          bool          `json:"online"`
-		Version         string        `json:"version,omitempty"`
-		ConnectedAt     time.Time     `json:"connectedAt,omitempty"`
-		CanUpdate       bool          `json:"canUpdate"`
-		CanRemote       bool          `json:"canRemote"`
-		CanManageUpdate bool          `json:"canManageUpdate"`
-		LastActiveAt    time.Time     `json:"lastActiveAt,omitempty"`
-		LatencyAt       time.Time     `json:"latencyAt,omitempty"`
-		LatencyMs       *int64        `json:"latencyMs,omitempty"`
-		Network         deviceNetwork `json:"network"`
-	}
-	devices := make([]view, 0, len(state.Devices))
+	devices := make([]deviceView, 0, len(state.Devices))
 	for _, d := range state.Devices {
-		d.TokenHash = ""
 		s, online := statuses[d.ID]
-		devices = append(devices, view{Device: d, Online: online, Version: d.Version, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, CanRemote: s.CanRemote, CanManageUpdate: s.CanManageUpdate, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)})
+		devices = append(devices, a.viewDevice(d, s, online))
 	}
 	totals := traffic.Snapshot{Devices: map[string]traffic.Counter{}, Mappings: map[string]traffic.Counter{}}
 	if a.traffic != nil {
@@ -439,6 +428,14 @@ func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 func (a *app) deviceByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/admin/devices/")
 	if deviceID, operation, ok := strings.Cut(id, "/"); ok {
+		if operation == "status" {
+			a.refreshDeviceStatus(w, r, deviceID)
+			return
+		}
+		if operation == "events" {
+			a.deviceConnectionEvents(w, r, deviceID)
+			return
+		}
 		if operation == "remote" {
 			a.deviceRemoteConnect(w, r, deviceID)
 			return

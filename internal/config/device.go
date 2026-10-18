@@ -71,21 +71,21 @@ func (s *Store) RecordConnection(id string, at time.Time, info DeviceInfo) error
 		if before.ID != id {
 			continue
 		}
-		if at.Before(before.LastConnectedAt) {
+		if at.IsZero() || !at.After(before.LastConnectedAt) {
 			return nil
 		}
-		s.state.Devices[i].LastConnectedAt = at.UTC()
-		s.state.Devices[i].Info = info
-		if err := s.saveLocked(); err != nil {
-			s.state.Devices[i] = before
-			return err
+		next := before
+		next.LastConnectedAt, next.Info = at.UTC(), info
+		reason := "connected"
+		if !before.LastConnectedAt.IsZero() && before.LastDisconnectedAt.Before(before.LastConnectedAt) {
+			reason = "replaced"
 		}
-		return nil
+		return s.saveConnectionLocked(i, next, ConnectionEvent{State: "online", At: at.UTC(), Reason: reason})
 	}
 	return os.ErrNotExist
 }
 
-func (s *Store) RecordDisconnect(id string, connectedAt, at time.Time) error {
+func (s *Store) RecordDisconnect(id string, connectedAt, at time.Time, reasons ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, before := range s.state.Devices {
@@ -93,15 +93,16 @@ func (s *Store) RecordDisconnect(id string, connectedAt, at time.Time) error {
 			continue
 		}
 		// A replaced session must never overwrite the new connection's history.
-		if !before.LastConnectedAt.Equal(connectedAt) || !at.After(before.LastDisconnectedAt) {
+		if connectedAt.IsZero() || at.Before(connectedAt) || !before.LastConnectedAt.Equal(connectedAt) || !before.LastDisconnectedAt.Before(connectedAt) {
 			return nil
 		}
-		s.state.Devices[i].LastDisconnectedAt = at.UTC()
-		if err := s.saveLocked(); err != nil {
-			s.state.Devices[i] = before
-			return err
+		reason := "disconnected"
+		if len(reasons) > 0 && (reasons[0] == "reconnect" || reasons[0] == "server_stop" || reasons[0] == "server_restart") {
+			reason = reasons[0]
 		}
-		return nil
+		next := before
+		next.LastDisconnectedAt = at.UTC()
+		return s.saveConnectionLocked(i, next, ConnectionEvent{State: "offline", At: at.UTC(), ConnectedAt: connectedAt.UTC(), Reason: reason})
 	}
 	return nil // The device may have been deleted while its tunnel was closing.
 }

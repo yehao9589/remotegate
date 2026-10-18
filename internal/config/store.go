@@ -50,10 +50,11 @@ type Mapping struct {
 var mappingHostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type State struct {
-	Domain   DomainSettings   `json:"domain"`
-	Domains  []DomainSettings `json:"domains,omitempty"`
-	Devices  []Device         `json:"devices"`
-	Mappings []Mapping        `json:"mappings"`
+	ConnectionEvents map[string][]ConnectionEvent `json:"connectionEvents,omitempty"`
+	Domain           DomainSettings               `json:"domain"`
+	Domains          []DomainSettings             `json:"domains,omitempty"`
+	Devices          []Device                     `json:"devices"`
+	Mappings         []Mapping                    `json:"mappings"`
 }
 
 type Store struct {
@@ -104,6 +105,12 @@ func (s *Store) Snapshot() State {
 		out.Domains[i] = cloneDomain(out.Domains[i])
 	}
 	copy(out.Devices, s.state.Devices)
+	if len(s.state.ConnectionEvents) > 0 {
+		out.ConnectionEvents = make(map[string][]ConnectionEvent, len(s.state.ConnectionEvents))
+		for id, events := range s.state.ConnectionEvents {
+			out.ConnectionEvents[id] = append([]ConnectionEvent(nil), events...)
+		}
+	}
 	copy(out.Mappings, s.state.Mappings)
 	sort.Slice(out.Devices, func(i, j int) bool { return out.Devices[i].Name < out.Devices[j].Name })
 	sort.Slice(out.Mappings, func(i, j int) bool { return out.Mappings[i].Host < out.Mappings[j].Host })
@@ -313,7 +320,18 @@ func (s *Store) ChangeDevice(id, name string, remove bool) error {
 					return errors.New("请先删除此设备的域名映射")
 				}
 			}
+			before := append([]Device(nil), s.state.Devices...)
+			events, hadEvents := s.state.ConnectionEvents[id]
 			s.state.Devices = append(s.state.Devices[:i], s.state.Devices[i+1:]...)
+			delete(s.state.ConnectionEvents, id)
+			if err := s.saveLocked(); err != nil {
+				s.state.Devices = before
+				if hadEvents {
+					s.state.ConnectionEvents[id] = events
+				}
+				return err
+			}
+			return nil
 		} else {
 			name = strings.TrimSpace(name)
 			if name == "" {

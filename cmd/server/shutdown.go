@@ -45,5 +45,11 @@ func (a *app) serveUntilStopped(server *http.Server) error {
 		_ = server.Close()
 	}
 	<-done
+	for id, status := range a.hub.Statuses() {
+		if err := a.store.RecordDisconnect(id, status.Since, time.Now(), "server_stop"); err != nil {
+			log.Printf("设备断开记录保存失败：%v", err)
+		}
+		a.hub.Disconnect(id, status.Since)
+	}
 	return failure
 }

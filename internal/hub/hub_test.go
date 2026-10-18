@@ -45,6 +45,29 @@ func tunnelPair(t *testing.T, h *Hub, remote ...bool) (*websocket.Conn, <-chan e
 	return conn, ended
 }
 
+func TestDisconnectOldSessionCannotCloseReplacement(t *testing.T) {
+	h := New()
+	_, oldEnded := tunnelPair(t, h)
+	old := h.Statuses()["router"]
+	_, currentEnded := tunnelPair(t, h)
+	select {
+	case <-oldEnded:
+	case <-time.After(time.Second):
+		t.Fatal("old connection did not close")
+	}
+	h.Disconnect("router", old.Since)
+	current, ok := h.Statuses()["router"]
+	if !ok || current.Since.Equal(old.Since) {
+		t.Fatal("old disconnect removed replacement")
+	}
+	h.Disconnect("router", current.Since)
+	select {
+	case <-currentEnded:
+	case <-time.After(time.Second):
+		t.Fatal("current connection did not close")
+	}
+}
+
 func TestIdleTunnelStaysOnlineAndForwardsAfterProxyIdleWindow(t *testing.T) {
 	h := New()
 	h.pingInterval, h.pongWait = 25*time.Millisecond, 600*time.Millisecond

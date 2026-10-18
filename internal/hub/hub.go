@@ -71,11 +71,11 @@ func New(recorder ...func(string, string, uint64, uint64)) *Hub {
 	return h
 }
 
-func (h *Hub) Disconnect(id string) {
+func (h *Hub) Disconnect(id string, since ...time.Time) {
 	h.mu.RLock()
 	c := h.clients[id]
 	h.mu.RUnlock()
-	if c != nil {
+	if c != nil && (len(since) == 0 || c.Since.Equal(since[0])) {
 		_ = c.conn.Close()
 		h.Detach(c)
 	}

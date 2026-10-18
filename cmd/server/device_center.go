@@ -10,7 +10,84 @@ import (
 
 	"github.com/local/remotegate/internal/config"
 	"github.com/local/remotegate/internal/hub"
+	"github.com/local/remotegate/internal/traffic"
 )
+
+type deviceView struct {
+	config.Device
+	Online          bool          `json:"online"`
+	ConnectedAt     time.Time     `json:"connectedAt,omitempty"`
+	CanUpdate       bool          `json:"canUpdate"`
+	CanRemote       bool          `json:"canRemote"`
+	CanManageUpdate bool          `json:"canManageUpdate"`
+	LastActiveAt    time.Time     `json:"lastActiveAt,omitempty"`
+	LatencyAt       time.Time     `json:"latencyAt,omitempty"`
+	LatencyMs       *int64        `json:"latencyMs,omitempty"`
+	Network         deviceNetwork `json:"network"`
+}
+
+func (a *app) viewDevice(d config.Device, s hub.Status, online bool) deviceView {
+	d.TokenHash = ""
+	return deviceView{Device: d, Online: online, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, CanRemote: s.CanRemote, CanManageUpdate: s.CanManageUpdate, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)}
+}
+
+func (a *app) deviceConnectionEvents(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	events, ok := a.store.DeviceConnectionEvents(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, map[string]any{"events": events, "limit": config.ConnectionEventLimit, "checkedAt": time.Now().UTC()})
+}
+
+// Refresh only this device. A probe timeout must not be reported as a definite
+// disconnect: the heartbeat/read loop owns the live connection lifecycle.
+func (a *app) refreshDeviceStatus(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if _, ok := a.store.DeviceConnectionEvents(id); !ok {
+		http.NotFound(w, r)
+		return
+	}
+	before, online := a.hub.Statuses()[id]
+	probe := "offline"
+	if online {
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		_, err := a.hub.Ping(ctx, id)
+		cancel()
+		if r.Context().Err() != nil {
+			return
+		}
+		probe = "ok"
+		if err != nil {
+			probe = "unresponsive"
+		}
+	}
+	status, online := a.hub.Statuses()[id]
+	if !online {
+		probe = "offline"
+	} else if !status.Since.Equal(before.Since) {
+		probe = "changed"
+	}
+	for _, d := range a.store.Snapshot().Devices {
+		if d.ID != id {
+			continue
+		}
+		counter := traffic.Counter{}
+		if a.traffic != nil {
+			counter = a.traffic.Snapshot().Devices[id]
+		}
+		writeJSON(w, map[string]any{"device": a.viewDevice(d, status, online), "traffic": counter, "probe": probe, "checkedAt": time.Now().UTC()})
+		return
+	}
+	http.NotFound(w, r)
+}
 
 func deviceConnectionInfo(r *http.Request) config.DeviceInfo {
 	info := config.DeviceInfo{}
@@ -66,11 +143,11 @@ func (a *app) deviceConnectionAction(w http.ResponseWriter, r *http.Request, id,
 			http.Error(w, "插件正在更新，请等待更新完成后再重新连接", http.StatusConflict)
 			return
 		}
-		a.hub.Disconnect(id)
-		if err := a.store.RecordDisconnect(id, status.Since, time.Now()); err != nil {
-			http.Error(w, "连接已关闭，但未能保存断开时间", 500)
+		if err := a.store.RecordDisconnect(id, status.Since, time.Now(), "reconnect"); err != nil {
+			http.Error(w, "未能保存断开记录，请检查数据目录后重试", 500)
 			return
 		}
+		a.hub.Disconnect(id, status.Since)
 		writeJSON(w, map[string]any{"reconnecting": true, "message": "已断开当前隧道，等待客户端自动重新连接"})
 		return
 	}

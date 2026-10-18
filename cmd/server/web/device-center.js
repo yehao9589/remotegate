@@ -1,6 +1,7 @@
 // Device workspace: saved preferences, live tunnel diagnostics and mapping shortcuts.
 const deviceRevealed=new Set(),deviceMapFilters=new Map(),deviceOperations=new Map();
 const deviceIPRevealed=new Map();
+const deviceHistories=new Map();
 let deviceWorkspaceTransition=authTransition;
 const previousDeviceAction=action,previousDeviceEditor=openEditor,previousDeviceSubmit=$('#editor').onsubmit;
 function deviceTime(value){const time=new Date(value);return value&&time.getFullYear()>2000?time.toLocaleString():'尚无记录'}
@@ -46,6 +47,28 @@ function trafficHint(device=false){return `<p class="traffic-hint">${device?'设
 function deviceLatency(d){return d.online&&Number.isFinite(d.latencyMs)&&Date.now()-Date.parse(d.latencyAt)<90000?deviceLatencyText(d.latencyMs):'待检测'}
 function deviceInfoCell(label,value){return `<div><dt>${esc(label)}</dt><dd>${esc(value||'尚未上报')}</dd></div>`}
 function deviceButton(actionName,id,label,icon,extra=''){return `<button type="button" data-action="${actionName}" data-id="${esc(id)}" ${extra}>${uiIcon(icon)}${esc(label)}</button>`}
+function deviceSessionDuration(event){
+ if(event.state!=='offline'||event.reason==='server_restart')return '—';
+ const ms=Date.parse(event.at)-Date.parse(event.connectedAt);if(!Number.isFinite(ms)||ms<0)return '—';
+ const seconds=Math.floor(ms/1000),days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.floor(seconds%3600/60);
+ return days?`${days} 天 ${hours} 小时`:hours?`${hours} 小时 ${minutes} 分钟`:minutes?`${minutes} 分钟 ${seconds%60} 秒`:`${seconds} 秒`;
+}
+function deviceHistoryPanel(d){
+ const history=deviceHistories.get(d.id),events=history?.events||[],reason={connected:'隧道连接建立',replaced:'新连接替换了原连接',disconnected:'隧道连接断开',reconnect:'管理员请求重新连接',server_stop:'服务器正常停止',server_restart:'服务器重启时发现原连接已失效'};
+ return `<section class="device-history-panel"><div class="connection-panel-heading"><div><h2>${uiIcon('history')}上下线记录</h2><p class="muted">最近 ${esc(history?.limit||100)} 条，按时间从新到旧排列。</p></div>${deviceButton('refreshHistory',d.id,history?.loading?'读取中…':'刷新记录','refresh',history?.loading?'disabled aria-busy="true"':'')}</div>${history?.error?`<p class="device-operation error" role="status">${esc(history.error)}</p>`:''}<div class="tablewrap"><table class="device-history-table"><thead><tr><th>状态</th><th>时间</th><th>本次在线时长</th><th>说明</th></tr></thead><tbody>${events.map(event=>`<tr><td><span class="pill ${event.state==='online'?'on':''}">${event.state==='online'?'上线':'下线'}</span></td><td>${esc(deviceTime(event.at))}</td><td>${esc(deviceSessionDuration(event))}</td><td>${esc(reason[event.reason]||'连接状态变化')}</td></tr>`).join('')||`<tr><td colspan="4" class="empty">${history?.loading?'正在读取记录…':history?.error?'记录读取失败，请重试。':'暂无上下线记录，后续连接变化会自动记录。'}</td></tr>`}</tbody></table></div><p class="traffic-hint">记录随后台数据保存，重启后保留。时间以服务器检测为准；服务器异常停止期间的实际断开时间未知，之前未记录的历史不补填。</p>${history?.checkedAt?`<p class="traffic-hint">最近读取：${esc(deviceTime(history.checkedAt))}</p>`:''}</section>`;
+}
+async function loadDeviceHistory(id){
+ if(deviceHistories.get(id)?.loading||!state.devices.some(d=>d.id===id))return;
+ const transition=authTransition,previous=deviceHistories.get(id)||{};
+ deviceHistories.set(id,{...previous,loading:true,error:''});deviceCards();
+ const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);
+ try{
+  const result=await api('devices/'+encodeURIComponent(id)+'/events','GET',undefined,{signal:controller.signal});
+  if(transition!==authTransition||!state.devices.some(d=>d.id===id))return;
+  deviceHistories.set(id,{events:result.events||[],limit:result.limit,checkedAt:result.checkedAt,checkedUnix:Date.now()});
+ }catch(e){if(transition===authTransition&&state.devices.some(d=>d.id===id))deviceHistories.set(id,{...previous,checkedUnix:Date.now(),error:e.name==='AbortError'?'读取记录超时，请重试。':e.message})}
+ finally{clearTimeout(timer);controller.abort();if(transition===authTransition)deviceCards()}
+}
 function deviceConnectionPanel(d){
  const info=d.info||{},operation=deviceOperations.get(d.id);
  return `<section class="device-connection-panel"><div class="connection-panel-heading"><div><h2>${uiIcon('network')}连接详情</h2><p class="muted">在线表示隧道已连接；内网服务和公网入口需要分别检测。</p></div><span class="pill ${d.online?'on':''}">${d.online?'隧道已连接':'隧道未连接'}</span></div><dl class="device-facts">${deviceInfoCell('连接来源 IP',info.peerIP||'尚无记录')}${deviceInfoCell('网络运营商',deviceOperatorText(d))}${deviceInfoCell('接入服务器',location.host)}${deviceInfoCell('系统 / 架构',[info.os,info.arch].filter(Boolean).join(' / '))}${deviceInfoCell('设备主机名',info.hostname)}${deviceInfoCell('出口网卡',info.os?(info.interface||'自动选择'):'尚未上报')}${deviceInfoCell('插件 / 客户端',d.packageVersion||d.version)}${deviceInfoCell('最近连接',deviceTime(d.lastConnectedAt))}${deviceInfoCell('最近断开',deviceTime(d.lastDisconnectedAt))}${deviceInfoCell('本次在线时长',d.online?deviceDuration(d.connectedAt):'—')}${deviceInfoCell('最近收到响应',d.online?deviceTime(d.lastActiveAt):'—')}${deviceInfoCell('隧道往返延迟',deviceLatency(d))}${deviceInfoCell('延迟检测时间',d.online?deviceTime(d.latencyAt):'—')}</dl>${!info.os?'<p class="device-legacy-hint">'+uiIcon('info')+'旧版插件可检测连接和重新连接；升级插件后可显示系统、架构与出口网卡。</p>':''}<div class="device-connection-actions">${deviceButton('health',d.id,'检测连接','activity',!d.online||operation?.busy?'disabled':'')}${deviceButton('reconnect',d.id,'重新连接','refresh',!d.online||operation?.busy?'disabled':'')}<span class="muted">重新连接会短暂中断访问，客户端随后自动重连。</span></div>${trafficHint(true)}${operation?`<p class="device-operation ${operation.error?'error':''}" role="status">${esc(operation.text)}</p>`:''}</section>`;
@@ -63,7 +86,7 @@ function deviceMappingsPanel(d){
 }
 deviceCards=()=>{
  const container=$('#deviceCards');if(!container)return;
- if(deviceWorkspaceTransition!==authTransition){deviceRevealed.clear();deviceIPRevealed.clear();deviceMapFilters.clear();expandedFeatures.clear();deviceOperations.clear();deviceWorkspaceTransition=authTransition}
+ if(deviceWorkspaceTransition!==authTransition){deviceRevealed.clear();deviceIPRevealed.clear();deviceMapFilters.clear();expandedFeatures.clear();deviceOperations.clear();deviceHistories.clear();deviceWorkspaceTransition=authTransition}
  const visible=state.devices.filter(d=>{
   const maps=state.mappings.filter(m=>m.deviceId===d.id);
   return (!filter||filter==='pinned'&&d.pinned||filter==='yes'&&d.online||filter==='no'&&!d.online)&&[d.name,d.id,d.note,d.info?.hostname,d.info?.peerIP,d.network?.operator,JSON.stringify(maps)].join(' ').toLowerCase().includes(query.toLowerCase());
@@ -71,13 +94,14 @@ deviceCards=()=>{
  container.innerHTML=visible.map(d=>{
   const mappings=state.mappings.filter(m=>m.deviceId===d.id),operation=deviceOperations.get(d.id);
   const active=expandedFeatures.get(d.id),revealed=deviceRevealed.has(d.id);
-  return `<article class="device-card device-workspace-card ${d.pinned?'device-pinned':''}"><div class="device-head"><div class="device-icon" aria-hidden="true">${uiIcon('monitor')}</div><div class="device-info"><div class="device-title"><strong>${esc(d.name)}</strong><span class="pill ${d.online?'on':''}">${d.online?'在线':'离线'}</span>${d.pinned?'<span class="device-pin-label">'+uiIcon('pin')+'置顶</span>':''}</div><div class="device-meta"><span class="device-id-meta">ID：<code>${esc(revealed?d.id:deviceMasked(d.id))}</code><button type="button" data-action="revealDevice" data-id="${esc(d.id)}" title="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-label="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-pressed="${revealed}">${uiIcon('eye')}</button><button type="button" data-copy="${esc(d.id)}" title="复制设备 ID" aria-label="复制设备 ID">${uiIcon('copy')}</button></span>${deviceNetworkMetadata(d)}<span>插件：${esc(d.packageVersion||d.version||'尚未上报')}</span><span>${d.online?'本次在线 '+esc(deviceDuration(d.connectedAt)):'最近连接 '+esc(deviceTime(d.lastConnectedAt))}</span></div>${deviceTrafficSummary(d)}${d.note?`<p class="device-saved-note">${esc(d.note)}</p>`:''}</div><div class="actions device-header-actions">${deviceButton('pinDevice',d.id,'','pin',`title="${d.pinned?'取消置顶':'置顶设备'}" aria-label="${d.pinned?'取消置顶':'置顶设备'}" aria-pressed="${Boolean(d.pinned)}"`)}${deviceButton('health',d.id,'','activity',`title="检测连接" aria-label="检测连接" ${!d.online||operation?.busy?'disabled':''}`)}${pluginUpdateButton(d)}${deviceButton('rename',d.id,'编辑','edit')}</div></div><div class="device-tabs"><button type="button" class="feature-tab" data-feature="domains" data-device="${esc(d.id)}" aria-expanded="${active==='domains'}" aria-controls="domains-${esc(d.id)}">${uiIcon('globe')}访问域名（${mappings.length}）<i aria-hidden="true"></i></button><button type="button" class="feature-tab" data-feature="connection" data-device="${esc(d.id)}" aria-expanded="${active==='connection'}" aria-controls="connection-${esc(d.id)}">${uiIcon('activity')}连接详情<i aria-hidden="true"></i></button><span class="device-tab-summary">${d.online?'隧道延迟 '+esc(deviceLatency(d)):'等待设备连接'}</span></div><div class="device-body" id="domains-${esc(d.id)}" ${active==='domains'?'':'hidden'}>${deviceMappingsPanel(d)}</div><div class="device-body" id="connection-${esc(d.id)}" ${active==='connection'?'':'hidden'}>${deviceConnectionPanel(d)}</div>${operation&&active!=='connection'?`<p class="device-operation device-operation-footer ${operation.error?'error':''}" role="status">${esc(operation.text)}</p>`:''}<details class="device-manage"><summary>${uiIcon('settings')}设备管理</summary><div>${deviceButton('rename',d.id,'编辑名称与备注','edit')}${deviceButton('reconnect',d.id,'重新连接','refresh',!d.online||operation?.busy?'disabled':'')}${deviceButton('deleteDevice',d.id,'删除设备','trash','class="danger"')}</div></details></article>`;
+  return `<article class="device-card device-workspace-card ${d.pinned?'device-pinned':''}"><div class="device-head"><div class="device-icon" aria-hidden="true">${uiIcon('monitor')}</div><div class="device-info"><div class="device-title"><strong>${esc(d.name)}</strong><span class="pill ${d.online?'on':''}">${d.online?'在线':'离线'}</span>${d.pinned?'<span class="device-pin-label">'+uiIcon('pin')+'置顶</span>':''}</div><div class="device-meta"><span class="device-id-meta">ID：<code>${esc(revealed?d.id:deviceMasked(d.id))}</code><button type="button" data-action="revealDevice" data-id="${esc(d.id)}" title="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-label="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-pressed="${revealed}">${uiIcon('eye')}</button><button type="button" data-copy="${esc(d.id)}" title="复制设备 ID" aria-label="复制设备 ID">${uiIcon('copy')}</button></span>${deviceNetworkMetadata(d)}<span>插件：${esc(d.packageVersion||d.version||'尚未上报')}</span><span>${d.online?'本次在线 '+esc(deviceDuration(d.connectedAt)):'最近连接 '+esc(deviceTime(d.lastConnectedAt))}</span></div>${deviceTrafficSummary(d)}${d.note?`<p class="device-saved-note">${esc(d.note)}</p>`:''}</div><div class="actions device-header-actions">${deviceButton('pinDevice',d.id,'','pin',`title="${d.pinned?'取消置顶':'置顶设备'}" aria-label="${d.pinned?'取消置顶':'置顶设备'}" aria-pressed="${Boolean(d.pinned)}"`)}${deviceButton('refreshDevice',d.id,operation?.kind==='refresh'&&operation.busy?'刷新中…':'刷新状态','refresh',`title="刷新此设备的连接状态" ${operation?.busy?'disabled':''} ${operation?.kind==='refresh'&&operation.busy?'aria-busy="true"':''}`)}${pluginUpdateButton(d)}${deviceButton('rename',d.id,'编辑','edit')}</div></div><div class="device-tabs"><button type="button" class="feature-tab" data-feature="domains" data-device="${esc(d.id)}" aria-expanded="${active==='domains'}" aria-controls="domains-${esc(d.id)}">${uiIcon('globe')}访问域名（${mappings.length}）<i aria-hidden="true"></i></button><button type="button" class="feature-tab" data-feature="connection" data-device="${esc(d.id)}" aria-expanded="${active==='connection'}" aria-controls="connection-${esc(d.id)}">${uiIcon('activity')}连接详情<i aria-hidden="true"></i></button><button type="button" class="feature-tab" data-feature="history" data-device="${esc(d.id)}" aria-expanded="${active==='history'}" aria-controls="history-${esc(d.id)}">${uiIcon('history')}上下线记录<i aria-hidden="true"></i></button><span class="device-tab-summary">${d.online?'隧道延迟 '+esc(deviceLatency(d)):'等待设备连接'}</span></div><div class="device-body" id="domains-${esc(d.id)}" ${active==='domains'?'':'hidden'}>${deviceMappingsPanel(d)}</div><div class="device-body" id="connection-${esc(d.id)}" ${active==='connection'?'':'hidden'}>${deviceConnectionPanel(d)}</div><div class="device-body" id="history-${esc(d.id)}" ${active==='history'?'':'hidden'}>${deviceHistoryPanel(d)}</div>${operation&&active!=='connection'?`<p class="device-operation device-operation-footer ${operation.error?'error':''}" role="status">${esc(operation.text)}</p>`:''}<details class="device-manage"><summary>${uiIcon('settings')}设备管理</summary><div>${deviceButton('rename',d.id,'编辑名称与备注','edit')}${deviceButton('reconnect',d.id,'重新连接','refresh',!d.online||operation?.busy?'disabled':'')}${deviceButton('deleteDevice',d.id,'删除设备','trash','class="danger"')}</div></details></article>`;
  }).join('')||'<div class="workbench-empty"><h2>暂无匹配设备</h2><p class="muted">可搜索设备名称、备注、设备 ID、IP 或映射地址。</p></div>';
  if(typeof remoteDeviceTabs==='function')container.querySelectorAll('[data-feature="connection"]').forEach(button=>{const d=state.devices.find(x=>x.id===button.dataset.device);if(d)button.insertAdjacentHTML('afterend',remoteDeviceTabs(d))});
  container.querySelectorAll('[data-feature]').forEach(b=>b.onclick=()=>toggleFeature(b.dataset.device,b.dataset.feature));
  bindDeviceActions(container);
  container.querySelectorAll('[data-mapping-search]').forEach(input=>input.oninput=()=>updateDeviceMappingFilter(input.dataset.mappingSearch,{query:input.value}));
  container.querySelectorAll('[data-mapping-status]').forEach(input=>input.onchange=()=>updateDeviceMappingFilter(input.dataset.mappingStatus,{status:input.value}));
+ for(const d of visible){const h=deviceHistories.get(d.id);if(expandedFeatures.get(d.id)==='history'&&(!h||!h.loading&&Date.now()-(h.checkedUnix||0)>15000))void loadDeviceHistory(d.id)}
 };
 function bindDeviceActions(container){
  container.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>action(b.dataset.action,b.dataset.id).catch(e=>toast(e.message)));
@@ -99,6 +123,25 @@ action=async(a,id)=>{
  if(a==='revealDevice'){if(deviceRevealed.has(id))deviceRevealed.delete(id);else deviceRevealed.add(id);deviceCards();return}
  if(a==='duplicate'&&m){const {id:oldID,host,...draft}=m;const domain=[...(state.domains||[])].sort((a,b)=>b.baseDomain.length-a.baseDomain.length).find(d=>host===d.baseDomain||host.endsWith('.'+d.baseDomain));openEditor('mapping',{...draft,host:'',_mappingDraft:{host:'',domainSuffix:domain?.baseDomain||customMappingDomain}});$('#modalTitle').textContent='复制新增映射';return}
  if(a==='pinDevice'&&d){await api('devices/'+encodeURIComponent(id),'PUT',{pinned:!d.pinned});await refresh();toast(d.pinned?'已取消置顶':'设备已置顶');return}
+ if(a==='refreshHistory'&&d){await loadDeviceHistory(id);return}
+ if(a==='refreshDevice'&&d){
+  if(deviceOperations.get(id)?.busy)return;
+  const transition=authTransition;deviceOperations.set(id,{busy:true,kind:'refresh',text:'正在刷新此设备的状态…'});deviceCards();
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);
+  try{
+   const result=await api('devices/'+encodeURIComponent(id)+'/status','POST',{}, {signal:controller.signal});
+   if(transition!==authTransition)return;
+   const index=state.devices.findIndex(x=>x.id===id);if(index<0)return;
+   if(!result.device||result.device.id!==id)throw Error('设备状态返回异常，请重试。');
+   state.devices[index]=result.device;
+   if(state.traffic&&result.traffic){state.traffic.devices||={};state.traffic.devices[id]=result.traffic}
+   const message=!result.device.online?'设备离线':result.probe==='ok'?'设备在线 · 隧道响应正常':result.probe==='changed'?'设备已重新连接，等待下一次响应检测':'隧道仍连接，但本次响应检测未通过，请稍后重试';
+   deviceOperations.set(id,{error:result.probe==='unresponsive',text:message+' · '+deviceTime(result.checkedAt)});
+   if(expandedFeatures.get(id)==='history')await loadDeviceHistory(id);
+  }catch(e){if(transition===authTransition)deviceOperations.set(id,{error:true,text:e.name==='AbortError'?'刷新超时，请稍后重试。':e.message})}
+  finally{clearTimeout(timer);controller.abort();if(transition===authTransition)render()}
+  return;
+ }
  if((a==='health'||a==='reconnect')&&d){
   if(!d.online||deviceOperations.get(id)?.busy)return;
   if(a==='reconnect'&&!confirm('确认重新连接“'+d.name+'”？访问会短暂中断，设备 ID、令牌和映射配置会保留。'))return;
