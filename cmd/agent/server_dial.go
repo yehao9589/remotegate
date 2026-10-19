@@ -25,6 +25,7 @@ type serverDialer struct {
 	dial       dialContextFunc
 	realLookup func(context.Context, string) ([]net.IPAddr, error)
 	resolved   func(string, string)
+	routed     func(string, bool)
 	mu         sync.Mutex
 	cacheHost  string
 	cache      []net.IPAddr
@@ -33,6 +34,9 @@ type serverDialer struct {
 
 func newServerDialer(cfg Config, resolved func(string, string)) *serverDialer {
 	base := boundDialer(cfg.Interface, cfg.Mark).DialContext
+	if cfg.DirectWAN {
+		base = newDirectWANDialer(cfg).DialContext
+	}
 	return &serverDialer{lookup: net.DefaultResolver.LookupIPAddr, dial: base, realLookup: func(ctx context.Context, host string) ([]net.IPAddr, error) { return lookupServerDoH(ctx, host, base) }, resolved: resolved}
 }
 
@@ -61,8 +65,8 @@ func (d *serverDialer) DialContext(ctx context.Context, network, address string)
 	}
 	if net.ParseIP(strings.Split(host, "%")[0]) != nil {
 		conn, err := d.dial(ctx, network, address)
-		if err == nil && d.resolved != nil {
-			d.resolved(host, "system")
+		if err == nil {
+			d.reportConnection(conn, host, "system")
 		}
 		return conn, err
 	}
@@ -112,11 +116,25 @@ func (d *serverDialer) DialContext(ctx context.Context, network, address string)
 		return nil, errors.New("服务器域名未解析到可连接的真实地址")
 	}
 	conn, err := dialServerAddresses(ctx, d.dial, network, port, usable)
-	if err == nil && d.resolved != nil {
+	if err == nil {
 		peer, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-		d.resolved(peer, mode)
+		d.reportConnection(conn, peer, mode)
 	}
 	return conn, err
+}
+
+func (d *serverDialer) reportConnection(conn net.Conn, ip, mode string) {
+	if d.routed != nil {
+		iface := ""
+		protected := false
+		if c, ok := conn.(interface{ EgressInterface() string }); ok {
+			iface, protected = c.EgressInterface(), true
+		}
+		d.routed(iface, protected)
+	}
+	if d.resolved != nil {
+		d.resolved(ip, mode)
+	}
 }
 
 // Stagger attempts so an unavailable IPv6 path cannot block a working IPv4

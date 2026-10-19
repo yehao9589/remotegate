@@ -85,7 +85,7 @@ local json = require "luci.jsonc"
 local c = u:get_all("remotegate", "main") or {}
 if c.enabled ~= "1" and arg[1] ~= "--for-update" then os.exit(1) end
 if not c.server or c.server == "" or not c.device_id or c.device_id == "" or not c.token or c.token == "" then os.exit(1) end
-io.write(json.stringify({serverUrl=c.server,deviceId=c.device_id,token=c.token,interface=c.interface or "",mark=51820,allowPublicTargets=false,remoteAccess=c.remote_access~="0"}))
+io.write(json.stringify({serverUrl=c.server,deviceId=c.device_id,token=c.token,interface=c.interface or "",directWAN=true,allowPublicTargets=false,remoteAccess=c.remote_access~="0"}))
 `, 0755),
 		entry{"usr/libexec/remotegate-route-guard", routeGuard, 0755},
 		text("etc/init.d/remotegate", `#!/bin/sh /etc/rc.common
@@ -115,7 +115,7 @@ reload_service() { /usr/libexec/remotegate-route-guard refresh; stop; start; }
 			panic(err)
 		}
 		data := archive(append(append([]entry{}, files...), entry{"usr/sbin/remotegate-agent", b, 0755}))
-		control := archive([]entry{text("control", fmt.Sprintf("Package: luci-app-remotegate\nVersion: %s\nArchitecture: all\nMaintainer: RemoteGate\nSection: net\nPriority: optional\nDepends: luci-base, luci-compat\nDescription: RemoteGate agent and LuCI configuration (%s)\n", buildinfo.PackageVersion(), arch), 0644), text("conffiles", "/etc/config/remotegate\n", 0644), source("postinst", "deploy/openwrt/remotegate.postinst", 0755), text("prerm", `#!/bin/sh
+		control := archive([]entry{text("control", fmt.Sprintf("Package: luci-app-remotegate\nVersion: %s\nArchitecture: all\nMaintainer: RemoteGate\nSection: net\nPriority: optional\nDepends: luci-base, luci-compat, ip-full\nDescription: RemoteGate agent and LuCI configuration (%s)\n", buildinfo.PackageVersion(), arch), 0644), text("conffiles", "/etc/config/remotegate\n", 0644), source("postinst", "deploy/openwrt/remotegate.postinst", 0755), text("prerm", `#!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
 /etc/init.d/remotegate stop
 /etc/init.d/remotegate disable

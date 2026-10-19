@@ -32,6 +32,7 @@ type Config struct {
 	Token              string `json:"token"`
 	Interface          string `json:"interface,omitempty"`
 	Mark               int    `json:"mark,omitempty"`
+	DirectWAN          bool   `json:"directWAN,omitempty"`
 	InsecureTLS        bool   `json:"insecureTls,omitempty"`
 	AllowPublicTargets bool   `json:"allowPublicTargets,omitempty"`
 	RemoteAccess       bool   `json:"remoteAccess"`
@@ -65,6 +66,10 @@ func main() {
 	status := newConnectionReporter(routerConnectionPath, cfg)
 	defer status.stopped()
 	serverDial := newServerDialer(cfg, status.resolution)
+	serverDial.routed = status.route
+	if cfg.DirectWAN {
+		go maintainDirectRoute(ctx, cfg)
+	}
 	var backoff time.Duration
 	for ctx.Err() == nil {
 		started := time.Now()

@@ -59,6 +59,12 @@ jobs:
           node --test scripts/test-remote-access.cjs
           node --test scripts/test-package-center.cjs
           node --test scripts/test-router-connection.cjs
+      - name: Verify WAN routing survives proxy failures
+        run: |
+          go test -c -o /tmp/remotegate-agent.test ./cmd/agent
+          sudo apt-get update -qq
+          sudo apt-get install -y nftables iproute2 iptables
+          sudo DIRECT_TEST_BINARY=/tmp/remotegate-agent.test sh scripts/test-direct-routing.sh
 
   container-test:
     name: 容器部署验证

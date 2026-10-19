@@ -16,6 +16,8 @@ local function reset()
  record={pid=42,state="connected",server=config.server,deviceId=config.device_id,updatedUnix=os.time(),connectedAt="2026-10-17T17:00:00Z",token="must-not-leak"}
 end
 reset();local result=controller.connection_state(config,true);assert(result.state=="connected" and result.connectedAt==record.connectedAt and result.token==nil and result.pid==nil)
+reset();record.egressInterface="pppoe-wan";record.routeProtected=true;result=controller.connection_state(config,true);assert(result.egressInterface=="pppoe-wan" and result.routeProtected==true)
+reset();record.routeProtected="true";assert(controller.connection_state(config,true).routeProtected==false)
 reset();command=nil;assert(controller.connection_state(config,true).state=="unknown","dead PID reported online")
 reset();command="/usr/sbin/remotegate-agent\0--update-check\0/var/run/remotegate-update/agent.json\0";assert(controller.connection_state(config,true).state=="unknown","updater reported as the tunnel")
 reset();record.updatedUnix=os.time()-1000;result=controller.connection_state(config,true);assert(result.state=="reconnecting" and result.lastError:find("90",1,true))

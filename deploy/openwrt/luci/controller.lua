@@ -37,9 +37,10 @@ function connection_state(c, running)
  local allowed={connecting=true,connected=true,reconnecting=true,stopped=true}
  if not allowed[value.state] then return {state="unknown"} end
  local result={state=value.state}
- for _,key in ipairs({"connectedAt","lastAttemptAt","lastHeartbeatAt","nextRetryAt","lastError","lastErrorAt","serverIP","dnsMode"}) do
+ for _,key in ipairs({"connectedAt","lastAttemptAt","lastHeartbeatAt","nextRetryAt","lastError","lastErrorAt","serverIP","dnsMode","egressInterface"}) do
   if type(value[key])=="string" and #value[key]<=1500 then result[key]=value[key] end
  end
+ result.routeProtected=value.routeProtected==true
  local age=os.time()-(tonumber(value.updatedUnix) or 0)
  if value.state=="connected" and (age>90 or age< -90) then
   result.state="reconnecting";result.lastError="隧道心跳状态超过 90 秒未更新，等待客户端重新连接"

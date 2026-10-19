@@ -18,11 +18,11 @@ o.placeholder = "填写设备 Token"
 o = s:option(Flag, "remote_access", "启用 SSH / 文件管理", "允许已登录的管理后台通过此设备连接内网 SSH 服务，仍需输入 SSH 账号并核对主机指纹。文件管理要求目标 SSH 服务支持 SFTP。公网服务器地址需为 HTTPS。")
 o.default = "1"
 o.rmempty = false
-o = s:option(ListValue, "interface", "出口网卡", "默认由系统选择出口。需要固定出口时，从路由器当前的实际网卡中选择；重新打开页面可刷新列表。")
+o = s:option(ListValue, "interface", "出口网卡", "默认识别 WAN 宽带出口并为 RemoteGate 连接配置代理绕过与独立路由；直连失败时重试，不自动改走代理。需要固定出口时可选择实际网卡。")
 o.widget = "select"
 o.default = ""
 o.rmempty = true
-o:value("", "自动选择（推荐）")
+o:value("", "自动选择 WAN 直连（推荐）")
 local detected, devices = pcall(require("nixio").getifaddrs)
 local readable = detected and type(devices) == "table"
 local by_name, choices = {}, {}

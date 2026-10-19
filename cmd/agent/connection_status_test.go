@@ -35,11 +35,15 @@ func TestConnectionReportTracksHandshakeHeartbeatFailureAndRecovery(t *testing.T
 		t.Fatal(read())
 	}
 	r.resolution("192.0.2.1", "encrypted")
+	r.route("pppoe-wan", true)
 	r.connected()
 	r.heartbeat()
 	value := read()
 	if value.State != "connected" || value.ConnectedAt == "" || value.LastHeartbeatAt == "" || value.ServerIP != "192.0.2.1" || value.DNSMode != "encrypted" {
 		t.Fatal(value)
+	}
+	if value.EgressInterface != "pppoe-wan" || !value.RouteProtected {
+		t.Fatal("missing route policy status", value)
 	}
 	r.disconnected(errors.New("connect failed token="+token), time.Second)
 	value = read()

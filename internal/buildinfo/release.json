@@ -1,5 +1,5 @@
 {
-  "version": "0.1.14",
-  "title": "设备流量统计、上下线记录与独立状态刷新",
+  "version": "0.1.15",
+  "title": "WAN 直连与代理故障保护",
   "packageRevision": 1
 }
