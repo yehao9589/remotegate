@@ -10,6 +10,7 @@ for _, case in ipairs({{want=true},{value="1",want=true},{value="0",want=false}}
  end},{__index=_G})
  local chunk=assert(loadfile(config_path));setfenv(chunk,env);chunk()
  assert(result and result.remoteAccess==case.want,"remote management default or explicit disable changed")
+ assert(result.directWAN==true and result.mark==nil,"router must use WAN protection, not the legacy WireGuard mark")
  assert(config.remote_access==case.value,"saved UCI setting was modified")
 end
 print("Router remote management config defaults passed")

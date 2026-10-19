@@ -2,8 +2,8 @@
   "serverUrl": "https://remote.example.com",
   "deviceId": "paste-device-id",
   "token": "paste-device-token",
-  "interface": "eth1",
-  "mark": 51820,
+  "interface": "",
+  "directWAN": true,
   "allowPublicTargets": false,
   "remoteAccess": true
 }

@@ -10,20 +10,48 @@ import (
 
 // Info is reported at connection time, never inferred from an installed package.
 type DeviceInfo struct {
-	OS        string `json:"os,omitempty"`
-	Arch      string `json:"arch,omitempty"`
-	Hostname  string `json:"hostname,omitempty"`
-	Interface string `json:"interface,omitempty"`
-	PeerIP    string `json:"peerIP,omitempty"`
+	OS              string `json:"os,omitempty"`
+	Arch            string `json:"arch,omitempty"`
+	Hostname        string `json:"hostname,omitempty"`
+	Interface       string `json:"interface,omitempty"`
+	EgressInterface string `json:"egressInterface,omitempty"`
+	PeerIP          string `json:"peerIP,omitempty"`
 }
 
 func (info DeviceInfo) Validate() error {
-	for _, value := range []string{info.OS, info.Arch, info.Hostname, info.Interface, info.PeerIP} {
+	for _, value := range []string{info.OS, info.Arch, info.Hostname, info.Interface, info.EgressInterface, info.PeerIP} {
 		if !utf8.ValidString(value) || len(value) > 128 || strings.ContainsAny(value, "\x00\r\n") {
 			return errors.New("invalid device information")
 		}
 	}
 	return nil
+}
+
+// RecordEgressInterface belongs to one authenticated tunnel, not a configured
+// preference. A late report from a replaced or closed tunnel must be ignored.
+func (s *Store) RecordEgressInterface(id string, connectedAt time.Time, iface string) error {
+	if err := (DeviceInfo{EgressInterface: iface}).Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, before := range s.state.Devices {
+		if before.ID != id {
+			continue
+		}
+		if connectedAt.IsZero() || !before.LastConnectedAt.Equal(connectedAt) || !before.LastDisconnectedAt.Before(connectedAt) || before.Info.EgressInterface == iface {
+			return nil
+		}
+		next := before
+		next.Info.EgressInterface = iface
+		s.state.Devices[i] = next
+		if err := s.saveLocked(); err != nil {
+			s.state.Devices[i] = before
+			return err
+		}
+		return nil
+	}
+	return nil // The device may have been deleted while its report was queued.
 }
 
 // UpdateDevice accepts partial edits so older consoles can still rename devices.

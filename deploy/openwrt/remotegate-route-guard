@@ -1,42 +1,67 @@
 #!/bin/sh
 set -eu
 
-MARK_HEX=0xca6c
-MARK_DEC=51820
+# Only RemoteGate sockets carry this mark. Do not reuse WireGuard's 0xca6c.
+MARK_HEX=0x52470001
+TABLE=138039
+COMMENT=remotegate-direct
 
-install_bypass() {
-	if command -v nft >/dev/null 2>&1; then
-		for chain in openclash_output openclash_mangle_output; do
-			nft list chain inet fw4 "$chain" >/dev/null 2>&1 || continue
-			nft list chain inet fw4 "$chain" | grep -q 'remotegate-bypass' || \
-				nft insert rule inet fw4 "$chain" meta mark "$MARK_HEX" counter return comment 'remotegate-bypass'
-		done
-	fi
-	if command -v iptables >/dev/null 2>&1; then
-		for pair in 'nat openclash_output' 'mangle openclash_mangle_output'; do
-			set -- $pair; table="$1"; chain="$2"
-			iptables -t "$table" -S "$chain" >/dev/null 2>&1 || continue
-			iptables -t "$table" -C "$chain" -m mark --mark "$MARK_HEX" -j RETURN 2>/dev/null || \
-				iptables -t "$table" -I "$chain" 1 -m mark --mark "$MARK_HEX" -j RETURN
-		done
-	fi
+nft_rules() {
+ command -v nft >/dev/null 2>&1 || return 0
+ nft list table inet fw4 >/dev/null 2>&1 || return 0
+ batch="$(mktemp /tmp/remotegate-nft.XXXXXX)"
+ trap 'rm -f "$batch"' EXIT HUP INT TERM
+ for chain in nat_output dstnat_output mangle_output openclash_output openclash_mangle_output openclash_output_v6 openclash_mangle_output_v6; do
+  rules="$(nft -a list chain inet fw4 "$chain" 2>/dev/null)" || continue
+  # One transaction: insert the new first rule and remove only our old rules.
+  if [ "$1" != stop ]; then
+   printf 'insert rule inet fw4 %s meta mark %s counter return comment "%s"\n' "$chain" "$MARK_HEX" "$COMMENT" >> "$batch"
+  fi
+  printf '%s\n' "$rules" | awk '/comment "remotegate-direct"|comment "remotegate-bypass"/ {for(i=1;i<NF;i++)if($i=="handle" && $(i+1)~/^[0-9]+$/)print $(i+1)}' | while read -r handle; do
+   printf 'delete rule inet fw4 %s handle %s\n' "$chain" "$handle" >> "$batch"
+  done
+ done
+ [ ! -s "$batch" ] || nft -f "$batch"
+ rm -f "$batch"
+ trap - EXIT HUP INT TERM
 }
 
-remove_rules() {
-	if command -v nft >/dev/null 2>&1; then
-		for chain in openclash_output openclash_mangle_output; do
-			handle="$(nft -a list chain inet fw4 "$chain" 2>/dev/null | awk '/remotegate-bypass/ {print $NF; exit}')"
-			[ -z "$handle" ] || nft delete rule inet fw4 "$chain" handle "$handle"
-		done
-	fi
-	if command -v iptables >/dev/null 2>&1; then
-		iptables -t nat -D openclash_output -m mark --mark "$MARK_HEX" -j RETURN 2>/dev/null || true
-		iptables -t mangle -D openclash_mangle_output -m mark --mark "$MARK_HEX" -j RETURN 2>/dev/null || true
-	fi
+iptables_rules() {
+ for command in iptables ip6tables; do
+  command -v "$command" >/dev/null 2>&1 || continue
+  for table in nat mangle; do
+   # FW3 also uses openclash_output in mangle. Root OUTPUT protects
+   # RemoteGate from later proxy rules without changing unrelated packets.
+   for chain in OUTPUT openclash_output openclash_mangle_output; do
+    "$command" -t "$table" -S "$chain" >/dev/null 2>&1 || continue
+    if [ "$1" = stop ]; then
+     while "$command" -t "$table" -C "$chain" -m mark --mark "$MARK_HEX" -m comment --comment "$COMMENT" -j RETURN 2>/dev/null; do
+      "$command" -t "$table" -D "$chain" -m mark --mark "$MARK_HEX" -m comment --comment "$COMMENT" -j RETURN
+     done
+    else
+     first="$("$command" -t "$table" -S "$chain" | awk '$1=="-A"{print;exit}')"
+     case "$first" in
+      *"$COMMENT"*) ;;
+      *) "$command" -t "$table" -I "$chain" 1 -m mark --mark "$MARK_HEX" -m comment --comment "$COMMENT" -j RETURN ;;
+     esac
+     "$command" -t "$table" -L "$chain" --line-numbers -n | awk -v c="$COMMENT" 'index($0,c)&&$1~/^[0-9]+$/&&$1>1{n[++k]=$1}END{for(i=k;i>0;i--)print n[i]}' | while read -r number; do
+      "$command" -t "$table" -D "$chain" "$number"
+     done
+    fi
+   done
+  done
+ done
 }
 
 case "${1:-refresh}" in
-	start|refresh) install_bypass ;;
-	stop) remove_rules ;;
-	*) echo "usage: $0 {start|refresh|stop}" >&2; exit 2 ;;
+ start|refresh) nft_rules refresh; iptables_rules refresh ;;
+ stop)
+  nft_rules stop; iptables_rules stop
+  for family in -4 -6; do
+   if ip "$family" rule del priority 1 fwmark "$MARK_HEX/0xffffffff" lookup "$TABLE" 2>/dev/null; then
+    ip "$family" route flush table "$TABLE" proto 242
+   fi
+  done
+  ;;
+ *) echo 'usage: remotegate-route-guard start|refresh|stop' >&2; exit 2 ;;
 esac

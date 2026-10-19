@@ -2,8 +2,9 @@ function remotegateConnectionView(status){
  var connection=status.connection||{},state=connection.state||(!status.enabled?'disabled':!status.running?'stopped':'unknown');
  var labels={connected:'已连接服务器',connecting:'正在连接',reconnecting:'连接已断开 · 重连中',disabled:'未启用',stopped:'客户端未运行',unconfigured:'连接配置未完成',unknown:'等待连接状态上报',unavailable:'连接状态读取失败'};
  function time(value){var date=value&&new Date(value);return date&&!isNaN(date.getTime())?date.toLocaleString('zh-CN',{hour12:false}):'尚未成功连接'}
- var note=state==='connected'?(connection.dnsMode==='encrypted'?'检测到 Fake-IP 或系统解析失败，已通过加密 DNS 获取真实地址并建立直连。':'隧道已建立，连接状态由客户端实际握手与心跳上报。'):state==='unconfigured'?'请保存服务器地址、设备 ID 和令牌后启用服务。':state==='disabled'?'开启远程访问并保存应用后连接。':state==='stopped'?'服务已启用，但客户端进程未运行，请检查路由器系统日志。':state==='unavailable'?'暂时无法确认隧道状态，请检查路由器连接或重新登录。':state==='unknown'?'客户端进程正在运行，等待真实连接状态上报。':'客户端会自动重试，无需重复安装或重新添加设备。';
- if(state==='connected'&&connection.serverIP)note+=' 直连地址：'+connection.serverIP;
+ var note=state==='connected'?(connection.dnsMode==='encrypted'?'检测到 Fake-IP 或系统解析失败，已通过加密 DNS 获取服务器真实地址；解析成功不代表已绕过代理。':'隧道已建立，连接状态由客户端实际握手与心跳上报。'):state==='unconfigured'?'请保存服务器地址、设备 ID 和令牌后启用服务。':state==='disabled'?'开启远程访问并保存应用后连接。':state==='stopped'?'服务已启用，但客户端进程未运行，请检查路由器系统日志。':state==='unavailable'?'暂时无法确认隧道状态，请检查路由器连接或重新登录。':state==='unknown'?'客户端进程正在运行，等待真实连接状态上报。':'客户端会自动重试，无需重复安装或重新添加设备。';
+ if(state==='connected'&&connection.serverIP)note+=' 服务器地址：'+connection.serverIP+'。';
+ if(state==='connected')note+=connection.routeProtected&&connection.egressInterface?' 已绑定出口 '+connection.egressInterface+' 并应用独立路由和代理绕过规则；公网出口以服务端记录为准。':' 当前插件未上报 WAN 直连保护，不能据此确认是否经过代理。';
  if(state==='reconnecting'&&connection.nextRetryAt)note+=' 下次重试：'+time(connection.nextRetryAt)+'。';
  return {state:state,label:labels[state]||labels.unknown,className:state==='connected'?'is-running':state==='reconnecting'||state==='connecting'?'is-retrying':'',connectedAt:time(connection.connectedAt),note:note,error:state==='connected'||state==='disabled'?'':connection.lastError||''};
 }

@@ -32,6 +32,7 @@ type Config struct {
 	Token              string `json:"token"`
 	Interface          string `json:"interface,omitempty"`
 	Mark               int    `json:"mark,omitempty"`
+	DirectWAN          bool   `json:"directWAN,omitempty"`
 	InsecureTLS        bool   `json:"insecureTls,omitempty"`
 	AllowPublicTargets bool   `json:"allowPublicTargets,omitempty"`
 	RemoteAccess       bool   `json:"remoteAccess"`
@@ -65,6 +66,10 @@ func main() {
 	status := newConnectionReporter(routerConnectionPath, cfg)
 	defer status.stopped()
 	serverDial := newServerDialer(cfg, status.resolution)
+	serverDial.routed = status.route
+	if cfg.DirectWAN {
+		go maintainDirectRoute(ctx, cfg)
+	}
 	var backoff time.Duration
 	for ctx.Err() == nil {
 		started := time.Now()
@@ -136,7 +141,14 @@ func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, sta
 	}
 	u.RawQuery = q.Encode()
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: cfg.InsecureTLS}}
-	dialer.NetDialContext = serverDial
+	var egressInterface string
+	dialer.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		socket, err := serverDial(ctx, network, address)
+		if err == nil {
+			egressInterface = socketEgressInterface(socket)
+		}
+		return socket, err
+	}
 	conn, resp, err := dialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
 		if resp != nil {
@@ -159,6 +171,14 @@ func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, sta
 	status.connected()
 	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopClose()
+	if egressInterface != "" {
+		if err := conn.SetWriteDeadline(time.Now().Add(15 * time.Second)); err != nil {
+			return err
+		}
+		if err := conn.WriteJSON(protocol.Message{Type: "device-network", EgressInterface: egressInterface}); err != nil {
+			return err
+		}
+	}
 	log.Printf("connected to %s", u.Host)
 	client := targetHTTPClient(cfg)
 	sessionContext, stopSession := context.WithCancel(ctx)

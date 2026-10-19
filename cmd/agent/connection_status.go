@@ -27,6 +27,8 @@ type connectionSnapshot struct {
 	LastErrorAt     string `json:"lastErrorAt,omitempty"`
 	ServerIP        string `json:"serverIP,omitempty"`
 	DNSMode         string `json:"dnsMode,omitempty"`
+	EgressInterface string `json:"egressInterface,omitempty"`
+	RouteProtected  bool   `json:"routeProtected,omitempty"`
 	UpdatedAt       string `json:"updatedAt"`
 	UpdatedUnix     int64  `json:"updatedUnix"`
 }
@@ -121,6 +123,15 @@ func (r *connectionReporter) resolution(ip, mode string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.state.ServerIP, r.state.DNSMode = ip, mode
+	r.saveLocked()
+}
+func (r *connectionReporter) route(iface string, protected bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.state.EgressInterface, r.state.RouteProtected = iface, protected
 	r.saveLocked()
 }
 func (r *connectionReporter) connected() {

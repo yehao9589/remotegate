@@ -99,13 +99,13 @@ Windows：
   "serverUrl": "https://remote.example.com",
   "deviceId": "控制台生成的设备 ID",
   "token": "控制台生成的设备 Token",
-  "interface": "eth1",
-  "mark": 51820,
+  "interface": "",
+  "directWAN": true,
   "allowPublicTargets": false
 }
 ```
 
-`interface` 必须是 Linux 实际出口设备，例如 `eth1` 或 `pppoe-wan`，不是 LuCI 中显示的逻辑接口名称。可通过下面命令查询：
+`interface` 留空时自动识别 WAN / WAN6 出口。手动填写时必须是 Linux 实际设备，例如 `eth1` 或 `pppoe-wan`，不是 LuCI 逻辑接口名。可通过下面命令查询：
 
 ```sh
 ubus call network.interface.wan status | jsonfilter -e '@.l3_device'
@@ -113,7 +113,7 @@ ubus call network.interface.wan status | jsonfilter -e '@.l3_device'
 
 将二进制安装为 `/usr/sbin/remotegate-agent`，配置保存为 `/etc/remotegate/agent.json`，并安装 `deploy/openwrt/` 下的 init 与 route guard 文件。
 
-路由保护脚本使用 mark `51820` 和路由表 `51820`，并在检测到 OpenClash 输出链时把同一 mark 插到链首。部署前如已有同编号策略路由，请修改脚本和 Agent 配置。
+安装 `ip-full` 后，`directWAN` 为 RemoteGate 自身连接使用专用标记 `0x52470001`、路由表 `138039` 和优先级 `1`，并补齐 OpenClash 的 IPv4 / IPv6 出站绕过规则。不会更改全局默认路由；WAN 不可用、规则冲突或保护配置失败时会报错，不静默回退代理。旧版 `mark` 配置仍供通用客户端兼容，路由器插件改用上述独立保护。详见[路由器部署](docs/deployment/router.md)。
 
 ## 开发运行
 

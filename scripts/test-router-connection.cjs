@@ -16,6 +16,11 @@ test('a confirmed tunnel reports its real address and encrypted DNS recovery',()
  const result=view({enabled:true,running:true,connection:{state:'connected',serverIP:'192.0.2.1',dnsMode:'encrypted',connectedAt:'2026-10-17T17:00:00Z',lastError:'previous timeout'}});
  assert.equal(result.label,'已连接服务器');assert.equal(result.className,'is-running');assert.equal(result.error,'');
  assert.match(result.note,/加密 DNS/);assert.match(result.note,/192\.0\.2\.1/);assert.notEqual(result.connectedAt,'尚未成功连接');
+ assert.doesNotMatch(result.note,/已.*建立直连|直连地址/);assert.match(result.note,/不能据此确认/);
+});
+test('WAN policy is shown separately from DNS and names the actual bound interface',()=>{
+ const result=view({enabled:true,running:true,connection:{state:'connected',serverIP:'192.0.2.1',dnsMode:'encrypted',egressInterface:'pppoe-wan',routeProtected:true}});
+ assert.match(result.note,/已绑定出口 pppoe-wan/);assert.match(result.note,/公网出口以服务端记录为准/);assert.match(result.note,/解析成功不代表已绕过代理/);
 });
 test('retrying shows the actual failure and retry time without losing the last successful connection',()=>{
  const result=view({enabled:true,running:true,connection:{state:'reconnecting',lastError:'dial tcp 198.18.1.112:443: i/o timeout',connectedAt:'2026-10-17T17:00:00Z',nextRetryAt:'2026-10-17T17:01:00Z'}});

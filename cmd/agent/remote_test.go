@@ -92,6 +92,9 @@ func TestConcurrentHTTPAssetBurstStaysQueued(t *testing.T) {
 				result <- err
 				return
 			}
+			if reply.Type == "device-network" {
+				continue
+			}
 			if reply.Error != "" || reply.Status != 200 || string(reply.Body) != "asset" {
 				result <- fmt.Errorf("asset request failed: %s", reply.Error)
 				return

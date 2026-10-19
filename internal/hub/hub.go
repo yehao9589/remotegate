@@ -124,7 +124,7 @@ func (h *Hub) Detach(c *Client) {
 	})
 }
 
-func (h *Hub) ReadLoop(c *Client) error {
+func (h *Hub) ReadLoop(c *Client, reportEgress ...func(string) error) error {
 	// Server-originated traffic keeps reverse proxies from closing idle tunnels.
 	// WebSocket control frames work with the default pong handler in old agents.
 	if err := c.conn.SetReadDeadline(time.Now().Add(h.pongWait)); err != nil {
@@ -151,6 +151,7 @@ func (h *Hub) ReadLoop(c *Client) error {
 	stop := make(chan struct{})
 	defer close(stop)
 	go h.keepAlive(c, stop)
+	egressReported := false
 	for {
 		var msg protocol.Message
 		if err := c.conn.ReadJSON(&msg); err != nil {
@@ -163,6 +164,16 @@ func (h *Hub) ReadLoop(c *Client) error {
 		c.metricsMu.Unlock()
 		if err := c.conn.SetReadDeadline(time.Now().Add(h.pongWait)); err != nil {
 			return err
+		}
+		// New agents report the actual socket interface after the handshake.
+		// Accept it once per session and never count metadata as user traffic.
+		if msg.Type == "device-network" && !egressReported {
+			egressReported = true
+			if len(reportEgress) > 0 && reportEgress[0] != nil {
+				if err := reportEgress[0](msg.EgressInterface); err != nil {
+					return err
+				}
+			}
 		}
 		if msg.Type == "response" {
 			if ch, ok := c.pending.LoadAndDelete(msg.ID); ok {

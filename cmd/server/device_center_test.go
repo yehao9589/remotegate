@@ -30,6 +30,62 @@ func waitDevice(t *testing.T, a *app, id string, online bool) {
 	t.Fatal("device lifecycle did not settle", online, a.hub.Statuses(), a.store.Snapshot().Devices)
 }
 
+func TestAuthenticatedTunnelReportsActualEgressOnce(t *testing.T) {
+	a := freshAuthApp(t)
+	d, token, err := a.store.CreateDevice("router")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := agentTestServer(t, a)
+	defer server.Close()
+	query := url.Values{"device_id": {d.ID}, "token": {token}, "info": {"1"}, "os": {"linux"}}
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect?"+query.Encode(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	waitDevice(t, a, d.ID, true)
+	for _, iface := range []string{"pppoe-wan", "ignored-second-report"} {
+		if err := conn.WriteJSON(protocol.Message{Type: "device-network", EgressInterface: iface}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A pong is a barrier: the server has consumed both earlier data frames.
+	pong := make(chan struct{}, 1)
+	conn.SetPongHandler(func(string) error { pong <- struct{}{}; return nil })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+	if err := conn.WriteControl(websocket.PingMessage, []byte("barrier"), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-pong:
+	case <-time.After(2 * time.Second):
+		t.Fatal("metadata was not consumed")
+	}
+	got := a.store.Snapshot().Devices[0].Info
+	if got.EgressInterface != "pppoe-wan" || got.Interface != "" {
+		t.Fatal("actual egress was not recorded", got)
+	}
+	conn.Close()
+	<-done
+	waitDevice(t, a, d.ID, false)
+	if a.store.Snapshot().Devices[0].Info.EgressInterface != "pppoe-wan" {
+		t.Fatal("second report overwrote actual egress")
+	}
+	events, _ := a.store.DeviceConnectionEvents(d.ID)
+	if len(events) != 2 {
+		t.Fatal("network metadata changed lifecycle history", events)
+	}
+}
+
 func TestDeviceManagementLegacyPingReconnectAndPreferences(t *testing.T) {
 	a := freshAuthApp(t)
 	login := authCall(a, "/api/auth/setup", setupBody, "", nil)
