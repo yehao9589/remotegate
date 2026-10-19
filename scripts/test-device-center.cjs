@@ -136,3 +136,16 @@ test('history errors are recoverable and late history after logout cannot restor
  resolve({events:[{state:'offline',at:new Date().toISOString(),reason:'reconnect'}]});await pending;
  assert.doesNotMatch(f.context.deviceHistoryPanel(f.context.state.devices[0]),/管理员请求重新连接/);assert.equal(f.timers.size,0);
 });
+
+
+test('egress distinguishes automatic preference from actual socket and last offline interface',()=>{
+ const f=fixture(),d=f.context.state.devices[0];d.info={os:'linux',egressInterface:'pppoe-wan'};
+ assert.equal(f.context.deviceEgressText(d),'自动选择 · 实际：pppoe-wan');
+ d.online=false;assert.equal(f.context.deviceEgressText(d),'自动选择 · 上次实际：pppoe-wan');
+ d.info.interface='eth1';assert.equal(f.context.deviceEgressText(d),'指定 eth1 · 上次实际：pppoe-wan');
+ delete d.info.egressInterface;assert.equal(f.context.deviceEgressText(d),'指定 eth1 · 实际网卡未上报');
+ delete d.info.interface;assert.equal(f.context.deviceEgressText(d),'自动选择 · 实际网卡未上报');
+ d.info={};assert.equal(f.context.deviceEgressText(d),'尚未上报');
+ d.info={os:'linux',egressInterface:'<img src=x onerror=alert(1)>'};
+ assert.match(f.context.deviceConnectionPanel(d),/&lt;img/);assert.doesNotMatch(f.context.deviceConnectionPanel(d),/<img/);
+});

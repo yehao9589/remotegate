@@ -333,7 +333,9 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("device disconnected: %s (%s)", d.Name, id)
 	}()
-	if err := a.hub.ReadLoop(c); err != nil {
+	if err := a.hub.ReadLoop(c, func(iface string) error {
+		return a.store.RecordEgressInterface(id, c.Since, iface)
+	}); err != nil {
 		log.Printf("device tunnel ended: %s (%s): %v", d.Name, id, err)
 	}
 }

@@ -64,7 +64,11 @@ func TestIdleAgentStopsWhenContextIsCancelled(t *testing.T) {
 		}
 		defer conn.Close()
 		connected <- struct{}{}
-		_, _, _ = conn.ReadMessage()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
 	}))
 	defer server.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -100,7 +104,11 @@ func TestSessionReportsActualHandshakeAndHeartbeat(t *testing.T) {
 		if err := conn.WriteControl(websocket.PingMessage, []byte("probe"), time.Now().Add(time.Second)); err != nil {
 			return
 		}
-		_, _, _ = conn.ReadMessage()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
 	}))
 	defer server.Close()
 	ctx, cancel := context.WithCancel(context.Background())
