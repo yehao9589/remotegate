@@ -83,19 +83,27 @@ func (m Manifest) Validate() error {
 }
 
 type Status struct {
-	ID          string    `json:"id,omitempty"`
-	Phase       string    `json:"phase"`
-	FromVersion string    `json:"fromVersion,omitempty"`
-	ToVersion   string    `json:"toVersion,omitempty"`
-	Message     string    `json:"message,omitempty"`
-	StartedAt   time.Time `json:"startedAt,omitempty"`
-	UpdatedAt   time.Time `json:"updatedAt,omitempty"`
+	ID               string    `json:"id,omitempty"`
+	Phase            string    `json:"phase"`
+	FromVersion      string    `json:"fromVersion,omitempty"`
+	ToVersion        string    `json:"toVersion,omitempty"`
+	Message          string    `json:"message,omitempty"`
+	StartedAt        time.Time `json:"startedAt,omitempty"`
+	UpdatedAt        time.Time `json:"updatedAt,omitempty"`
+	AutoRollback     bool      `json:"autoRollback,omitempty"`
+	RolledBack       bool      `json:"rolledBack,omitempty"`
+	RollbackVerified bool      `json:"rollbackVerified,omitempty"`
+	RollbackFailed   bool      `json:"rollbackFailed,omitempty"`
 }
 
 func (s Status) Active() bool {
+	return s.InProgress() && time.Since(s.StartedAt) < 10*time.Minute
+}
+
+func (s Status) InProgress() bool {
 	switch s.Phase {
-	case "checking", "downloading", "installing", "restarting":
-		return time.Since(s.StartedAt) < 10*time.Minute
+	case "checking", "downloading", "backing_up", "installing", "restarting", "verifying", "rolling_back":
+		return true
 	}
 	return false
 }

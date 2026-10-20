@@ -28,17 +28,52 @@ func TestWANDiscoveryPrefersNetifdWANOverTunnelAndLAN(t *testing.T) {
 	}
 }
 
-func TestWANDiscoveryFailsClosedWhenWANIsDown(t *testing.T) {
+func TestWANDiscoveryUsesLANEvenWhenUnusedWANIsConfigured(t *testing.T) {
 	raw := `{"interface":[{"interface":"wan","up":false,"l3_device":"eth1"},{"interface":"lan","up":true,"l3_device":"br-lan","route":[{"target":"0.0.0.0","mask":0,"nexthop":"10.0.0.1"}]}]}`
 	run := func(_ context.Context, name string, args ...string) (string, error) {
 		if name != "ubus" {
-			t.Fatal("down WAN fell back to main route")
+			return "", nil
 		}
 		return raw, nil
 	}
-	_, err := discoverWAN(context.Background(), run, "")
-	if err == nil || !strings.Contains(err.Error(), "不回退") {
-		t.Fatal(err)
+	routes, err := discoverWAN(context.Background(), run, "")
+	if err != nil || routes["-4"].Interface != "br-lan" || routes["-4"].Gateway != "10.0.0.1" {
+		t.Fatal(routes, err)
+	}
+}
+
+func TestLANUplinkDiscoveryMainRoutesAndExclusions(t *testing.T) {
+	for _, scenario := range []struct{ name, dump, main4, main6, want4, want6 string }{
+		{"LAN route only in main", `{"interface":[{"interface":"wan","up":false,"device":"eth1"},{"interface":"lan","up":true,"l3_device":"br-lan"}]}`, "default via 192.168.1.1 dev br-lan metric 20\ndefault via 192.0.2.1 dev eth1 metric 1\n", "", "br-lan", ""},
+		{"WAN up without default", `{"interface":[{"interface":"wan","up":true,"l3_device":"eth1"},{"interface":"lan","up":true,"l3_device":"br-lan","route":[{"target":"0.0.0.0","mask":0,"nexthop":"192.168.1.1"}]}]}`, "", "", "br-lan", ""},
+		{"prefer WAN default from main", `{"interface":[{"interface":"wan","up":true,"l3_device":"eth1"},{"interface":"lan","up":true,"l3_device":"br-lan","route":[{"target":"0.0.0.0","mask":0,"nexthop":"192.168.1.1"}]}]}`, "default via 192.0.2.1 dev eth1 metric 50\n", "", "eth1", ""},
+		{"IPv4 WAN IPv6 LAN", `{"interface":[{"interface":"wan","up":true,"l3_device":"eth1","route":[{"target":"0.0.0.0","mask":0,"nexthop":"192.0.2.1"}]},{"interface":"wan6","up":false,"device":"eth2"},{"interface":"lan","up":true,"l3_device":"br-lan","route":[{"target":"::","mask":0,"nexthop":"fe80::1"}]}]}`, "", "", "eth1", "br-lan"},
+		{"only VPN default remains", `{"interface":[{"interface":"wan","up":false,"l3_device":"eth1"},{"interface":"vpn","up":true,"proto":"wireguard","l3_device":"secure0","route":[{"target":"0.0.0.0","mask":0}]}]}`, "default dev secure0 metric 0\ndefault dev utun0 metric 1\ndefault via 192.0.2.1 dev eth1 metric 2\n", "", "", ""},
+		{"down LAN with stale default", `{"interface":[{"interface":"wan","up":false,"device":"eth1"},{"interface":"lan","up":false,"device":"br-lan"}]}`, "default via 192.168.1.1 dev br-lan\n", "", "", ""},
+		{"linkdown default", `{"interface":[]}`, "default via 192.168.1.1 dev eth1 linkdown\n", "", "", ""},
+		{"shared device remains up", `{"interface":[{"interface":"wan","up":false,"device":"eth1"},{"interface":"uplink","up":true,"l3_device":"eth1"}]}`, "default via 192.168.1.1 dev eth1\n", "", "eth1", ""},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			run := func(_ context.Context, name string, args ...string) (string, error) {
+				if name == "ubus" {
+					return scenario.dump, nil
+				}
+				if args[0] == "-6" {
+					return scenario.main6, nil
+				}
+				return scenario.main4, nil
+			}
+			routes, err := discoverWAN(context.Background(), run, "")
+			if scenario.want4 == "" && scenario.want6 == "" {
+				if !errors.Is(err, errNoDirectEgress) {
+					t.Fatal("unsafe default selected", routes, err)
+				}
+				return
+			}
+			if err != nil || routes["-4"].Interface != scenario.want4 || routes["-6"].Interface != scenario.want6 {
+				t.Fatal(routes, err)
+			}
+		})
 	}
 }
 

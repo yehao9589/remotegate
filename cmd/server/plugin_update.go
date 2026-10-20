@@ -19,15 +19,16 @@ import (
 )
 
 type pluginUpdateView struct {
-	InstalledVersion string           `json:"installedVersion"`
-	Manifest         *update.Manifest `json:"manifest,omitempty"`
-	Available        bool             `json:"available"`
-	Online           bool             `json:"online"`
-	CanUpdate        bool             `json:"canUpdate"`
-	State            update.Status    `json:"state"`
-	Error            string           `json:"error,omitempty"`
-	Locked           bool             `json:"locked"`
-	CanManageUpdate  bool             `json:"canManageUpdate"`
+	RecoverySupported bool             `json:"recoverySupported"`
+	InstalledVersion  string           `json:"installedVersion"`
+	Manifest          *update.Manifest `json:"manifest,omitempty"`
+	Available         bool             `json:"available"`
+	Online            bool             `json:"online"`
+	CanUpdate         bool             `json:"canUpdate"`
+	State             update.Status    `json:"state"`
+	Error             string           `json:"error,omitempty"`
+	Locked            bool             `json:"locked"`
+	CanManageUpdate   bool             `json:"canManageUpdate"`
 }
 
 type verifiedUpdatePackage struct {
@@ -166,6 +167,7 @@ func (a *app) pluginUpdateView(id string) (pluginUpdateView, bool) {
 	status, online := a.hub.Statuses()[id]
 	view.Online, view.CanUpdate = online, online && status.CanUpdate
 	view.CanManageUpdate = online && status.CanManageUpdate
+	view.RecoverySupported = online && status.CanRecoverUpdate
 	p, centerErr := a.packageCenterStore()
 	if centerErr == nil {
 		view.Locked = p.locked(id)
@@ -173,15 +175,16 @@ func (a *app) pluginUpdateView(id string) (pluginUpdateView, bool) {
 	a.updateMu.Lock()
 	previous := a.deviceUpdates[id]
 	a.updateMu.Unlock()
+	view.RecoverySupported = view.RecoverySupported || previous.RecoverySupported
 	if previous.State.ID != "" {
 		view.State = previous.State
 	} else if centerErr == nil {
 		view.State = p.latestUpdateState(id)
 	}
-	if view.State.Active() && online && status.Since.After(view.State.StartedAt) && view.InstalledVersion == view.State.ToVersion {
+	if !view.State.AutoRollback && !status.CanRecoverUpdate && view.State.Active() && online && status.Since.After(view.State.StartedAt) && view.InstalledVersion == view.State.ToVersion {
 		view.State.Phase = "succeeded"
 		view.State.Message = "插件更新完成，设备已重新连接"
-	} else if !view.State.Active() && (view.State.Phase == "checking" || view.State.Phase == "downloading" || view.State.Phase == "installing" || view.State.Phase == "restarting") {
+	} else if !view.State.Active() && view.State.InProgress() {
 		view.State.Phase = "failed"
 		view.State.Message = "等待设备更新超时，请在路由器页面检查更新状态"
 	}

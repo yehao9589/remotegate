@@ -58,6 +58,8 @@ type app struct {
 	centerErr         error
 	mappingMu         sync.Mutex
 	mappingAccess     *mappingAccessManager
+	releaseMu         sync.Mutex
+	releases          *releaseChecker
 }
 
 func main() {
@@ -129,6 +131,8 @@ func (a *app) routes() http.Handler {
 		}
 		writeJSON(w, buildinfo.Current())
 	}))
+	mux.HandleFunc("/api/admin/version/check", a.admin(a.checkServerRelease))
+	mux.HandleFunc("/api/admin/version/notes", a.admin(a.serverReleaseNotes))
 	mux.HandleFunc("/install", a.root)
 	mux.HandleFunc("/api/admin/certificates", a.admin(a.certificates))
 	mux.HandleFunc("/api/admin/https", a.admin(a.httpsSettingsHandler))
@@ -205,6 +209,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideJS = append(guideJS, remoteJS...)
 		packageJS, _ := webFS.ReadFile("web/package-center.js")
 		guideJS = append(guideJS, packageJS...)
+		releasesJS, _ := webFS.ReadFile("web/server-version.js")
+		guideJS = append(guideJS, releasesJS...)
 		guideCSS, _ := webFS.ReadFile("web/install-guide.css")
 		consoleCSS, _ := webFS.ReadFile("web/console.css")
 		guideCSS = append(guideCSS, consoleCSS...)
@@ -228,6 +234,8 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideCSS = append(guideCSS, remoteCSS...)
 		packageCSS, _ := webFS.ReadFile("web/package-center.css")
 		guideCSS = append(guideCSS, packageCSS...)
+		releasesCSS, _ := webFS.ReadFile("web/server-version.css")
+		guideCSS = append(guideCSS, releasesCSS...)
 		page := strings.Replace(string(data), "/* INSTALL_GUIDE_JS */", string(guideJS), 1)
 		page = strings.Replace(page, "/* INSTALL_GUIDE_CSS */", string(guideCSS), 1)
 		page = a.renderConsoleAuth(page, r)
@@ -320,7 +328,7 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(protocol.MaxMessageBytes)
-	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1")
+	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1", r.URL.Query().Get("update_recovery") == "1")
 	if err := a.store.RecordConnection(id, c.Since, info); err != nil {
 		log.Printf("device connection information failed: %v", err)
 	}

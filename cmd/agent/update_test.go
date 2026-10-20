@@ -71,7 +71,7 @@ func TestAuthorizedRollbackPreservesConfigurationAndRejectsCrossVersion(t *testi
 	err := performUpdate(context.Background(), updatePlan{Config: cfg, Manifest: manifest, State: update.Status{ID: "rollback", StartedAt: time.Now(), ToVersion: manifest.PackageVersion}}, dir, paths, func(context.Context, string) error {
 		_ = os.WriteFile(paths.Configuration, []byte("changed"), 0600)
 		return os.WriteFile(paths.Version, []byte(manifest.PackageVersion), 0600)
-	}, func(bool) error { return nil }, false)
+	}, func(context.Context, bool) error { return nil }, false, testUpdateRecovery(paths, "0.1.8-2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestAuthorizedRollbackPreservesConfigurationAndRejectsCrossVersion(t *testi
 	bad := manifest
 	bad.AgentVersion = "0.1.7"
 	bad.PackageVersion = "0.1.7-1"
-	if err = performUpdate(context.Background(), updatePlan{Config: cfg, Manifest: bad}, t.TempDir(), paths, func(context.Context, string) error { t.Fatal("cross-version rollback installed"); return nil }, func(bool) error { return nil }, false); err == nil {
+	if err = performUpdate(context.Background(), updatePlan{Config: cfg, Manifest: bad}, t.TempDir(), paths, func(context.Context, string) error { t.Fatal("cross-version rollback installed"); return nil }, func(context.Context, bool) error { return nil }, false, updateRecovery{}); err == nil {
 		t.Fatal("cross-version rollback accepted")
 	}
 	bad = manifest
@@ -141,7 +141,7 @@ func TestUpdatePreservesConfigurationAndRestartsAfterInstallationFailure(t *test
 					return errors.New("opkg failure")
 				}
 				return os.WriteFile(paths.Version, []byte(manifest.PackageVersion), 0644)
-			}, func(enabled bool) error {
+			}, func(_ context.Context, enabled bool) error {
 				restarted = true
 				if !enabled {
 					t.Error("service enable flag lost")
@@ -151,7 +151,7 @@ func TestUpdatePreservesConfigurationAndRestartsAfterInstallationFailure(t *test
 					t.Error("configuration not restored before restart")
 				}
 				return nil
-			}, true)
+			}, true, testUpdateRecovery(paths, "0.1.7-1"))
 			if (err != nil) != fail || !restarted {
 				t.Fatal(err, restarted)
 			}
@@ -184,7 +184,7 @@ func TestFailedVerificationAndDowngradeNeverInstall(t *testing.T) {
 			} else {
 				os.WriteFile(paths.Version, []byte(manifest.PackageVersion), 0644)
 			}
-			err := performUpdate(context.Background(), updatePlan{Config: cfg, Manifest: manifest}, dir, paths, func(context.Context, string) error { t.Fatal("installer executed"); return nil }, func(bool) error { t.Fatal("service restarted"); return nil }, false)
+			err := performUpdate(context.Background(), updatePlan{Config: cfg, Manifest: manifest}, dir, paths, func(context.Context, string) error { t.Fatal("installer executed"); return nil }, func(context.Context, bool) error { t.Fatal("service restarted"); return nil }, false, updateRecovery{})
 			if err == nil {
 				t.Fatal("update not rejected")
 			}
@@ -213,5 +213,13 @@ func TestUpdateLockAndExpiredCommands(t *testing.T) {
 	response := updateControl(context.Background(), Config{}, protocol.Message{Type: "update-start", ID: "expired", Deadline: time.Now().Add(-time.Second).UnixMilli(), Body: []byte(`{}`)})
 	if response.Error == "" || response.ID != "expired" {
 		t.Fatal("expired remote command accepted")
+	}
+}
+
+func testUpdateRecovery(paths updatePaths, previous string) updateRecovery {
+	return updateRecovery{
+		Backup:  func() error { return nil },
+		Restore: func(context.Context) error { return os.WriteFile(paths.Version, []byte(previous), 0644) },
+		Verify:  func(context.Context, time.Time) error { return nil },
 	}
 }

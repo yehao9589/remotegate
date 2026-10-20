@@ -19,7 +19,7 @@ func TestDirectWANIsolatedNetwork(t *testing.T) {
 	if os.Getenv("REMOTEGATE_DIRECT_NETNS_TEST") != "1" {
 		t.Skip("requires isolated network namespace")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 	baseline4, _ := routeExec(ctx, "ip", "-4", "route", "show", "table", "main")
 	baseline6, _ := routeExec(ctx, "ip", "-6", "route", "show", "table", "main")
@@ -119,18 +119,45 @@ func TestDirectWANIsolatedNetwork(t *testing.T) {
 	if now, _ := routeExec(ctx, "ip", "-6", "route", "show", "table", "main"); now != baseline6 {
 		t.Fatal("IPv6 main routes changed")
 	}
-	// WAN loss must not establish a new connection through the restored proxy.
+	// Reproduce a LAN-fed router which still has unplugged WAN configuration.
+	// Renaming this fixture's uplink preserves its real IPv4/IPv6 gateway,
+	// while all proxy/TUN interception remains present.
+	if _, err = routeExec(ctx, "ip", "link", "set", "wan0", "name", "br-lan"); err != nil {
+		t.Fatal(err)
+	}
+	lanFixture := `{"interface":[{"interface":"wan","up":false,"device":"eth-unused"},{"interface":"wan6","up":false,"device":"eth-unused"},{"interface":"lan","up":true,"l3_device":"br-lan","route":[{"target":"0.0.0.0","mask":0,"nexthop":"10.23.1.1"},{"target":"::","mask":0,"nexthop":"2001:db8:10::1"}]}]}`
+	if err = os.WriteFile(os.Getenv("REMOTEGATE_WAN_FIXTURE"), []byte(lanFixture), 0600); err != nil {
+		t.Fatal(err)
+	}
+	checkDirect()
+	conn, err := d.DialContext(ctx, "tcp", "203.0.113.10:18088")
+	if err != nil {
+		t.Fatal("LAN direct connection failed", err)
+	}
+	if conn.(*directWANConn).iface != "br-lan" {
+		t.Fatal("LAN actual egress not reported")
+	}
+	conn.Close()
+	// netifd may omit static LAN defaults. Main-table defaults are valid too.
+	if err = os.WriteFile(os.Getenv("REMOTEGATE_WAN_FIXTURE"), []byte(`{"interface":[{"interface":"wan","up":false,"device":"eth-unused"},{"interface":"lan","up":true,"l3_device":"br-lan"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	checkDirect()
+	// Losing both WAN and LAN must not fall through to the restored proxy.
 	proxy, err = net.Listen("tcp4", "127.0.0.1:7892")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer proxy.Close()
 	serve(proxy)
-	if err = os.WriteFile(os.Getenv("REMOTEGATE_WAN_FIXTURE"), []byte(`{"interface":[{"interface":"wan","up":false,"l3_device":"wan0"}]}`), 0600); err != nil {
+	if err = os.WriteFile(os.Getenv("REMOTEGATE_WAN_FIXTURE"), []byte(`{"interface":[{"interface":"wan","up":false,"device":"eth-unused"},{"interface":"lan","up":false,"l3_device":"br-lan"}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = d.DialContext(ctx, "tcp", "203.0.113.10:18088"); err == nil || !strings.Contains(err.Error(), "不回退") {
 		t.Fatal("WAN failure did not fail closed", err)
+	}
+	if _, err = routeExec(ctx, "ip", "link", "set", "br-lan", "name", "wan0"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err = routeExec(ctx, d.guard, "stop"); err != nil {
 		t.Fatal(err)
@@ -138,5 +165,5 @@ func TestDirectWANIsolatedNetwork(t *testing.T) {
 	if rules, _ := routeExec(ctx, "ip", "-4", "rule", "show"); strings.Contains(rules, "138039") || !strings.Contains(rules, "lookup 354") {
 		t.Fatal("cleanup changed unrelated policy", rules)
 	}
-	t.Log("PASS: IPv4/IPv6 WAN sources, healthy/dead proxy controls, TUN policy bypass, firewall reload repair, WAN failure without proxy fallback, scoped cleanup")
+	t.Log("PASS: IPv4/IPv6 WAN and LAN sources, unused WAN with LAN uplink, main-table LAN fallback, healthy/dead proxy controls, TUN policy bypass, firewall reload repair, no uplink without proxy fallback, scoped cleanup")
 }

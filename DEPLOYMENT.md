@@ -1,51 +1,74 @@
 # RemoteGate 部署指南
 
-一个容器运行管理后台、设备隧道、域名映射和证书管理，不需要 MySQL、Redis、PHP 或宿主机 Node.js/Go。官方镜像提供 Linux AMD64/ARM64 服务端，并内置 x86_64、ARM64、ARMv7 路由器插件包。
+**先安装服务器后台，再接入路由器，最后添加访问域名。**
 
-**已有宝塔网站时，由宝塔提供后台和映射 HTTPS，RemoteGate 后台只做公网检测。** 先按[宝塔教程](docs/deployment/baota.md)安装，再阅读[泛域名证书与检测](docs/deployment/external-https.md)。独立服务器仍可通过 .env 首次配置内置 HTTPS，见[独立部署教程](docs/deployment/standalone.md)；内置入口与外部入口是不同部署方式。
+[返回项目介绍](README.md) · [更新记录](CHANGELOG.md)
 
-## 第一步：选择一种安装方式
+## 1. 准备
 
-**只选一种教程完成容器安装，不需要把四种方式都执行。**
+准备一台有公网访问入口的 Linux 服务器（AMD64 / ARM64，已安装 Docker Compose）、一个域名，以及一台支持插件的 iStoreOS / OpenWrt 路由器。
 
-| 方式 | 适用场景 | 操作位置 | 详细教程 |
-| --- | --- | --- | --- |
-| 1. 宝塔界面部署 | 使用宝塔 Docker，准备通过域名反代访问后台 | 宝塔和浏览器，全程不用电脑 PowerShell | [宝塔教程](docs/deployment/baota.md) |
-| 2. 命令行拉取镜像 | 使用服务器终端与 Docker Compose | Linux 服务器终端 | [命令行教程](docs/deployment/docker-cli.md) |
-| 3. 下载部署包 | 不克隆仓库，下载编排包部署 | 上传文件后在服务器终端启动 | [下载包教程](docs/deployment/release-package.md) |
-| 4. 从源码构建 | 修改代码、构建指定提交或不用 GHCR 服务端镜像 | Linux 服务器终端 | [源码教程](docs/deployment/source.md) |
+服务器只需一个容器，不需要数据库；路由器不需要公网 IP。
 
-**希望沿用现有宝塔网站作为前置入口时，阅读方式 1。** 不需要前置网站时采用上方独立部署，两种方式不必混用。
+## 2. 安装后台
 
-各方式均需要 Linux 服务器与 Docker Engine/Compose。编排使用 host 网络，直接使用主机端口，不另加 `ports`。默认 HTTP 仅监听服务器本机 `127.0.0.1:18088`。
+选择一种方式即可：
 
-## 第二步：按所选场景进入安装页
-
-安装方式与访问方式分开选择。不是每种安装都要使用 SSH。
-
-| 当前情况 | 如何首次进入后台 |
+| 你习惯的方式 | 阅读这篇教程 |
 | --- | --- |
-| 独立部署，在 .env 配置首次后台证书（兼容方式） | 系统申请成功后直接打开 `https://后台域名/install`，无需反代或电脑 PowerShell；见[独立部署](docs/deployment/standalone.md) |
-| 已有宝塔/Nginx 可用域名反代 | 直接打开域名的 `/install`，例如 `https://gate.example.com/install`；不需要 SSH |
-| 暂无反代，准备使用 RemoteGate 内置 HTTPS | SSH 可临时创建账号；首次内置证书需在创建账号前按独立教程配置 |
+| 在宝塔界面操作 | [宝塔安装](docs/deployment/baota.md) |
+| 在服务器终端操作 | [命令行安装](docs/deployment/docker-cli.md) |
+| 下载文件后上传服务器 | [部署包安装](docs/deployment/release-package.md) |
 
-完整说明见[首次访问、后台入口与 HTTPS](docs/deployment/access.md)。宝塔教程已包含第一条流程，不必再执行第二条。
+**完成标志：** 打开 `https://你的后台域名/install`，创建管理员并进入后台。账号默认 `admin`，密码自行设置，后台路径默认 `/admin`。安装后收藏最终地址。
 
-首次账号默认 `admin`，密码自行设置，后台入口默认 `/admin`，可自定义。完成后收藏新地址，`/install` 会关闭；已有实例保留原账号与入口。
+## 3. 接入路由器
 
-## 第三步：接入路由器与访问域名
+在后台点击“添加设备”，按[路由器接入教程](docs/deployment/router.md)选择一键安装或 iStore 手动安装。插件从后台获取。
 
-- [宝塔泛域名证书与 HTTPS 检测](docs/deployment/external-https.md)：在 RemoteGate 对应的宝塔站点申请、启用与续期证书，系统只检查公网结果。无需主机助手或宝塔 API。
-- [路由器插件安装与映射教程](docs/deployment/router.md)：选择一键安装或 iStore 手动安装，待设备上线后在设备下添加域名。
-- [映射域名的 HTTPS 入口](docs/deployment/access.md#设备映射的-https-入口)：选择内置 HTTPS 或前置宝塔/Nginx，按实际入口填写映射协议与端口。
-- [历史共用入口配置](docs/deployment/shared-443.md)：仅供已有 v0.1.5 内置入口实例维护，新宝塔部署采用上方外部证书方案。
+**完成标志：** 插件显示“已连接服务器”，后台设备显示在线。
 
-后台域名、设备映射域名及路由器服务器地址不是同一个字段：后台入口可以带自定义路径，路由器服务器地址不带这个路径，每个映射使用具体子域名。
+## 4. 添加访问域名
 
-## 后续维护
+按[域名与 HTTPS 教程](docs/deployment/external-https.md)配置解析、证书和反代，再在设备的“访问域名”里添加内网服务。分别检测公网 HTTPS 和内网目标后打开。
 
-[更新、备份与恢复](docs/deployment/maintenance.md)分别列出宝塔界面更新、命令行更新、源码更新入口和数据备份方法。
+例如：`https://router.gate.example.com/` → 路由器上的 `http://127.0.0.1:80`。
 
-默认镜像是 `ghcr.io/yehao9589/remotegate:stable`，跟随最新通过检查的构建。标签更新不会自动升级运行中的容器；需重新拉取并重新部署，保留原数据目录。
+**完成标志：** 访问域名能打开路由器或 NAS 页面。默认需要后台登录，目标网站原有登录也保留。
 
-官方 [Release](https://github.com/yehao9589/remotegate/releases) 只提供服务端部署包和校验文件。路由器插件从后台下载或执行后台的一键安装命令，不单独在 Release 发布。
+### 这三种地址别填混
+
+| 用途 | 示例 |
+| --- | --- |
+| 浏览器打开管理后台 | `https://gate.example.com/admin` |
+| 路由器填写服务器地址 | `https://gate.example.com`，不带后台路径 |
+| 访问内网服务 | `https://router.gate.example.com/` |
+
+示例域名换成你自己的。内网目标中的 `127.0.0.1` 指运行插件的路由器。
+
+## 5. 后续更新与备份
+
+默认镜像 `ghcr.io/yehao9589/remotegate:stable` 跟随正式发布。更新前备份完整数据目录和部署配置，重新拉取镜像并重新部署，保留原数据目录和 `.env`。**只重启容器不会升级。**
+
+服务器更新后，再检查是否有插件更新。详见[更新与备份](docs/deployment/maintenance.md)。
+
+## 遇到问题先看这里
+
+| 问题 | 从哪里检查 |
+| --- | --- |
+| 后台打不开或登录提示来源错误 | [后台访问排查](docs/deployment/access.md#访问问题排查) |
+| 设备无法上线 | [路由器接入与连接说明](docs/deployment/router.md) |
+| 设备在线，访问域名打不开 | [域名、证书和反代排查](docs/deployment/external-https.md#常见问题) |
+
+已有宝塔 / Nginx 提供 HTTPS 时，证书由该入口管理，RemoteGate 只检测公网结果。不需要迁移其他网站的 443，也不需要主机助手或宝塔 API。
+
+<details>
+<summary>开发构建与旧版配置维护</summary>
+
+- [从源码构建](docs/deployment/source.md)
+- [历史内置 HTTPS 配置](docs/deployment/standalone.md)
+- [历史共用 443 配置](docs/deployment/shared-443.md)
+
+历史教程仅供维护旧实例，新版后台已移除文中的网页证书申请按钮。
+
+</details>

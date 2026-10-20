@@ -67,6 +67,7 @@ func (a *app) refreshPackageUpdate(ctx context.Context, id string) (pluginUpdate
 	if len(response.Body) > 16384 || json.Unmarshal(response.Body, &routerView) != nil {
 		return view, errors.New("设备返回的更新状态无效")
 	}
+	view.RecoverySupported = routerView.RecoverySupported
 	// Registration confirms the installed version even after the temporary router status is cleared.
 	if routerView.InstalledVersion != "" {
 		view.InstalledVersion = routerView.InstalledVersion
@@ -90,6 +91,9 @@ func (a *app) startPackageUpdate(ctx context.Context, id string, item packageArt
 	if !exists || !view.Online || !view.CanUpdate {
 		return view, errors.New("设备未上线或尚不支持在线更新")
 	}
+	if view.State.RollbackFailed {
+		return view, errors.New("上次自动回滚未完成，请先在路由器恢复旧插件并核对本机备份")
+	}
 	if view.Locked {
 		return view, errors.New("此设备已锁定版本，请先解除锁定")
 	}
@@ -110,7 +114,7 @@ func (a *app) startPackageUpdate(ctx context.Context, id string, item packageArt
 	} else if current, err := a.loadUpdatePackage(); err != nil || current.SHA256 != item.Manifest.SHA256 {
 		return view, errors.New("旧插件仅支持更新到当前通用安装包，请先升级插件")
 	}
-	state := update.Status{ID: makeID() + makeID(), Phase: "checking", FromVersion: view.InstalledVersion, ToVersion: item.Manifest.PackageVersion, Message: "正在准备更新并等待设备确认", StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	state := update.Status{AutoRollback: view.RecoverySupported, ID: makeID() + makeID(), Phase: "checking", FromVersion: view.InstalledVersion, ToVersion: item.Manifest.PackageVersion, Message: "正在准备更新并等待设备确认", StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	a.updateMu.Lock()
 	if p.locked(id) {
 		a.updateMu.Unlock()
@@ -158,7 +162,7 @@ func (a *app) startPackageUpdate(ctx context.Context, id string, item packageArt
 		return view, errors.New(state.Message)
 	}
 	var routerView pluginUpdateView
-	validPhase := map[string]bool{"checking": true, "downloading": true, "installing": true, "restarting": true, "succeeded": true, "failed": true}
+	validPhase := map[string]bool{"checking": true, "downloading": true, "backing_up": true, "installing": true, "restarting": true, "verifying": true, "rolling_back": true, "succeeded": true, "failed": true}
 	if len(response.Body) > 16384 || json.Unmarshal(response.Body, &routerView) != nil || routerView.State.ID == "" || len(routerView.State.ID) > 64 || !validPhase[routerView.State.Phase] {
 		state.Phase, state.Message = "failed", "设备返回的更新状态无效，请重新检测"
 		view.State = state
@@ -167,6 +171,7 @@ func (a *app) startPackageUpdate(ctx context.Context, id string, item packageArt
 	}
 	routerView.State.StartedAt, routerView.State.FromVersion, routerView.State.ToVersion = state.StartedAt, state.FromVersion, state.ToVersion
 	view.State = routerView.State
+	view.RecoverySupported = routerView.RecoverySupported
 	view.Manifest = &item.Manifest
 	_ = p.progress(operationID, view.State)
 	return a.rememberPluginUpdate(id, view), nil

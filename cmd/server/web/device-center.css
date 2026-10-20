@@ -1,4 +1,41 @@
 /* A compact device workspace with separate connection and service status. */
+/* Pagination stays in the page flow; history uses the table's own footer. */
+#deviceCards{scroll-margin-top:24px}
+.device-pagination{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px 20px;margin:0 0 14px;padding:0 3px;color:#7c8ca4;font-size:12px;font-variant-numeric:tabular-nums}
+.device-page-total{line-height:1.6;white-space:nowrap}.device-page-range{color:#9aa7ba;font-size:11px}
+.device-page-controls{display:flex;align-items:center;gap:18px;margin-left:auto}
+.device-pagination .device-page-size,.device-workspace-card .device-pagination details.device-page-size{position:relative;display:block;flex:none;margin:0;padding:0;border:0;color:#70829c;font-size:12px}
+.device-pagination .device-page-size>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;width:108px;height:32px;margin:0;padding:0 10px;box-sizing:border-box;list-style:none;border:1px solid #e5eaf3;border-radius:8px;background:#fff;cursor:pointer;white-space:nowrap}
+.device-pagination .device-page-size>summary::-webkit-details-marker{display:none}.device-page-size summary::marker{content:''}
+.device-pagination .device-page-size>summary:hover,.device-pagination .device-page-size[open]>summary{border-color:#c6d0ee;background:#f9faff}
+.device-page-size .ui-icon{width:14px;height:14px;margin:0;color:#899bb7}
+.device-page-size-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:15;min-width:128px;box-sizing:border-box;padding:5px;border:1px solid #e3e9f3;border-radius:10px;background:#fff;box-shadow:0 8px 28px #283f6820}
+.device-history-panel .device-page-size-menu{top:auto;bottom:calc(100% + 6px)}
+.device-pagination .device-page-size-menu button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;height:33px;margin:0;padding:0 9px;border:0;border-radius:6px;background:transparent;box-shadow:none;color:#647891;font-size:12px;text-align:left;white-space:nowrap}
+.device-pagination .device-page-size-menu button:hover,.device-pagination .device-page-size-menu button:focus-visible{background:#f2f5fc;color:#4e61d8;outline:none}
+.device-pagination .device-page-size-menu button[aria-selected=true]{background:#eef1ff;color:#4e61d8;font-weight:500}.device-page-size-check{width:12px;color:#6175dd}
+.device-page-buttons{display:flex;align-items:center;gap:4px;flex:none}
+.device-page-numbers{display:grid;grid-auto-flow:column;grid-auto-columns:30px;gap:4px}
+.device-page-buttons button{display:inline-flex;align-items:center;justify-content:center;width:30px;min-width:30px;height:32px;padding:0;border:1px solid transparent;border-radius:7px;background:transparent;box-shadow:none;color:#7a8ba4;white-space:nowrap;font-size:12px;transition:background .15s,color .15s}
+.device-page-buttons button:hover:not(:disabled){background:#eaf0fc;color:#4967d5}
+.device-page-buttons button[aria-current=page]{background:#e9edff;color:#4e61d8;font-weight:600}
+.device-page-buttons button:disabled{opacity:.3;cursor:default}.device-page-buttons .ui-icon{width:16px;height:16px;margin:0}.device-page-gap{display:grid;place-items:center;width:30px;height:32px;color:#a7b3c5}
+.device-page-buttons button:focus-visible,.device-page-size>summary:focus-visible{outline:2px solid #a1afea;outline-offset:2px}
+.device-page-count{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.device-page-mobile{display:none}
+.device-pagination-single .device-page-buttons,.device-pagination-single .device-page-range{display:none}
+.device-card+.device-pagination{margin-top:4px;margin-bottom:20px}
+.device-history-panel .device-pagination{margin:0;padding:14px 0 2px}
+.device-workspace-card .device-history-table td{padding:12px}
+@media(max-width:620px){
+ .device-pagination{gap:9px 12px;padding:0 2px;margin-bottom:12px}
+ .device-page-controls{gap:12px;flex-wrap:wrap;justify-content:flex-end}
+ .device-page-total{font-size:11px}.device-page-range{display:none}
+ .device-history-panel .device-pagination{padding-top:12px}
+ .device-history-panel .device-page-controls{width:100%;justify-content:space-between;gap:8px}
+ .device-page-numbers{display:none}
+ .device-page-mobile{display:block;width:54px;text-align:center;color:#7c8ca4;font-size:12px}
+}
 .device-workspace-card{overflow:hidden}.device-workspace-card.device-pinned{border-color:#bbccee;box-shadow:0 4px 20px #3558860b}
 .device-workspace-card .device-head{align-items:flex-start}.device-workspace-card .device-info{min-width:0}.device-workspace-card .device-title{flex-wrap:wrap}
 .device-pin-label{display:inline-flex;align-items:center;gap:3px;color:#6683bd;font-size:10px}.device-pin-label .ui-icon{width:12px;height:12px;margin:0}

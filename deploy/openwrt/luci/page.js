@@ -31,12 +31,13 @@ function remotegateConnectionView(status){
  document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh()});
  var updateBusy=false,updateView=null,updateTimer=null;
  var checkButton=document.getElementById('rg-update-check'),startButton=document.getElementById('rg-update-start'),updateText=document.getElementById('rg-update-state');
- function activeUpdate(view){return !!view&&['checking','downloading','installing','restarting'].indexOf((view.state||{}).phase)>=0}
+ function activeUpdate(view){return !!view&&['checking','downloading','backing_up','installing','restarting','verifying','rolling_back'].indexOf((view.state||{}).phase)>=0}
  function renderUpdate(view){
   updateView=view;var state=view.state||{},active=activeUpdate(view);
-  checkButton.disabled=updateBusy||active;startButton.disabled=updateBusy||active;startButton.hidden=!view.available||active||!!view.error;
+  checkButton.disabled=updateBusy||active;startButton.disabled=updateBusy||active;startButton.hidden=!view.available||active||!!view.error||state.rollbackFailed;
   var target=view.manifest&&view.manifest.packageVersion;
   updateText.textContent=view.error||(active||state.phase==='failed'?state.message:target&&view.available?'发现新版 '+target+' · 当前 '+view.installedVersion:state.message|| (target?'当前 '+view.installedVersion+'，无需更新':'点击“检查更新”对比服务器提供的插件版本。'));
+  if(view.recoverySupported&&!active&&state.phase!=='failed')updateText.textContent+=' · 已启用失败自动回滚';
   updateText.classList.toggle('is-error',!!view.error||state.phase==='failed');
   if(view.installedVersion)document.getElementById('rg-plugin-version').textContent='插件 '+view.installedVersion;
   clearTimeout(updateTimer);if(active)updateTimer=setTimeout(function(){updateRequest('status')},3000);
