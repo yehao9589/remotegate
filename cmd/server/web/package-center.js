@@ -1,7 +1,7 @@
 let packageCenterData=null,packageCenterPending=null,packageCenterTransition=-1,packageCenterTimer=null;
 let packageCenterTab='install',packageDeviceQuery='',packageDeviceFilter='all',packageDownloadArch='';
 const packageSelection=new Set();
-const packagePhaseNames={ready:'待执行',preflight:'安装检查',checking:'准备更新',downloading:'下载中',verifying:'校验中',installing:'安装中',configuring:'应用模板',starting:'启动中',waiting:'等待连接',restarting:'重新连接',succeeded:'已完成',failed:'未完成',expired:'已过期',idle:'未执行',pending:'等待执行',running:'执行中',queued:'排队中',paused:'已暂停',cancelled:'已取消',completed:'已结束',interrupted:'等待核对'};
+const packagePhaseNames={ready:'待执行',preflight:'安装检查',checking:'准备更新',backing_up:'备份旧版',rolling_back:'自动回滚',downloading:'下载中',verifying:'校验中',installing:'安装中',configuring:'应用模板',starting:'启动中',waiting:'等待连接',restarting:'重新连接',succeeded:'已完成',failed:'未完成',expired:'已过期',idle:'未执行',pending:'等待执行',running:'执行中',queued:'排队中',paused:'已暂停',cancelled:'已取消',completed:'已结束',interrupted:'等待核对'};
 function packageCompare(a,b){
  const parse=x=>/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([1-9]\d*))?$/.exec(x||'');
  const x=parse(a),y=parse(b);if(!x||!y)return null;
@@ -29,7 +29,7 @@ async function loadPackageCenter(draw=true){
 function packagePolling(){
  clearTimeout(packageCenterTimer);
  if(page!=='packages'||$('#shell').hidden)return;
- const active=['running','queued'].includes(packageCenterData?.batch?.phase)||(packageCenterData?.history||[]).some(op=>['checking','preflight','downloading','verifying','installing','configuring','starting','waiting','restarting'].includes(op.state.phase));
+ const active=['running','queued'].includes(packageCenterData?.batch?.phase)||(packageCenterData?.history||[]).some(op=>['checking','preflight','backing_up','rolling_back','downloading','verifying','installing','configuring','starting','waiting','restarting'].includes(op.state.phase));
  if(active)packageCenterTimer=setTimeout(async()=>{try{await loadPackageCenter(!document.activeElement?.matches('input,select,textarea'))}catch{}packagePolling()},4000);
 }
 renderPackages=()=>{

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,6 +78,25 @@ func virtualUplink(name string) bool {
 	}
 	return false
 }
+
+func automaticTunnelDevice(name string) bool {
+	if virtualUplink(name) {
+		return true
+	}
+	// TUN/TAP and WireGuard can have arbitrary names, outside our known
+	// prefixes and netifd's inventory. Bridges (including br-lan) stay valid.
+	base := filepath.Join("/sys/class/net", name)
+	if _, err := os.Stat(filepath.Join(base, "tun_flags")); err == nil {
+		return true
+	}
+	if raw, err := os.ReadFile(filepath.Join(base, "type")); err == nil {
+		switch strings.TrimSpace(string(raw)) {
+		case "768", "769", "776", "778", "823", "65534":
+			return true
+		}
+	}
+	return false
+}
 func routeField(fields []string, key string) string {
 	for i := 0; i+1 < len(fields); i++ {
 		if fields[i] == key {
@@ -92,8 +112,11 @@ func parseDefaultRoutes(raw, manual string) []wanRoute {
 		if len(f) == 0 || f[0] != "default" {
 			continue
 		}
+		if slices.Contains(f, "linkdown") || slices.Contains(f, "dead") {
+			continue
+		}
 		device := routeField(f, "dev")
-		if !validDevice(device) || manual != "" && manual != device || manual == "" && virtualUplink(device) {
+		if !validDevice(device) || manual != "" && manual != device || manual == "" && automaticTunnelDevice(device) {
 			continue
 		}
 		gateway := routeField(f, "via")
@@ -115,11 +138,12 @@ func discoverWAN(ctx context.Context, run routeCommand, manual string) (map[stri
 	}
 	var dump struct {
 		Interfaces []struct {
-			Name   string `json:"interface"`
-			Up     bool   `json:"up"`
-			Device string `json:"l3_device"`
-			Proto  string `json:"proto"`
-			Routes []struct {
+			Name             string `json:"interface"`
+			Up               bool   `json:"up"`
+			Device           string `json:"l3_device"`
+			ConfiguredDevice string `json:"device"`
+			Proto            string `json:"proto"`
+			Routes           []struct {
 				Target  string `json:"target"`
 				Mask    int    `json:"mask"`
 				Gateway string `json:"nexthop"`
@@ -129,15 +153,36 @@ func discoverWAN(ctx context.Context, run routeCommand, manual string) (map[stri
 	}
 	selected := map[string]wanRoute{}
 	priority := map[string]int{}
-	configuredWAN := false
+	// netifd can retain an unplugged wan/wan6 alongside a working LAN uplink.
+	// Track unusable devices instead of treating WAN configuration as a veto.
+	up, down, excluded, wanDevices := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	if raw, err := run(ctx, "ubus", "call", "network.interface", "dump"); err == nil && json.Unmarshal([]byte(raw), &dump) == nil {
 		for _, iface := range dump.Interfaces {
+			device := iface.Device
+			if !validDevice(device) {
+				device = iface.ConfiguredDevice
+			}
+			if !validDevice(device) {
+				continue
+			}
+			if iface.Up {
+				up[device] = true
+				if iface.Name == "wan" || iface.Name == "wan6" {
+					wanDevices[device] = true
+				}
+			} else {
+				down[device] = true
+			}
+			if automaticTunnelDevice(device) || virtualUplinkProtocol(iface.Proto) {
+				excluded[device] = true
+			}
+		}
+		for _, iface := range dump.Interfaces {
 			wan := iface.Name == "wan" || iface.Name == "wan6"
-			configuredWAN = configuredWAN || wan
 			if !iface.Up || !validDevice(iface.Device) || manual != "" && manual != iface.Device {
 				continue
 			}
-			if manual == "" && (virtualUplink(iface.Device) || iface.Proto == "wireguard" || iface.Proto == "openvpn" || iface.Proto == "pptp") {
+			if manual == "" && excluded[iface.Device] {
 				continue
 			}
 			for _, r := range iface.Routes {
@@ -164,16 +209,11 @@ func discoverWAN(ctx context.Context, run routeCommand, manual string) (map[stri
 			}
 		}
 	}
-	// A configured but down WAN must not silently fall back to a VPN or LAN.
-	// Bypass-router installations without wan/wan6 can use a physical main default.
+	// Prefer netifd's WAN, then another live default route (including LAN).
+	// A missing netifd route can be supplied by the main table, but a stale
+	// route on a known-down interface or an automatic VPN/TUN is never used.
 	for _, family := range []string{"-4", "-6"} {
-		if configuredWAN && manual == "" && priority[family] < 2 {
-			delete(selected, family)
-		}
-		if _, ok := selected[family]; ok {
-			continue
-		}
-		if configuredWAN && manual == "" {
+		if priority[family] == 2 {
 			continue
 		}
 		raw, err := run(ctx, "ip", family, "route", "show", "table", "main")
@@ -181,15 +221,31 @@ func discoverWAN(ctx context.Context, run routeCommand, manual string) (map[stri
 			continue
 		}
 		for _, candidate := range parseDefaultRoutes(raw, manual) {
-			if old, ok := selected[family]; !ok || candidate.Metric < old.Metric {
+			if down[candidate.Interface] && !up[candidate.Interface] || manual == "" && excluded[candidate.Interface] {
+				continue
+			}
+			p := 1
+			if wanDevices[candidate.Interface] {
+				p = 2
+			}
+			if old, ok := selected[family]; !ok || p > priority[family] || p == priority[family] && candidate.Metric < old.Metric {
 				selected[family] = candidate
+				priority[family] = p
 			}
 		}
 	}
 	if len(selected) == 0 {
-		return nil, errors.New("没有可用的 WAN 直连出口；已停止连接，不回退到代理网络")
+		return nil, fmt.Errorf("%w：WAN、LAN 等接口均未发现可用默认路由；已停止连接，不回退到代理网络", errNoDirectEgress)
 	}
 	return selected, nil
+}
+
+func virtualUplinkProtocol(proto string) bool {
+	switch strings.ToLower(proto) {
+	case "wireguard", "openvpn", "pptp", "l2tp", "sstp", "gre", "gretap", "ipip", "sit", "6in4", "6rd", "vti", "vxlan":
+		return true
+	}
+	return false
 }
 
 func (d *directWANDialer) configureFamily(ctx context.Context, family string, route wanRoute) error {
@@ -293,7 +349,7 @@ func (d *directWANDialer) prepare(ctx context.Context) (map[string]wanRoute, err
 			if family == "-6" && routes[family].Interface == "" {
 				continue
 			}
-			return nil, fmt.Errorf("WAN 直连路由配置失败：%w", err)
+			return nil, fmt.Errorf("直连出口路由配置失败：%w", err)
 		}
 	}
 	if _, err = d.run(ctx, d.guard, "refresh"); err != nil {
@@ -351,11 +407,11 @@ func (d *directWANDialer) DialContext(ctx context.Context, network, address stri
 	}
 	route := routes[family]
 	if route.Interface == "" {
-		return nil, errors.New("服务器地址对应的 WAN 出口不可用；未回退到代理")
+		return nil, fmt.Errorf("%w：服务器地址对应的直连出口不可用；未回退到代理", errNoDirectEgress)
 	}
 	conn, err := boundDialer(route.Interface, directMark).DialContext(ctx, network, address)
 	if err != nil {
-		return nil, fmt.Errorf("WAN 出口 %s 连接失败：%w", route.Interface, err)
+		return nil, fmt.Errorf("直连出口 %s 连接失败：%w", route.Interface, err)
 	}
 	return &directWANConn{Conn: conn, iface: route.Interface}, nil
 }

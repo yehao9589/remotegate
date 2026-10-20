@@ -29,5 +29,27 @@ reset();raw=nil;assert(controller.connection_state(config,true).state=="unknown"
 reset();assert(controller.connection_state(config,false).state=="stopped")
 config.enabled="0";assert(controller.connection_state(config,true).state=="disabled")
 config.enabled="1";config.token="";assert(controller.connection_state(config,true).state=="unconfigured")
+-- A broken/replaced agent must not hide the independent updater's result.
+local saved_raw,modified="fixture",os.time()
+require=function(name)
+ if name=="nixio.fs" then return {
+  readfile=function(name) if name=="/var/run/remotegate-update/status.json" then return saved_raw end;if name=="/usr/share/remotegate/version" then return "0.1.15-1\n" end end,
+  stat=function()return modified end
+ } end
+ if name=="luci.jsonc" then return {parse=function()return record end} end
+ return original_require(name)
+end
+record={phase="rolling_back",message="正在恢复旧版",autoRollback=true,token="never-export",plan={token="never-export"}}
+result=controller.saved_update_view()
+assert(result.state.phase=="rolling_back" and result.recoverySupported and result.installedVersion=="0.1.15-1")
+assert(result.state.token==nil and result.state.plan==nil)
+local replied
+controller.luci={http={getenv=function()return "GET" end,header=function()end,prepare_content=function()end,write_json=function(value)replied=value end},sys={exec=function()error("must not execute a broken agent to read rollback progress")end}}
+controller.update_status();assert(replied.state.phase=="rolling_back")
+record={phase="failed",autoRollback=true,rolledBack=true,rollbackVerified=true,rollbackFailed="true"}
+result=controller.saved_update_view();assert(result.state.rolledBack and result.state.rollbackVerified and not result.state.rollbackFailed)
+record.phase="verifying";modified=os.time()-601;result=controller.saved_update_view();assert(result.state.phase=="failed")
+record.phase="unknown";assert(controller.saved_update_view()==nil)
+record.phase="failed";saved_raw=string.rep("x",8193);assert(controller.saved_update_view()==nil)
 require=original_require
 print("Router connection state, process ownership, stale heartbeat and credential omission checks passed")

@@ -54,16 +54,39 @@ local function update_reply(value)
  luci.http.write_json(value)
 end
 
-local function update_command(command)
+local function update_command(command, fallback)
  local raw = luci.sys.exec(command)
  local ok, value = pcall(require("luci.jsonc").parse, raw or "")
- if not ok or type(value) ~= "table" then value = {error="无法读取更新状态，请检查插件是否完整安装"} end
+ if not ok or type(value) ~= "table" then value = fallback or {error="无法读取更新状态，请检查插件是否完整安装"} end
  update_reply(value)
 end
 
 local function update_configuration()
  -- The fixed command reads saved UCI settings; credentials are never sent to the browser.
  return luci.sys.call("umask 077; mkdir -p /var/run/remotegate-update && /usr/libexec/remotegate-config --for-update > /var/run/remotegate-update/agent.json.tmp && mv /var/run/remotegate-update/agent.json.tmp /var/run/remotegate-update/agent.json") == 0
+end
+
+function saved_update_view()
+ -- The status page must remain readable while opkg replaces the executable,
+ -- including when a new client cannot run its own --update-status command.
+ local fs=require("nixio.fs")
+ local raw=fs.readfile("/var/run/remotegate-update/status.json")
+ if not raw or #raw>8192 then return nil end
+ local ok,value=pcall(require("luci.jsonc").parse,raw)
+ local active={checking=true,downloading=true,backing_up=true,installing=true,restarting=true,verifying=true,rolling_back=true}
+ if not ok or type(value)~="table" or not (active[value.phase] or value.phase=="failed" or value.phase=="succeeded") then return nil end
+ local state={phase=value.phase}
+ for _,key in ipairs({"id","fromVersion","toVersion","message","startedAt","updatedAt"}) do
+  local limit=key=="message" and 1500 or 128
+  if type(value[key])=="string" and #value[key]<=limit then state[key]=value[key] end
+ end
+ for _,key in ipairs({"autoRollback","rolledBack","rollbackVerified","rollbackFailed"}) do state[key]=value[key]==true end
+ local modified=fs.stat("/var/run/remotegate-update/status.json","mtime")
+ if active[state.phase] and modified and os.time()-modified>600 then
+  state.phase="failed";state.message="更新状态超过 10 分钟未更新，请查看路由器日志并核对本机备份"
+ end
+ local version=(fs.readfile("/usr/share/remotegate/version") or ""):gsub("%s+$","")
+ return {installedVersion=version,state=state,recoverySupported=state.autoRollback,available=false}
 end
 
 function update_check()
@@ -74,7 +97,9 @@ end
 
 function update_status()
  if luci.http.getenv("REQUEST_METHOD") ~= "GET" then luci.http.status(405, "Method Not Allowed"); return end
- update_command("/usr/sbin/remotegate-agent --update-status")
+ local saved=saved_update_view()
+ if saved and saved.state.autoRollback then update_reply(saved);return end
+ update_command("/usr/sbin/remotegate-agent --update-status",saved)
 end
 
 function update_start()

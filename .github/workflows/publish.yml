@@ -59,6 +59,7 @@ jobs:
           node --test scripts/test-remote-access.cjs
           node --test scripts/test-package-center.cjs
           node --test scripts/test-router-connection.cjs
+          node --test scripts/test-server-version.cjs
       - name: Verify WAN routing survives proxy failures
         run: |
           go test -c -o /tmp/remotegate-agent.test ./cmd/agent

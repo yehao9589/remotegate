@@ -131,6 +131,7 @@ func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, sta
 	}
 	if routerUpdateSupported() {
 		q.Set("updater", "1")
+		q.Set("update_recovery", "1")
 		q.Set("update_tools", "1")
 	}
 	if installed, err := os.ReadFile("/usr/share/remotegate/version"); err == nil {

@@ -1,5 +1,5 @@
 {
-  "version": "0.1.15",
-  "title": "WAN 直连与代理故障保护",
+  "version": "0.1.16",
+  "title": "插件自动回滚、版本中心与设备分页",
   "packageRevision": 1
 }

@@ -83,6 +83,27 @@ func TestServerDialerKeepsLANNamesLocalAndRecoversPublicDNSFailure(t *testing.T)
 	}
 }
 
+func TestNoDirectUplinkIsNotReportedAsDNSFailure(t *testing.T) {
+	var attempts atomic.Int32
+	dial := func(context.Context, string, string) (net.Conn, error) {
+		attempts.Add(1)
+		return nil, errNoDirectEgress
+	}
+	d := &serverDialer{
+		lookup: func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("198.18.1.112")}}, nil
+		},
+		realLookup: func(ctx context.Context, host string) ([]net.IPAddr, error) { return lookupServerDoH(ctx, host, dial) },
+	}
+	_, err := d.DialContext(context.Background(), "tcp", "gate.example.com:443")
+	if !errors.Is(err, errNoDirectEgress) || !strings.Contains(err.Error(), "WAN/LAN") || strings.Contains(err.Error(), "解析失败") {
+		t.Fatal(err)
+	}
+	if attempts.Load() < 1 || attempts.Load() > 2 {
+		t.Fatal("retried DNS endpoints despite missing uplink", attempts.Load())
+	}
+}
+
 func TestServerDialPreservesHTTPSNameAndCertificateValidation(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS.ServerName != "example.com" || !strings.HasPrefix(r.Host, "example.com:") {

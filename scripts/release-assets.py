@@ -31,10 +31,13 @@ with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
 
 bundle = output / f"RemoteGate-{tag}-compose.tar.gz"
 with tarfile.open(bundle, "w:gz") as archive:
-    for name in ("docker-compose.yml", "docker-compose.https.yml", "DEPLOYMENT.md", "README.md", "CHANGELOG.md", "docs/releasing.md"):
+    for name in ("docker-compose.yml", "docker-compose.https.yml", "DEPLOYMENT.md", "README.md", "CHANGELOG.md", "docs/releasing.md", "docs/device-status.md", "docs/traffic.md"):
         archive.add(name, arcname=name)
     for guide in sorted(Path("docs/deployment").rglob("*.md")):
         archive.add(guide, arcname=guide.as_posix())
+    for image in sorted(Path("docs/images").glob("*")):
+        if image.is_file() and image.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".svg"}:
+            archive.add(image, arcname=image.as_posix())
     environment = Path(".env.example").read_text(encoding="utf-8")
     environment = re.sub(r"(?m)^REMOTE_GATE_IMAGE=.*$", "REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:stable", environment)
     for name, content in ((".env.example", environment), ("VERSION.json", json.dumps(release, indent=2)+"\n")):

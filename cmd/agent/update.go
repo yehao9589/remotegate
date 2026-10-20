@@ -28,11 +28,14 @@ type updatePaths struct{ StateDir, Configuration, Version, Service string }
 
 var routerUpdatePaths = updatePaths{"/var/run/remotegate-update", "/etc/config/remotegate", "/usr/share/remotegate/version", "/etc/init.d/remotegate"}
 
+var errUpdateRecoveryFailed = errors.New("自动回滚未完成")
+
 type updateView struct {
-	InstalledVersion string           `json:"installedVersion"`
-	Manifest         *update.Manifest `json:"manifest,omitempty"`
-	Available        bool             `json:"available"`
-	State            update.Status    `json:"state"`
+	RecoverySupported bool             `json:"recoverySupported"`
+	InstalledVersion  string           `json:"installedVersion"`
+	Manifest          *update.Manifest `json:"manifest,omitempty"`
+	Available         bool             `json:"available"`
+	State             update.Status    `json:"state"`
 }
 
 type updatePlan struct {
@@ -66,7 +69,7 @@ func readUpdateState(paths updatePaths) update.Status {
 	if state.Phase == "" {
 		state.Phase = "idle"
 	}
-	if state.Active() == false && (state.Phase == "checking" || state.Phase == "downloading" || state.Phase == "installing" || state.Phase == "restarting") {
+	if !state.Active() && state.InProgress() {
 		state.Phase, state.Message = "failed", "更新超时，请检查路由器日志后重试"
 	}
 	return state
@@ -197,7 +200,7 @@ func fetchUpdateManifestTarget(ctx context.Context, cfg Config, expected update.
 }
 
 func checkAgentUpdate(ctx context.Context, cfg Config, paths updatePaths) (updateView, error) {
-	view := updateView{InstalledVersion: installedPackage(paths), State: readUpdateState(paths)}
+	view := updateView{RecoverySupported: true, InstalledVersion: installedPackage(paths), State: readUpdateState(paths)}
 	manifest, err := fetchUpdateManifest(ctx, cfg)
 	if err != nil {
 		return view, err
@@ -238,7 +241,7 @@ func startAgentUpdate(ctx context.Context, cfg Config, expected update.Manifest)
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		return updateView{}, errors.New("在线更新需要在 OpenWrt 路由器以 root 运行")
 	}
-	view := updateView{InstalledVersion: installedPackage(routerUpdatePaths), State: readUpdateState(routerUpdatePaths)}
+	view := updateView{RecoverySupported: true, InstalledVersion: installedPackage(routerUpdatePaths), State: readUpdateState(routerUpdatePaths)}
 	manifest, err := fetchUpdateManifestTarget(ctx, cfg, expected)
 	view.Manifest = &manifest
 	if err != nil {
@@ -271,6 +274,9 @@ func startAgentUpdate(ctx context.Context, cfg Config, expected update.Manifest)
 			return view, errors.New("路由器可用空间不足，请先清理空间")
 		}
 	}
+	if previous := readUpdateState(routerUpdatePaths); previous.RollbackFailed {
+		return view, errors.New("上次自动回滚未完成，请先恢复旧插件并检查路由器日志，再清理更新状态")
+	}
 	if err = acquireUpdate(routerUpdatePaths); err != nil {
 		return view, err
 	}
@@ -299,6 +305,7 @@ func startAgentUpdate(ctx context.Context, cfg Config, expected update.Manifest)
 		return view, err
 	}
 	view.State = update.Status{ID: hex.EncodeToString(key), Phase: "checking", FromVersion: view.InstalledVersion, ToVersion: view.Manifest.PackageVersion, Message: "正在准备插件更新", StartedAt: time.Now().UTC()}
+	view.State.AutoRollback = true
 	plan, err := json.Marshal(updatePlan{Config: cfg, Manifest: *view.Manifest, State: view.State})
 	if err != nil {
 		return view, err
@@ -375,14 +382,40 @@ func downloadUpdate(ctx context.Context, cfg Config, manifest update.Manifest, d
 	return nil
 }
 
-func performUpdate(ctx context.Context, plan updatePlan, dir string, paths updatePaths, install func(context.Context, string) error, restart func(bool) error, wasEnabled bool) (result error) {
+func performUpdate(ctx context.Context, plan updatePlan, dir string, paths updatePaths, install func(context.Context, string) error, restart func(context.Context, bool) error, wasEnabled bool, recovery updateRecovery) (result error) {
 	state := plan.State
+	state.AutoRollback = true
+	previousVersion := installedPackage(paths)
+	var configuration []byte
+	mutated := false
 	report := func(phase, message string) {
-		state.Phase, state.Message = phase, message
+		state.Phase, state.Message = phase, safeConnectionError(errors.New(message), plan.Config.Token)
 		_ = saveUpdateState(paths, state)
 	}
 	defer func() {
 		if result != nil {
+			if mutated {
+				report("rolling_back", "更新未通过验收，正在恢复旧插件和原连接配置")
+				// Recovery must still run when installation has exhausted its context.
+				recoveryCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+				defer cancel()
+				restoreErr := recovery.Restore(recoveryCtx)
+				configErr := restoreUpdateConfiguration(paths.Configuration, configuration)
+				since := time.Now()
+				restartErr := restart(recoveryCtx, wasEnabled)
+				if restoreErr != nil || configErr != nil || restartErr != nil || installedPackage(paths) != previousVersion {
+					state.RollbackFailed = true
+					result = fmt.Errorf("%w：%v（恢复：%v；配置：%v；启动：%v；当前版本：%s），备份保留在 %s，请人工恢复后再更新", errUpdateRecoveryFailed, result, restoreErr, configErr, restartErr, installedPackage(paths), dir)
+				} else {
+					state.RolledBack = true
+					if err := recovery.Verify(recoveryCtx, since); err != nil {
+						result = fmt.Errorf("%v；已恢复旧版 %s 和原配置，但连接尚未恢复，请检查网络和服务端", result, previousVersion)
+					} else {
+						state.RollbackVerified = true
+						result = fmt.Errorf("%v；已自动恢复旧版 %s，原配置已恢复，验收通过", result, previousVersion)
+					}
+				}
+			}
 			report("failed", result.Error())
 		}
 	}()
@@ -400,7 +433,7 @@ func performUpdate(ctx context.Context, plan updatePlan, dir string, paths updat
 	} else if comparison <= 0 {
 		return errors.New("更新目标不是更高版本，已停止更新")
 	}
-	configuration, err := os.ReadFile(paths.Configuration)
+	configuration, err = os.ReadFile(paths.Configuration)
 	if err != nil {
 		return errors.New("无法备份现有连接配置，已停止更新")
 	}
@@ -412,15 +445,30 @@ func performUpdate(ctx context.Context, plan updatePlan, dir string, paths updat
 	if err = downloadUpdate(ctx, plan.Config, plan.Manifest, packagePath); err != nil {
 		return err
 	}
+	if recovery.Backup == nil || recovery.Restore == nil || recovery.Verify == nil {
+		return errors.New("更新恢复功能不可用，已停止更新")
+	}
+	report("backing_up", "正在备份当前插件，备份失败将停止更新")
+	if err = recovery.Backup(); err != nil {
+		return fmt.Errorf("旧插件备份失败，未安装新版：%w", err)
+	}
+	currentConfiguration, err := os.ReadFile(paths.Configuration)
+	if err != nil || string(currentConfiguration) != string(configuration) || installedPackage(paths) != previousVersion {
+		return errors.New("准备更新时插件或配置被修改，已停止更新，请重新检查")
+	}
+	if err = ctx.Err(); err != nil {
+		return errors.New("更新准备超时，尚未安装新版，请重新检查")
+	}
 	report("installing", "正在安装插件；连接会暂时中断")
+	mutated = true
 	installErr := install(ctx, packagePath)
 	// Restore the exact UCI configuration even if opkg changed it or installation failed.
-	if err = os.WriteFile(paths.Configuration, configuration, 0600); err != nil {
+	if err = restoreUpdateConfiguration(paths.Configuration, configuration); err != nil {
 		return fmt.Errorf("连接配置恢复失败：%w", err)
 	}
-	_ = os.Chmod(paths.Configuration, 0600)
 	report("restarting", "正在恢复连接配置并重启客户端")
-	restartErr := restart(wasEnabled)
+	since := time.Now()
+	restartErr := restart(ctx, wasEnabled)
 	if installErr != nil {
 		return fmt.Errorf("安装失败，连接配置已保留：%w", installErr)
 	}
@@ -430,11 +478,35 @@ func performUpdate(ctx context.Context, plan updatePlan, dir string, paths updat
 	if installedPackage(paths) != plan.Manifest.PackageVersion {
 		return errors.New("安装后的插件版本与更新目标不一致，请手动检查")
 	}
-	report("succeeded", "插件更新完成")
+	report("verifying", "正在验证新客户端的启动、连接和服务器心跳；未通过将自动回滚")
+	if err = recovery.Verify(ctx, since); err != nil {
+		return err
+	}
+	report("succeeded", "插件更新完成，客户端验收通过")
 	return nil
 }
 
-func runUpdateWorker(dir string) error {
+func restoreUpdateConfiguration(name string, configuration []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(name), ".remotegate-config-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, err = f.Write(configuration)
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), name)
+	}
+	return err
+}
+
+func runUpdateWorker(dir string) (result error) {
 	// The copied helper survives opkg stopping and replacing the running agent.
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		return errors.New("更新执行器仅支持路由器 root 环境")
@@ -444,7 +516,11 @@ func runUpdateWorker(dir string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || filepath.Dir(dir) != filepath.Clean(os.TempDir()) || !strings.HasPrefix(filepath.Base(dir), "remotegate-update-") {
 		return errors.New("更新执行器目录无效")
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if !errors.Is(result, errUpdateRecoveryFailed) {
+			_ = os.RemoveAll(dir)
+		}
+	}()
 	defer releaseUpdate(routerUpdatePaths)
 	raw, err := os.ReadFile(filepath.Join(dir, "plan.json"))
 	if err != nil {
@@ -456,9 +532,32 @@ func runUpdateWorker(dir string) error {
 		_ = saveUpdateState(routerUpdatePaths, update.Status{Phase: "failed", Message: "更新计划无效，请重新发起"})
 		return errors.New("更新计划无效")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	wasEnabled := exec.Command(routerUpdatePaths.Service, "enabled").Run() == nil
+	enabledRaw, err := exec.Command("uci", "-q", "get", "remotegate.main.enabled").Output()
+	if err != nil {
+		_ = saveUpdateState(routerUpdatePaths, update.Status{Phase: "failed", Message: "无法确认插件启用状态，未安装新版"})
+		return errors.New("无法确认插件启用状态，已停止更新")
+	}
+	connectEnabled := strings.TrimSpace(string(enabledRaw)) == "1"
+	var backup updateBackup
+	recovery := updateRecovery{
+		Backup: func() error {
+			var err error
+			backup, err = backupInstalledPlugin("/", dir, installedPackage(routerUpdatePaths), plan.Manifest.Size)
+			return err
+		},
+		Restore: func(ctx context.Context) error {
+			return backup.restore(ctx, filepath.Join(routerUpdatePaths.StateDir, "install.log"))
+		},
+		Verify: func(ctx context.Context, since time.Time) error {
+			if !connectEnabled {
+				return nil
+			}
+			return verifyUpdatedConnection(ctx, "/", plan.Config, since, 90*time.Second, 20*time.Second, 2*time.Second)
+		},
+	}
 	return performUpdate(ctx, plan, dir, routerUpdatePaths, func(ctx context.Context, path string) error {
 		command := exec.CommandContext(ctx, "/bin/sh", path, "--update")
 		if plan.Manifest.Rollback {
@@ -480,16 +579,24 @@ func runUpdateWorker(dir string) error {
 		defer logFile.Close()
 		command.Stdout, command.Stderr = logFile, logFile
 		return command.Run()
-	}, func(enabled bool) error {
+	}, func(ctx context.Context, enabled bool) error {
 		verb := "disable"
 		if enabled {
 			verb = "enable"
 		}
-		if err := exec.CommandContext(ctx, routerUpdatePaths.Service, verb).Run(); err != nil {
+		if err := runUpdateService(ctx, routerUpdatePaths.Service, verb); err != nil {
 			return err
 		}
-		return exec.CommandContext(ctx, routerUpdatePaths.Service, "restart").Run()
-	}, wasEnabled)
+		return runUpdateService(ctx, routerUpdatePaths.Service, "restart")
+	}, wasEnabled, recovery)
+}
+
+func runUpdateService(ctx context.Context, service, verb string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, service, verb)
+	prepareUpdateInstaller(command)
+	return command.Run()
 }
 
 func updateControl(ctx context.Context, cfg Config, msg protocol.Message) protocol.Message {
@@ -498,7 +605,7 @@ func updateControl(ctx context.Context, cfg Config, msg protocol.Message) protoc
 		response.Body, _ = json.Marshal(agentPreflight(ctx, cfg, routerUpdatePaths))
 		return response
 	}
-	view := updateView{InstalledVersion: installedPackage(routerUpdatePaths), State: readUpdateState(routerUpdatePaths)}
+	view := updateView{RecoverySupported: true, InstalledVersion: installedPackage(routerUpdatePaths), State: readUpdateState(routerUpdatePaths)}
 	if msg.Type == "update-start" {
 		var expected update.Manifest
 		if msg.Deadline == 0 || time.Now().UnixMilli() > msg.Deadline || len(msg.Body) > 8192 || json.Unmarshal(msg.Body, &expected) != nil {
@@ -535,7 +642,7 @@ func handleUpdateCLI(args []string) bool {
 		return true
 	}
 	if args[0] == "--update-status" {
-		value = updateView{InstalledVersion: installedPackage(routerUpdatePaths), State: readUpdateState(routerUpdatePaths)}
+		value = updateView{RecoverySupported: true, InstalledVersion: installedPackage(routerUpdatePaths), State: readUpdateState(routerUpdatePaths)}
 	} else {
 		if (args[0] != "--update-check" && args[0] != "--update-start") || (args[0] == "--update-start" && len(args) != 4) || (args[0] == "--update-check" && len(args) != 2) {
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]string{"error": "更新参数无效，请刷新插件页面"})

@@ -241,8 +241,13 @@ func (a *app) reconcilePackageOperations(p *packageCenter) {
 			continue
 		}
 		for _, device := range devices {
+			// Recovery-capable workers own the result until health verification or
+			// rollback finishes. A new registration alone is not update success.
+			if op.State.AutoRollback {
+				break
+			}
 			status, online := statuses[device.ID]
-			if device.ID == op.DeviceID && online && status.Since.After(op.State.StartedAt) && device.PackageVersion == op.State.ToVersion {
+			if device.ID == op.DeviceID && !(op.Kind != "install" && status.CanRecoverUpdate) && online && status.Since.After(op.State.StartedAt) && device.PackageVersion == op.State.ToVersion {
 				state := op.State
 				state.Phase, state.Message = "succeeded", "已核对安装版本，设备成功连接"
 				p.progressLocked(i, state)

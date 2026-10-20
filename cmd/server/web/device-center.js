@@ -2,6 +2,7 @@
 const deviceRevealed=new Set(),deviceMapFilters=new Map(),deviceOperations=new Map();
 const deviceIPRevealed=new Map();
 const deviceHistories=new Map();
+const deviceHistoryPages=new Map(),deviceListPaging={page:0,size:10,signature:''};
 let deviceWorkspaceTransition=authTransition;
 const previousDeviceAction=action,previousDeviceEditor=openEditor,previousDeviceSubmit=$('#editor').onsubmit;
 function deviceTime(value){const time=new Date(value);return value&&time.getFullYear()>2000?time.toLocaleString():'尚无记录'}
@@ -47,6 +48,61 @@ function trafficHint(device=false){return `<p class="traffic-hint">${device?'设
 function deviceLatency(d){return d.online&&Number.isFinite(d.latencyMs)&&Date.now()-Date.parse(d.latencyAt)<90000?deviceLatencyText(d.latencyMs):'待检测'}
 function deviceInfoCell(label,value){return `<div><dt>${esc(label)}</dt><dd>${esc(value||'尚未上报')}</dd></div>`}
 function deviceButton(actionName,id,label,icon,extra=''){return `<button type="button" data-action="${actionName}" data-id="${esc(id)}" ${extra}>${uiIcon(icon)}${esc(label)}</button>`}
+function devicePageWindow(total,paging){
+ const pages=Math.max(1,Math.ceil(total/paging.size));
+ paging.page=Math.max(0,Math.min(pages-1,paging.page));
+ return {pages,start:paging.page*paging.size,end:Math.min(total,(paging.page+1)*paging.size)};
+}
+function deviceHistoryPaging(id){if(!deviceHistoryPages.has(id))deviceHistoryPages.set(id,{page:0,size:10});return deviceHistoryPages.get(id)}
+function devicePageSlots(pages,page){
+ if(pages<=7)return Array.from({length:pages},(_,i)=>i);
+ if(page<=3)return [0,1,2,3,4,'gap',pages-1];
+ if(page>=pages-4)return [0,'gap',pages-5,pages-4,pages-3,pages-2,pages-1];
+ return [0,'gap',page-1,page,page+1,'gap',pages-1];
+}
+function devicePagerHTML(scope,id,total,paging,position='bottom'){
+ const {pages,start,end}=devicePageWindow(total,paging),unit=scope==='devices'?'台设备':'条记录',sizeUnit=scope==='devices'?'台':'条',sizes=scope==='devices'?[5,10,20,50]:[10,20,50];
+ const attrs=`data-paging-scope="${scope}" data-paging-id="${esc(id)}" data-paging-position="${position}"`;
+ const button=(page,label,extra='')=>`<button type="button" ${attrs} data-paging-page="${page}" ${extra}>${label}</button>`;
+ const arrow=back=>`<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${back?'m14 7-5 5 5 5':'m10 7 5 5-5 5'}"/></svg>`;
+ const slots=devicePageSlots(pages,paging.page),label=`每页${scope==='devices'?'设备':'记录'}数量`;
+ return `<div role="navigation" class="device-pagination ${pages===1?'device-pagination-single':''}" aria-label="${scope==='devices'?'设备列表':'上下线记录'}分页"><span class="device-page-total" role="status">共 ${total} ${unit}${total?`<span class="device-page-range"> · 当前 ${start+1}–${end}</span>`:''}</span><div class="device-page-controls"><details class="device-page-size"><summary ${attrs} data-paging-size aria-label="${label}" aria-haspopup="listbox" aria-expanded="false"><span>${paging.size} ${sizeUnit} / 页</span><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></summary><div class="device-page-size-menu" role="listbox" aria-label="${label}选项">${sizes.map(size=>`<button type="button" role="option" ${attrs} data-paging-size="${size}" data-paging-size-option="${size}" aria-selected="${size===paging.size}"><span>${size} ${sizeUnit} / 页</span><span class="device-page-size-check" aria-hidden="true">${size===paging.size?'✓':''}</span></button>`).join('')}</div></details><div class="device-page-buttons">${button(paging.page-1,arrow(true),`class="device-page-arrow" aria-label="上一页" title="上一页" ${paging.page===0?'disabled':''}`)}<div class="device-page-numbers">${slots.map(n=>n==='gap'?'<span class="device-page-gap" aria-hidden="true">…</span>':button(n,n+1,`class="device-page-number" aria-label="第 ${n+1} 页" ${n===paging.page?'aria-current="page"':''}`)).join('')}</div><span class="device-page-mobile" aria-hidden="true">${paging.page+1} / ${pages}</span>${button(paging.page+1,arrow(false),`class="device-page-arrow" aria-label="下一页" title="下一页" ${paging.page===pages-1?'disabled':''}`)}</div><span class="device-page-count">第 ${paging.page+1} / ${pages} 页</span></div></div>`;
+}
+function bindDevicePagination(container){
+ container.querySelectorAll('[data-paging-page]').forEach(b=>b.onclick=()=>changeDevicePage(b.dataset.pagingScope,b.dataset.pagingId,b.dataset.pagingPage));
+ container.querySelectorAll('.device-page-size').forEach(menu=>{
+  const trigger=menu.querySelector('summary'),options=[...menu.querySelectorAll('[role="option"]')];
+  const close=()=>{menu.open=false;trigger.focus({preventScroll:true})};
+  menu.ontoggle=()=>{trigger.setAttribute('aria-expanded',String(menu.open));if(menu.open)container.querySelectorAll('.device-page-size').forEach(other=>{if(other!==menu)other.open=false})};
+  menu.onfocusout=e=>{if(!menu.contains(e.relatedTarget))menu.open=false};
+  trigger.onkeydown=e=>{if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();menu.open=true;(options.find(n=>n.getAttribute('aria-selected')==='true')||options[0])?.focus()}else if(e.key==='Escape'){e.preventDefault();close()}};
+  options.forEach((option,i)=>{
+   option.onclick=()=>{close();changeDevicePage(option.dataset.pagingScope,option.dataset.pagingId,0,option.dataset.pagingSizeOption)};
+   option.onkeydown=e=>{let next;if(e.key==='ArrowDown')next=(i+1)%options.length;else if(e.key==='ArrowUp')next=(i+options.length-1)%options.length;else if(e.key==='Home')next=0;else if(e.key==='End')next=options.length-1;else if(e.key==='Escape'){e.preventDefault();close();return}if(next!==undefined){e.preventDefault();options[next].focus()}};
+  });
+ });
+}
+// Dismiss custom page-size menus without changing the selected size.
+document.addEventListener?.('click',e=>document.querySelectorAll('.device-page-size[open]').forEach(menu=>{if(!menu.contains(e.target))menu.open=false}));
+function devicePagingFocus(){
+ const d=document.activeElement?.dataset;
+ return d?.pagingScope?{scope:d.pagingScope,id:d.pagingId,position:d.pagingPosition,page:d.pagingPage,size:d.pagingSize!==undefined,option:d.pagingSizeOption,open:Boolean(document.activeElement.closest?.('.device-page-size')?.open)}:null;
+}
+function restoreDevicePagingFocus(focus){
+ if(!focus)return;
+ const controls=[...$('#deviceCards').querySelectorAll('[data-paging-scope]')].filter(n=>n.dataset.pagingScope===focus.scope&&n.dataset.pagingId===focus.id&&n.dataset.pagingPosition===focus.position);
+ const control=controls.find(n=>!n.disabled&&(focus.size?n.dataset.pagingSize!==undefined&&n.dataset.pagingSizeOption===(focus.open?focus.option:undefined):n.dataset.pagingPage===focus.page))||controls.find(n=>n.getAttribute('aria-current')==='page');
+ if(focus.open&&focus.size){const menu=control?.closest('.device-page-size');if(menu)menu.open=true}
+ control?.focus({preventScroll:true});
+}
+function changeDevicePage(scope,id,page,size){
+ if(scope!=='devices'&&(scope!=='history'||!state.devices.some(d=>d.id===id)))return;
+ const paging=scope==='devices'?deviceListPaging:deviceHistoryPaging(id),sizes=scope==='devices'?[5,10,20,50]:[10,20,50];
+ if(size!==undefined){if(!sizes.includes(Number(size)))return;paging.size=Number(size);paging.page=0}
+ else{if(!Number.isInteger(Number(page))||Number(page)<0)return;paging.page=Number(page)}
+ deviceCards();
+ if(scope==='devices')$('#deviceCards').scrollIntoView?.({block:'start',behavior:'instant'});
+}
 function deviceSessionDuration(event){
  if(event.state!=='offline'||event.reason==='server_restart')return '—';
  const ms=Date.parse(event.at)-Date.parse(event.connectedAt);if(!Number.isFinite(ms)||ms<0)return '—';
@@ -55,7 +111,8 @@ function deviceSessionDuration(event){
 }
 function deviceHistoryPanel(d){
  const history=deviceHistories.get(d.id),events=history?.events||[],reason={connected:'隧道连接建立',replaced:'新连接替换了原连接',disconnected:'隧道连接断开',reconnect:'管理员请求重新连接',server_stop:'服务器正常停止',server_restart:'服务器重启时发现原连接已失效'};
- return `<section class="device-history-panel"><div class="connection-panel-heading"><div><h2>${uiIcon('history')}上下线记录</h2><p class="muted">最近 ${esc(history?.limit||100)} 条，按时间从新到旧排列。</p></div>${deviceButton('refreshHistory',d.id,history?.loading?'读取中…':'刷新记录','refresh',history?.loading?'disabled aria-busy="true"':'')}</div>${history?.error?`<p class="device-operation error" role="status">${esc(history.error)}</p>`:''}<div class="tablewrap"><table class="device-history-table"><thead><tr><th>状态</th><th>时间</th><th>本次在线时长</th><th>说明</th></tr></thead><tbody>${events.map(event=>`<tr><td><span class="pill ${event.state==='online'?'on':''}">${event.state==='online'?'上线':'下线'}</span></td><td>${esc(deviceTime(event.at))}</td><td>${esc(deviceSessionDuration(event))}</td><td>${esc(reason[event.reason]||'连接状态变化')}</td></tr>`).join('')||`<tr><td colspan="4" class="empty">${history?.loading?'正在读取记录…':history?.error?'记录读取失败，请重试。':'暂无上下线记录，后续连接变化会自动记录。'}</td></tr>`}</tbody></table></div><p class="traffic-hint">记录随后台数据保存，重启后保留。时间以服务器检测为准；服务器异常停止期间的实际断开时间未知，之前未记录的历史不补填。</p>${history?.checkedAt?`<p class="traffic-hint">最近读取：${esc(deviceTime(history.checkedAt))}</p>`:''}</section>`;
+ const paging=deviceHistoryPaging(d.id),{start,end}=devicePageWindow(events.length,paging);
+ return `<section class="device-history-panel"><div class="connection-panel-heading"><div><h2>${uiIcon('history')}上下线记录</h2><p class="muted">最多保留最近 ${esc(history?.limit||100)} 条，最新记录在前。</p></div>${deviceButton('refreshHistory',d.id,history?.loading?'读取中…':'刷新记录','refresh',history?.loading?'disabled aria-busy="true"':'')}</div>${history?.error?`<p class="device-operation error" role="status">${esc(history.error)}</p>`:''}<div class="tablewrap"><table class="device-history-table"><thead><tr><th>状态</th><th>时间</th><th>本次在线时长</th><th>说明</th></tr></thead><tbody>${events.slice(start,end).map(event=>`<tr><td><span class="pill ${event.state==='online'?'on':''}">${event.state==='online'?'上线':'下线'}</span></td><td>${esc(deviceTime(event.at))}</td><td>${esc(deviceSessionDuration(event))}</td><td>${esc(reason[event.reason]||'连接状态变化')}</td></tr>`).join('')||`<tr><td colspan="4" class="empty">${history?.loading?'正在读取记录…':history?.error?'记录读取失败，请重试。':'暂无上下线记录，后续连接变化会自动记录。'}</td></tr>`}</tbody></table></div>${events.length?devicePagerHTML('history',d.id,events.length,paging):''}<p class="traffic-hint">记录随后台数据保存，重启后保留。时间以服务器检测为准；服务器异常停止期间的实际断开时间未知，之前未记录的历史不补填。</p>${history?.checkedAt?`<p class="traffic-hint">最近读取：${esc(deviceTime(history.checkedAt))}</p>`:''}</section>`;
 }
 async function loadDeviceHistory(id){
  if(deviceHistories.get(id)?.loading||!state.devices.some(d=>d.id===id))return;
@@ -91,19 +148,25 @@ function deviceMappingsPanel(d){
 }
 deviceCards=()=>{
  const container=$('#deviceCards');if(!container)return;
- if(deviceWorkspaceTransition!==authTransition){deviceRevealed.clear();deviceIPRevealed.clear();deviceMapFilters.clear();expandedFeatures.clear();deviceOperations.clear();deviceHistories.clear();deviceWorkspaceTransition=authTransition}
- const visible=state.devices.filter(d=>{
+ const pagingFocus=devicePagingFocus();
+ if(deviceWorkspaceTransition!==authTransition){deviceRevealed.clear();deviceIPRevealed.clear();deviceMapFilters.clear();expandedFeatures.clear();deviceOperations.clear();deviceHistories.clear();deviceHistoryPages.clear();Object.assign(deviceListPaging,{page:0,size:10,signature:''});deviceWorkspaceTransition=authTransition}
+ const signature=JSON.stringify([query.toLowerCase(),filter]);
+ if(deviceListPaging.signature!==signature){deviceListPaging.page=0;deviceListPaging.signature=signature}
+ const matched=state.devices.filter(d=>{
   const maps=state.mappings.filter(m=>m.deviceId===d.id);
   return (!filter||filter==='pinned'&&d.pinned||filter==='yes'&&d.online||filter==='no'&&!d.online)&&[d.name,d.id,d.note,d.info?.hostname,d.info?.peerIP,d.network?.operator,JSON.stringify(maps)].join(' ').toLowerCase().includes(query.toLowerCase());
  }).sort((a,b)=>Number(Boolean(b.pinned))-Number(Boolean(a.pinned))||a.name.localeCompare(b.name));
- container.innerHTML=visible.map(d=>{
+ const {start,end,pages}=devicePageWindow(matched.length,deviceListPaging),visible=matched.slice(start,end);
+ container.innerHTML=devicePagerHTML('devices','',matched.length,deviceListPaging,'top')+(visible.map(d=>{
   const mappings=state.mappings.filter(m=>m.deviceId===d.id),operation=deviceOperations.get(d.id);
   const active=expandedFeatures.get(d.id),revealed=deviceRevealed.has(d.id);
   return `<article class="device-card device-workspace-card ${d.pinned?'device-pinned':''}"><div class="device-head"><div class="device-icon" aria-hidden="true">${uiIcon('monitor')}</div><div class="device-info"><div class="device-title"><strong>${esc(d.name)}</strong><span class="pill ${d.online?'on':''}">${d.online?'在线':'离线'}</span>${d.pinned?'<span class="device-pin-label">'+uiIcon('pin')+'置顶</span>':''}</div><div class="device-meta"><span class="device-id-meta">ID：<code>${esc(revealed?d.id:deviceMasked(d.id))}</code><button type="button" data-action="revealDevice" data-id="${esc(d.id)}" title="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-label="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-pressed="${revealed}">${uiIcon('eye')}</button><button type="button" data-copy="${esc(d.id)}" title="复制设备 ID" aria-label="复制设备 ID">${uiIcon('copy')}</button></span>${deviceNetworkMetadata(d)}<span>插件：${esc(d.packageVersion||d.version||'尚未上报')}</span><span>${d.online?'本次在线 '+esc(deviceDuration(d.connectedAt)):'最近连接 '+esc(deviceTime(d.lastConnectedAt))}</span></div>${deviceTrafficSummary(d)}${d.note?`<p class="device-saved-note">${esc(d.note)}</p>`:''}</div><div class="actions device-header-actions">${deviceButton('pinDevice',d.id,'','pin',`title="${d.pinned?'取消置顶':'置顶设备'}" aria-label="${d.pinned?'取消置顶':'置顶设备'}" aria-pressed="${Boolean(d.pinned)}"`)}${deviceButton('refreshDevice',d.id,operation?.kind==='refresh'&&operation.busy?'刷新中…':'刷新状态','refresh',`title="刷新此设备的连接状态" ${operation?.busy?'disabled':''} ${operation?.kind==='refresh'&&operation.busy?'aria-busy="true"':''}`)}${pluginUpdateButton(d)}${deviceButton('rename',d.id,'编辑','edit')}</div></div><div class="device-tabs"><button type="button" class="feature-tab" data-feature="domains" data-device="${esc(d.id)}" aria-expanded="${active==='domains'}" aria-controls="domains-${esc(d.id)}">${uiIcon('globe')}访问域名（${mappings.length}）<i aria-hidden="true"></i></button><button type="button" class="feature-tab" data-feature="connection" data-device="${esc(d.id)}" aria-expanded="${active==='connection'}" aria-controls="connection-${esc(d.id)}">${uiIcon('activity')}连接详情<i aria-hidden="true"></i></button><button type="button" class="feature-tab" data-feature="history" data-device="${esc(d.id)}" aria-expanded="${active==='history'}" aria-controls="history-${esc(d.id)}">${uiIcon('history')}上下线记录<i aria-hidden="true"></i></button><span class="device-tab-summary">${d.online?'隧道延迟 '+esc(deviceLatency(d)):'等待设备连接'}</span></div><div class="device-body" id="domains-${esc(d.id)}" ${active==='domains'?'':'hidden'}>${deviceMappingsPanel(d)}</div><div class="device-body" id="connection-${esc(d.id)}" ${active==='connection'?'':'hidden'}>${deviceConnectionPanel(d)}</div><div class="device-body" id="history-${esc(d.id)}" ${active==='history'?'':'hidden'}>${deviceHistoryPanel(d)}</div>${operation&&active!=='connection'?`<p class="device-operation device-operation-footer ${operation.error?'error':''}" role="status">${esc(operation.text)}</p>`:''}<details class="device-manage"><summary>${uiIcon('settings')}设备管理</summary><div>${deviceButton('rename',d.id,'编辑名称与备注','edit')}${deviceButton('reconnect',d.id,'重新连接','refresh',!d.online||operation?.busy?'disabled':'')}${deviceButton('deleteDevice',d.id,'删除设备','trash','class="danger"')}</div></details></article>`;
- }).join('')||'<div class="workbench-empty"><h2>暂无匹配设备</h2><p class="muted">可搜索设备名称、备注、设备 ID、IP 或映射地址。</p></div>';
+ }).join('')||'<div class="workbench-empty"><h2>暂无匹配设备</h2><p class="muted">可搜索设备名称、备注、设备 ID、IP 或映射地址。</p></div>')+(pages>1?devicePagerHTML('devices','',matched.length,deviceListPaging):'');
  if(typeof remoteDeviceTabs==='function')container.querySelectorAll('[data-feature="connection"]').forEach(button=>{const d=state.devices.find(x=>x.id===button.dataset.device);if(d)button.insertAdjacentHTML('afterend',remoteDeviceTabs(d))});
  container.querySelectorAll('[data-feature]').forEach(b=>b.onclick=()=>toggleFeature(b.dataset.device,b.dataset.feature));
  bindDeviceActions(container);
+ bindDevicePagination(container);
+ restoreDevicePagingFocus(pagingFocus);
  container.querySelectorAll('[data-mapping-search]').forEach(input=>input.oninput=()=>updateDeviceMappingFilter(input.dataset.mappingSearch,{query:input.value}));
  container.querySelectorAll('[data-mapping-status]').forEach(input=>input.onchange=()=>updateDeviceMappingFilter(input.dataset.mappingStatus,{status:input.value}));
  for(const d of visible){const h=deviceHistories.get(d.id);if(expandedFeatures.get(d.id)==='history'&&(!h||!h.loading&&Date.now()-(h.checkedUnix||0)>15000))void loadDeviceHistory(d.id)}
@@ -118,8 +181,8 @@ function updateDeviceMappingFilter(id,patch){
 }
 const previousDeviceWorkbench=renderWorkbench;
 renderWorkbench=()=>{
- const focused=document.activeElement,searchDevice=focused?.dataset?.mappingSearch,selection=searchDevice?[focused.selectionStart,focused.selectionEnd]:null;
- previousDeviceWorkbench();const select=$('#filter');if(select&&!select.querySelector('option[value="pinned"]')){const option=document.createElement('option');option.value='pinned';option.textContent='置顶设备';select.appendChild(option);select.value=filter}const search=$('#search');if(search){search.placeholder='搜索设备、备注、IP 或映射';search.setAttribute('aria-label',search.placeholder)}
+ const pagingFocus=devicePagingFocus(),focused=document.activeElement,searchDevice=focused?.dataset?.mappingSearch,selection=searchDevice?[focused.selectionStart,focused.selectionEnd]:null;
+ previousDeviceWorkbench();restoreDevicePagingFocus(pagingFocus);const select=$('#filter');if(select&&!select.querySelector('option[value="pinned"]')){const option=document.createElement('option');option.value='pinned';option.textContent='置顶设备';select.appendChild(option);select.value=filter}const search=$('#search');if(search){search.placeholder='搜索设备、备注、IP 或映射';search.setAttribute('aria-label',search.placeholder)}
  if(searchDevice){const input=[...$('#deviceCards').querySelectorAll('[data-mapping-search]')].find(x=>x.dataset.mappingSearch===searchDevice);if(input){input.focus();input.setSelectionRange(...selection)}}
 };
 action=async(a,id)=>{

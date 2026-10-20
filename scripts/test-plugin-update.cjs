@@ -65,3 +65,15 @@ test('closing the dialog aborts polling and a late result cannot overwrite anoth
 test('logging out ignores stale update responses',async()=>{
  const f=fixture();let resolve;f.context.api=()=>new Promise(r=>{resolve=r});const check=f.context.openPluginUpdate('router');f.context.authTransition++;resolve(f.view);await check;assert.doesNotMatch(f.node('#fields').innerHTML,/服务器提供/);
 });
+
+test('health verification and automatic rollback remain active and do not offer a second update',async()=>{
+ for(const phase of ['backing_up','verifying','rolling_back']){
+  const f=fixture();f.context.nextResult={...f.view,recoverySupported:true,state:{phase,message:'验收或恢复进行中'}};
+  await f.context.openPluginUpdate('router');assert.equal(f.node('#save').hidden,true);assert.equal(f.node('#pluginUpdateCheck').disabled,true);assert.ok(f.timers.size);assert.doesNotMatch(f.node('#fields').innerHTML,/更新完成/);
+ }
+});
+
+test('a rolled back update is shown as a failure and never silently retried',async()=>{
+ const f=fixture();f.context.nextResult={...f.view,recoverySupported:true,state:{phase:'failed',rolledBack:true,rollbackVerified:true,message:'已自动恢复旧版，连接验收通过'}};
+ await f.context.openPluginUpdate('router');assert.match(f.node('#fields').innerHTML,/更新失败 · 已自动回滚/);assert.match(f.node('#fields').innerHTML,/已自动恢复旧版/);assert.equal(f.timers.size,0);assert.equal(f.requests.length,1);assert.ok(f.requests.every(r=>r.method==='GET'));
+});

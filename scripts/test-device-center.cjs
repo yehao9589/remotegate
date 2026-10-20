@@ -149,3 +149,60 @@ test('egress distinguishes automatic preference from actual socket and last offl
  d.info={os:'linux',egressInterface:'<img src=x onerror=alert(1)>'};
  assert.match(f.context.deviceConnectionPanel(d),/&lt;img/);assert.doesNotMatch(f.context.deviceConnectionPanel(d),/<img/);
 });
+
+function manyDevices(f){
+ f.context.state.devices=Array.from({length:25},(_,i)=>({id:'device-'+i,name:'设备 '+String(i+1).padStart(2,'0'),online:i%2===0,info:{}}));
+ f.context.state.mappings=[];
+}
+function historyEvents(count){return Array.from({length:count},(_,i)=>({state:'offline',at:new Date(Date.UTC(2026,9,21,0,0,count-i)).toISOString(),connectedAt:'2026-10-21T00:00:00Z',reason:'disconnected'}))}
+test('page slots keep a constant width from the first page through the last',()=>{
+ const f=fixture();
+ for(const pages of [1,2,7,8,10,25,100])for(let page=0;page<pages;page++){
+  const slots=Array.from(f.context.devicePageSlots(pages,page)),numbers=slots.filter(Number.isInteger);
+  assert.equal(slots.length,Math.min(7,pages));assert.ok(numbers.includes(page));
+  assert.equal(numbers[0],0);assert.equal(numbers.at(-1),pages-1);
+  assert.deepEqual(numbers,[...new Set(numbers)].sort((a,b)=>a-b));
+ }
+ const html=f.context.devicePagerHTML('history','router-one',80,{page:0,size:10});
+ assert.match(html,/10 条 \/ 页/);assert.match(html,/role="listbox"/);assert.match(html,/aria-haspopup="listbox"/);assert.doesNotMatch(html,/<select/);
+ assert.equal((html.match(/class="device-page-number"/g)||[]).length,6);
+});
+test('device pagination slices after global sorting and searches across every page',()=>{
+ const f=fixture();manyDevices(f);f.context.state.devices[24].pinned=true;f.context.deviceCards();
+ let html=f.node('#deviceCards').innerHTML;
+ assert.equal((html.match(/<article /g)||[]).length,10);assert.match(html,/共 25 台设备/);assert.match(html,/第 1 \/ 3 页/);
+ assert.ok(html.indexOf('<strong>设备 25')<html.indexOf('<strong>设备 01'));
+ f.context.changeDevicePage('devices','',1);html=f.node('#deviceCards').innerHTML;
+ assert.match(html,/<strong>设备 10<\/strong>/);assert.doesNotMatch(html,/<strong>设备 25/);
+ f.context.query='设备 23';f.context.deviceCards();html=f.node('#deviceCards').innerHTML;
+ assert.match(html,/<strong>设备 23/);assert.match(html,/共 1 台设备/);assert.match(html,/第 1 \/ 1 页/);
+ f.context.query='';f.context.filter='no';f.context.deviceCards();assert.match(f.node('#deviceCards').innerHTML,/共 12 台设备/);
+ f.context.changeDevicePage('devices','',1);assert.match(f.node('#deviceCards').innerHTML,/<strong>设备 24/);
+ f.context.filter='pinned';f.context.deviceCards();assert.match(f.node('#deviceCards').innerHTML,/<strong>设备 25/);
+});
+test('device page and size survive refresh, clamp deletion, and reset for another login',()=>{
+ const f=fixture();manyDevices(f);f.context.deviceCards();f.context.changeDevicePage('devices','',0,5);f.context.changeDevicePage('devices','',4);f.context.renderWorkbench();f.context.deviceCards();
+ assert.match(f.node('#deviceCards').innerHTML,/第 5 \/ 5 页/);
+ f.context.state.devices.splice(20);f.context.deviceCards();assert.match(f.node('#deviceCards').innerHTML,/第 4 \/ 4 页/);
+ f.context.changeDevicePage('devices','',0,999);assert.equal(f.eval('deviceListPaging.size'),5);
+ f.context.authTransition++;f.context.deviceCards();assert.match(f.node('#deviceCards').innerHTML,/第 1 \/ 2 页/);assert.equal(f.eval('deviceListPaging.size'),10);
+ f.context.query='missing';f.context.deviceCards();const html=f.node('#deviceCards').innerHTML;assert.match(html,/共 0 台设备/);assert.match(html,/暂无匹配设备/);assert.doesNotMatch(html,/当前 1–0/);
+});
+test('history pages are independent per device, bounded and retained during late refresh',async()=>{
+ const f=fixture(),d=f.context.state.devices[0];f.context.state.devices.push({id:'other',name:'另一台',online:false});
+ f.context.api=async()=>({events:historyEvents(25),limit:100});await f.context.loadDeviceHistory(d.id);await f.context.loadDeviceHistory('other');
+ let html=f.context.deviceHistoryPanel(d);assert.match(html,/<td>25 秒<\/td>/);assert.doesNotMatch(html,/<td>15 秒<\/td>/);assert.match(html,/最多保留最近 100 条/);
+ f.context.changeDevicePage('history',d.id,2);html=f.context.deviceHistoryPanel(d);assert.match(html,/<td>5 秒<\/td>/);assert.doesNotMatch(html,/<td>25 秒<\/td>/);assert.match(html,/第 3 \/ 3 页/);
+ assert.match(f.context.deviceHistoryPanel({id:'other'}),/<td>25 秒<\/td>/);
+ let resolve;f.context.api=()=>new Promise(r=>resolve=r);const pending=f.context.loadDeviceHistory(d.id);
+ f.context.changeDevicePage('history',d.id,1);resolve({events:historyEvents(26),limit:100});await pending;
+ html=f.context.deviceHistoryPanel(d);assert.match(html,/第 2 \/ 3 页/);assert.match(html,/<td>16 秒<\/td>/);
+ f.context.api=async()=>({events:historyEvents(3),limit:100});await f.context.loadDeviceHistory(d.id);assert.match(f.context.deviceHistoryPanel(d),/第 1 \/ 1 页/);
+ f.context.changeDevicePage('history','other',0,20);assert.equal(f.context.deviceHistoryPaging('other').size,20);assert.equal(f.context.deviceHistoryPaging(d.id).size,10);
+ f.context.authTransition++;f.context.deviceCards();assert.equal(f.context.deviceHistoryPaging('other').size,10);assert.equal(f.timers.size,0);
+});
+test('expanded history on another device page is not fetched until that page is visible',async()=>{
+ const f=fixture();manyDevices(f);f.eval("expandedFeatures.set('device-24','history')");f.context.deviceCards();assert.equal(f.requests.length,0);
+ f.context.changeDevicePage('devices','',2);await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(f.requests.map(r=>r.path),['devices/device-24/events']);assert.equal(f.timers.size,0);
+});

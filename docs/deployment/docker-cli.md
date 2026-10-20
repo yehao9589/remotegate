@@ -1,10 +1,12 @@
-# 方式二：命令行拉取镜像
+# 命令行安装
 
 [返回部署指南](../../DEPLOYMENT.md)
 
-适用于在 Linux 服务器终端管理 Docker Compose。无需在宿主机安装 Go 或数据库。以下命令都在**服务器终端**执行。
+本篇适用于在 **Linux 服务器终端**操作的用户。先安装服务端，再配置 HTTPS 访问入口。
 
-## 1. 获取编排文件
+## 1. 下载配置文件
+
+首次安装执行：
 
 ```sh
 git clone https://github.com/yehao9589/remotegate.git
@@ -12,39 +14,50 @@ cd remotegate
 cp .env.example .env
 ```
 
-## 2. 选择首次访问路径并编辑 .env
+已有实例更新时不要重新复制 `.env`，请使用[更新教程](maintenance.md#命令行更新)。
 
-只选择下表的一行，不要混用两套配置：
+## 2. 编辑 .env
 
-| 场景 | .env 设置 | 启动后访问 |
-| --- | --- | --- |
-| 系统独立 HTTPS（兼容方式） | 配置 `BOOTSTRAP_DOMAIN`、邮箱、DNS 凭据及服务条款同意；保留 `HTTPS_LISTEN_ADDR=:443` | 首次证书签发后直接进入 HTTPS 安装页，完整可复制配置见[独立部署](standalone.md) |
-| 已有本机 HTTPS 反代 | `CONSOLE_HOST` 填后台域名；默认外部 80/443 下 `PUBLIC_URL` 留空，自定义端口时填完整地址；仅使用反代时将 `HTTPS_LISTEN_ADDR` 留空 | [访问方案 A](access.md#方案-a已有宝塔nginx-反代)中的域名安装页，无需 SSH |
-| 没有反代，使用内置 HTTPS | 首次 `CONSOLE_HOST`、`PUBLIC_URL` 留空；443 空闲时使用 `HTTPS_LISTEN_ADDR=:443` | [访问方案 B](access.md#方案-b没有反代使用-ssh-隧道)，SSH 仅用于临时初始化账号，公网证书在宝塔 / Nginx 配置；新版后台只检测证书 |
+**已有同一台服务器上的宝塔 / Nginx 反代时，使用下面的配置：**
 
-默认使用 `REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:stable`。数据默认放在项目的 `./data`；也可以把 `REMOTE_GATE_DATA_DIR` 改成服务器绝对路径。
+```dotenv
+REMOTE_GATE_IMAGE=ghcr.io/yehao9589/remotegate:stable
+REMOTE_GATE_DATA_DIR=./data
+CONSOLE_HOST=gate.example.com
+PUBLIC_URL=
+HTTPS_LISTEN_ADDR=
+```
 
-HTTP 默认监听 `127.0.0.1:18088`，不直接对公网开放。只有选择内置 HTTPS 才需要放行其实际公网端口；使用现成反代时沿用反代的公网端口。
+把 `gate.example.com` 换成自己的后台域名。其他项目保留 `.env.example` 的默认值。
 
-## 3. 拉取并启动
+- `HTTPS_LISTEN_ADDR` 留空，由现有反代提供 HTTPS，避免争用 443。
+- `CONSOLE_HOST` 只填域名，不带协议和 `/admin` 等路径。
+- 默认 443 入口下 `PUBLIC_URL` 留空；自定义公网端口的设置见[访问说明](access.md#方案-a已有宝塔nginx-反代)。
+
+还没有反代时，暂将 `CONSOLE_HOST`、`PUBLIC_URL` 和 `HTTPS_LISTEN_ADDR` 都留空，启动后按[SSH 临时访问](access.md#方案-b没有反代使用-ssh-隧道)初始化。SSH 初始化不会自动配置公网 HTTPS。
+
+## 3. 启动容器
 
 ```sh
 docker compose pull
 docker compose up -d
 docker compose ps
-docker compose logs --tail=100
 ```
 
-`docker compose ps` 显示运行中后，按第 2 步选好的首次访问方案创建管理员。仅容器启动成功，并不代表还未配置证书的内置 HTTPS 可以握手。
+容器应显示运行中。需要排查时执行 `docker compose logs --tail=100` 查看日志。
 
-编排使用 Linux host 网络，不另加 `ports`。
+本编排使用 host 网络，不另外添加 `ports`。HTTP 默认只监听服务器本机 `127.0.0.1:18088`，不用对公网开放这个端口。
 
-## 4. 验收
+## 4. 打开安装页
 
-- 能打开安装页，创建管理员并进入保存的后台路径。
-- 后台“安装包与版本”显示当前运行版本，官方镜像已内置路由器安装包。
-- 在后台刷新，账号会话仍有效。
+将现有站点反代到 `http://127.0.0.1:18088`，保留原始 Host 和 WebSocket 配置，启用有效 HTTPS 后打开：
 
-后续：[路由器接入](router.md) · [命令行更新与备份](maintenance.md#命令行更新) · [访问问题排查](access.md#访问问题排查)。
+```text
+https://gate.example.com/install
+```
 
-如果无法拉取 GHCR 镜像，可以选择[源码构建方式](source.md)。源码构建仍需下载基础镜像和 Go 依赖，并非完全离线安装。
+创建管理员，设置并收藏后台入口，例如 `https://gate.example.com/admin`。
+
+**完成标志：** 能登录后台，在“安装与更新中心”查看版本和下载插件。接着按[路由器接入教程](router.md)添加设备。
+
+反代、泛域名与证书的完整配置见[HTTPS 入口教程](external-https.md)。镜像拉取不便时可以选择[源码构建](source.md)，但构建仍需下载基础镜像和依赖。

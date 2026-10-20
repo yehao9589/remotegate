@@ -58,6 +58,9 @@ func connectUpdateDevice(t *testing.T, a *app, device config.Device, token strin
 	if len(packageVersions) > 0 {
 		query.Set("package_version", packageVersions[0])
 	}
+	if len(packageVersions) > 1 && packageVersions[1] == "recovery" {
+		query.Set("update_recovery", "1")
+	}
 	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect?"+query.Encode(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +199,41 @@ func TestRemoteUpdateUsesFrozenPackageAndReportsReconnection(t *testing.T) {
 	json.Unmarshal(response.Body.Bytes(), &view)
 	if view.State.Phase != "succeeded" {
 		t.Fatal("reboot lost the confirmed completion", view)
+	}
+}
+
+func TestRecoveryUpdateDoesNotCompleteOnRegistration(t *testing.T) {
+	a, device, token, _, manifest := pluginFixture(t)
+	if err := a.store.ActivateWithPackage(device.ID, token, manifest.AgentVersion, manifest.PackageVersion); err != nil {
+		t.Fatal(err)
+	}
+	connectUpdateDevice(t, a, device, token, true, manifest.PackageVersion, "recovery")
+	state := update.Status{ID: "recovery-operation", Phase: "verifying", AutoRollback: true, StartedAt: time.Now().Add(-time.Minute), FromVersion: "0.1.3-1", ToVersion: manifest.PackageVersion}
+	// Even when the initial worker acknowledgement was lost, registration
+	// advertises that the worker must finish its own health verification.
+	state.AutoRollback = false
+	a.rememberPluginUpdate(device.ID, pluginUpdateView{State: state})
+	p, err := a.packageCenterStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.record(device.ID, device.Name, "update", state); err != nil {
+		t.Fatal(err)
+	}
+	view, _ := a.pluginUpdateView(device.ID)
+	if view.State.Phase != "verifying" || !view.State.Active() {
+		t.Fatal("registration skipped health verification", view)
+	}
+	a.reconcilePackageOperations(p)
+	if p.latestUpdateState(device.ID).Phase != "verifying" {
+		t.Fatal("history prematurely completed protected update")
+	}
+	state.Phase, state.Message, state.RolledBack, state.RollbackVerified = "failed", "已自动恢复旧版", true, true
+	a.rememberPluginUpdate(device.ID, pluginUpdateView{State: state})
+	a.reconcilePackageOperations(p)
+	final := p.latestUpdateState(device.ID)
+	if final.Phase != "failed" || !final.RolledBack || !final.RollbackVerified {
+		t.Fatal("rollback result lost", final)
 	}
 }
 

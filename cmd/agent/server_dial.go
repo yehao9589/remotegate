@@ -18,6 +18,8 @@ import (
 
 type dialContextFunc func(context.Context, string, string) (net.Conn, error)
 
+var errNoDirectEgress = errors.New("没有可用的直连出口")
+
 // Only the control connection uses this resolver. LAN mapping targets continue
 // to use the router's local DNS and the private-target checks.
 type serverDialer struct {
@@ -94,6 +96,9 @@ func (d *serverDialer) DialContext(ctx context.Context, network, address string)
 		if len(usable) == 0 {
 			usable, err = d.realLookup(ctx, host)
 			if err != nil {
+				if errors.Is(err, errNoDirectEgress) {
+					return nil, fmt.Errorf("%w：无法连接域名解析服务，请检查 WAN/LAN 上联接口的默认网关", errNoDirectEgress)
+				}
 				return nil, fmt.Errorf("系统 DNS 返回虚拟地址或解析失败，加密 DNS 解析 %s 失败：%w", host, err)
 			}
 			for _, address := range usable {
@@ -215,17 +220,24 @@ func lookupServerDoH(ctx context.Context, host string, dial dialContextFunc) ([]
 			}(kind)
 		}
 		var ips []net.IPAddr
+		var routeErr error
 		for i := 0; i < 2; i++ {
 			result := <-answers
 			ips = append(ips, result.ips...)
 			if result.err != nil {
 				lastErr = result.err
+				if errors.Is(result.err, errNoDirectEgress) {
+					routeErr = result.err
+				}
 			}
 		}
 		cancel()
 		transport.CloseIdleConnections()
 		if len(ips) > 0 {
 			return ips, nil
+		}
+		if routeErr != nil {
+			return nil, routeErr
 		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
