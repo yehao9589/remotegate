@@ -117,7 +117,9 @@ docker compose up -d
 
 **证书在哪里处理？**
 
-使用宝塔 / Nginx 入口时，在实际提供 HTTPS 的站点申请、启用和续期证书，RemoteGate 后台检查公网结果。证书正常不代表设备或内网服务一定在线。[查看 HTTPS 教程](docs/deployment/external-https.md)
+目前暂由宝塔申请、启用和续期证书，RemoteGate 后台只检测公网结果。原因是宝塔反代已管理公网 HTTPS 入口；若再由 RemoteGate 独立监听同一端口、管理证书，可能出现端口占用或新证书无法在公网入口生效的问题。
+
+后续若重新启用后台申请证书功能，会考虑调整或拆分后台监听端口，并同步适配 HTTPS 入口与证书部署。目前仍按宝塔方案使用。[查看原因、后续计划与 HTTPS 教程](docs/deployment/external-https.md#当前方案与后续计划)
 
 **为什么设备在线，网站却打不开？**
 
