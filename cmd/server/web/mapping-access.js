@@ -7,7 +7,7 @@ function mappingAccessRequest(search){
 const enterAdminBeforeMappingAccess=enterAdmin;
 if(mappingAccessRequest(location.search)){
  $('#login .auth-kicker').textContent='远程访问 · 身份验证';
- $('#login .auth-description').textContent='此访问地址已开启登录保护。验证 RemoteGate 管理员身份后，将自动返回原网站。';
+ $('#login .auth-description').textContent='此访问地址已开启登录保护。验证 RemoteGate 账号及设备授权后，将自动返回原网站。';
  $('#loginSubmit').textContent='登录并继续访问 →';
 }
 enterAdmin=async entryPath=>{

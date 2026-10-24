@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const MaxHTTPSChecks = 2000
+
 type DomainSettings struct {
 	ID                string             `json:"id"`
 	Name              string             `json:"name"`
@@ -225,8 +227,8 @@ func (s *Store) SetDomainHTTPSChecks(id string, checks []PublicHTTPSCheck) error
 			}
 		}
 		next.HTTPSChecks = append(kept, check)
-		if len(next.HTTPSChecks) > 40 {
-			next.HTTPSChecks = next.HTTPSChecks[len(next.HTTPSChecks)-40:]
+		if len(next.HTTPSChecks) > MaxHTTPSChecks {
+			next.HTTPSChecks = next.HTTPSChecks[len(next.HTTPSChecks)-MaxHTTPSChecks:]
 		}
 		if check.Host == d.BaseDomain && check.Port == effectiveHTTPSPort(*d) {
 			root := check

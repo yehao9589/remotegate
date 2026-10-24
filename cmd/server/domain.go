@@ -70,6 +70,19 @@ func (a *app) domainCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 18*time.Second)
 	defer cancel()
+	rows, checks, checkedAt := checkDomainEndpoints(ctx, d, targets)
+	if r.Context().Err() != nil {
+		return
+	}
+	if err := a.store.SetDomainHTTPSChecks(d.ID, checks); err != nil {
+		http.Error(w, "保存检测结果失败，请重新检测："+err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]any{"dns": rows, "checkedAt": checkedAt, "serverIP": d.ServerIP})
+}
+
+// Shared by manual diagnosis and the bounded background certificate monitor.
+func checkDomainEndpoints(ctx context.Context, d config.DomainSettings, targets []domainCheckTarget) ([]map[string]any, []config.PublicHTTPSCheck, time.Time) {
 	rows := []map[string]any{}
 	var wg sync.WaitGroup
 	resultRows := make([]map[string]any, len(targets))
@@ -94,7 +107,7 @@ func (a *app) domainCheck(w http.ResponseWriter, r *http.Request) {
 				certResult := map[string]any{"valid": false, "error": "线上证书检测仅支持公网地址"}
 				for _, value := range ips {
 					ip := net.ParseIP(value)
-					if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+					if ip == nil || networkForIP(ip.String()).Kind != "public" {
 						continue
 					}
 					result, e := inspectHTTPSCertificate(ctx, net.JoinHostPort(ip.String(), strconv.Itoa(target.Port)), target.Host, nil)
@@ -113,9 +126,6 @@ func (a *app) domainCheck(w http.ResponseWriter, r *http.Request) {
 		}(i, target)
 	}
 	wg.Wait()
-	if r.Context().Err() != nil {
-		return
-	}
 	rows = append(rows, resultRows...)
 	checkedAt := time.Now()
 	checks := []config.PublicHTTPSCheck{}
@@ -142,11 +152,7 @@ func (a *app) domainCheck(w http.ResponseWriter, r *http.Request) {
 		check.ExpiresAt, _ = cert["expiresAt"].(time.Time)
 		checks = append(checks, check)
 	}
-	if err := a.store.SetDomainHTTPSChecks(d.ID, checks); err != nil {
-		http.Error(w, "保存检测结果失败，请重新检测："+err.Error(), 500)
-		return
-	}
-	writeJSON(w, map[string]any{"dns": rows, "checkedAt": checkedAt, "serverIP": d.ServerIP})
+	return rows, checks, checkedAt
 }
 
 // Read only public TLS metadata, including the certificate returned by an

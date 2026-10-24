@@ -58,6 +58,8 @@ type pingWaiter struct {
 type Hub struct {
 	mu           sync.RWMutex
 	clients      map[string]*Client
+	changed      chan struct{}
+	waiting      int
 	pingInterval time.Duration
 	pongWait     time.Duration
 	writeWait    time.Duration
@@ -65,7 +67,7 @@ type Hub struct {
 }
 
 func New(recorder ...func(string, string, uint64, uint64)) *Hub {
-	h := &Hub{clients: make(map[string]*Client), pingInterval: 20 * time.Second, pongWait: 90 * time.Second, writeWait: 30 * time.Second}
+	h := &Hub{clients: make(map[string]*Client), changed: make(chan struct{}), pingInterval: 20 * time.Second, pongWait: 90 * time.Second, writeWait: 30 * time.Second}
 	if len(recorder) > 0 {
 		h.record = recorder[0]
 	}
@@ -95,6 +97,8 @@ func (h *Hub) Attach(deviceID, name, version string, conn *websocket.Conn, updat
 	h.mu.Lock()
 	old := h.clients[deviceID]
 	h.clients[deviceID] = c
+	close(h.changed)
+	h.changed = make(chan struct{})
 	h.mu.Unlock()
 	if old != nil {
 		_ = old.conn.Close()
@@ -284,6 +288,38 @@ func (h *Hub) Request(ctx context.Context, deviceID string, msg protocol.Message
 		return protocol.Message{}, ErrOffline
 	}
 	return h.requestTo(ctx, c, msg, mapping...)
+}
+
+// WaitOnline waits only BEFORE sending a request. Callers must revalidate
+// access after this wait, and must never replay an uncertain in-flight write.
+// Bound the number of pending requests while a router is recovering.
+func (h *Hub) WaitOnline(ctx context.Context, deviceID string, grace time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, grace)
+	defer cancel()
+	h.mu.Lock()
+	if h.waiting >= 128 {
+		h.mu.Unlock()
+		return ErrOffline
+	}
+	h.waiting++
+	h.mu.Unlock()
+	defer func() { h.mu.Lock(); h.waiting--; h.mu.Unlock() }()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		h.mu.RLock()
+		c, changed := h.clients[deviceID], h.changed
+		h.mu.RUnlock()
+		if c != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
 }
 
 func (h *Hub) requestTo(ctx context.Context, c *Client, msg protocol.Message, mapping ...string) (protocol.Message, error) {

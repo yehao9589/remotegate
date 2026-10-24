@@ -45,6 +45,7 @@ type remoteSession struct {
 	once               sync.Once
 }
 type remoteConnectInput struct {
+	View                                                        string
 	Action, Host, Username, PrivateKey, Passphrase, Fingerprint string
 	Password                                                    *string
 	Port                                                        int
@@ -68,7 +69,7 @@ func (a *app) remoteOwner(r *http.Request) ([32]byte, bool) {
 	for _, name := range []string{adminCookie, httpAdminCookie} {
 		if cookie, err := r.Cookie(name); err == nil {
 			key := sha256.Sum256([]byte(cookie.Value))
-			if session, ok := a.auth.sessions[key]; ok && time.Now().Before(session.expires) {
+			if session, ok := a.auth.sessions[key]; ok && a.auth.validSessionLocked(session) {
 				return key, true
 			}
 		}
@@ -94,6 +95,10 @@ func (a *app) deviceRemoteConnect(w http.ResponseWriter, r *http.Request, device
 		http.Error(w, "请使用当前管理员登录会话", 401)
 		return
 	}
+	if !a.auth.ownerAllows(owner, deviceID, "remote") {
+		http.Error(w, "未获授权使用此设备的远程工具", 403)
+		return
+	}
 	if r.Method != "POST" || !sameAuthOrigin(r) {
 		http.Error(w, "请求方式或来源不匹配", 403)
 		return
@@ -107,6 +112,18 @@ func (a *app) deviceRemoteConnect(w http.ResponseWriter, r *http.Request, device
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&input) != nil || decoder.Decode(new(any)) != io.EOF {
 		http.Error(w, "连接参数无效", 400)
+		return
+	}
+	if input.View != "" && input.View != "terminal" && input.View != "files" {
+		http.Error(w, "远程工具类型无效", 400)
+		return
+	}
+	capability := "ssh"
+	if input.View == "files" {
+		capability = "files"
+	}
+	if !a.auth.ownerAllows(owner, deviceID, capability) {
+		http.Error(w, "未获授权使用此远程工具", 403)
 		return
 	}
 	host := strings.TrimSpace(input.Host)
@@ -235,8 +252,9 @@ func (s *remoteSession) monitor(a *app) {
 		case <-ticker.C:
 			a.auth.mu.Lock()
 			login, valid := a.auth.sessions[s.owner]
-			valid = valid && time.Now().Before(login.expires)
+			valid = valid && a.auth.validSessionLocked(login)
 			a.auth.mu.Unlock()
+			valid = valid && a.auth.ownerAllows(s.owner, s.device, "remote")
 			s.mu.Lock()
 			expired := time.Since(s.touched) >= remoteIdle
 			s.mu.Unlock()
@@ -293,7 +311,11 @@ func (a *app) remoteSessionHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "请重新登录", 401)
 		return
 	}
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/remote/"), "/")
+	path := strings.TrimPrefix(r.URL.Path, "/api/member/remote/")
+	if path == r.URL.Path {
+		path = strings.TrimPrefix(r.URL.Path, "/api/admin/remote/")
+	}
+	parts := strings.Split(path, "/")
 	if len(parts) < 1 || len(parts) > 2 {
 		http.NotFound(w, r)
 		return
@@ -304,6 +326,19 @@ func (a *app) remoteSessionHTTP(w http.ResponseWriter, r *http.Request) {
 	manager.mu.Unlock()
 	if session == nil || session.owner != owner {
 		http.NotFound(w, r)
+		return
+	}
+	capability := "remote"
+	if len(parts) == 2 {
+		if parts[1] == "terminal" {
+			capability = "ssh"
+		} else {
+			capability = "files"
+		}
+	}
+	if !a.auth.ownerAllows(owner, session.device, capability) {
+		session.close()
+		http.Error(w, "此设备的远程工具授权已失效", 403)
 		return
 	}
 	session.touch()
@@ -411,7 +446,7 @@ func (a *app) remoteTerminal(w http.ResponseWriter, r *http.Request, s *remoteSe
 		if ws.ReadJSON(&frame) != nil {
 			return
 		}
-		if owner, valid := a.remoteOwner(r); !valid || owner != s.owner {
+		if owner, valid := a.remoteOwner(r); !valid || owner != s.owner || !a.auth.ownerAllows(owner, s.device, "ssh") {
 			return
 		}
 		s.touch()

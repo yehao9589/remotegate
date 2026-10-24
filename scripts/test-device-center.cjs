@@ -206,3 +206,9 @@ test('expanded history on another device page is not fetched until that page is 
  f.context.changeDevicePage('devices','',2);await new Promise(resolve=>setImmediate(resolve));
  assert.deepEqual(f.requests.map(r=>r.path),['devices/device-24/events']);assert.equal(f.timers.size,0);
 });
+
+test('a recent real disconnection shows recovery without claiming the device is online',()=>{
+ const f=fixture(),d=f.context.state.devices[0];d.online=false;d.lastDisconnectedAt=new Date(Date.now()-10000).toISOString();f.context.deviceCards();
+ assert.match(f.node('#deviceCards').innerHTML,/pill recovering/);assert.match(f.node('#deviceCards').innerHTML,/恢复中/);assert.equal(d.online,false);
+ d.lastDisconnectedAt=new Date(Date.now()-31000).toISOString();f.context.deviceCards();assert.doesNotMatch(f.node('#deviceCards').innerHTML,/pill recovering/);
+});

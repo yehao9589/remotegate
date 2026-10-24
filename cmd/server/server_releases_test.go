@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,9 +154,19 @@ func TestReleaseEndpointRequiresAdminAndValidOrigin(t *testing.T) {
 	if json.Unmarshal(result.Body.Bytes(), &data) != nil || data.Status != "available" || data.Current.Version != buildinfo.Version() {
 		t.Fatal("invalid endpoint result")
 	}
+	changelog, err := os.ReadFile("../../CHANGELOG.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, exists := strings.Cut(strings.ReplaceAll(string(changelog), "\r\n", "\n"), "## v"+buildinfo.Version()+" · ")
+	_, expectedNotes, hasDate := strings.Cut(section, "\n")
+	expectedNotes = strings.TrimSpace(strings.SplitN(expectedNotes, "\n## ", 2)[0])
+	if !exists || !hasDate || expectedNotes == "" {
+		t.Fatal("current release is missing its changelog entry")
+	}
 	found := false
 	for _, entry := range data.History {
-		if entry.Version == buildinfo.Version() && strings.Contains(entry.Notes, "WAN") {
+		if entry.Version == buildinfo.Version() && entry.Notes == expectedNotes {
 			found = true
 		}
 	}

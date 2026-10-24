@@ -3,11 +3,11 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 function refreshPage(apiImpl){
- const nodes=new Map(),calls=[],notices=[];let renders=0,timer;
+ const nodes=new Map(),calls=[],notices=[];let renders=0,now=1000000,nextTimer=0;const timers=new Map();class Clock extends Date{static now(){return now}}
  const $=selector=>{if(!nodes.has(selector))nodes.set(selector,{disabled:false,textContent:'',innerHTML:'',attributes:{},classes:new Set(),classList:{toggle(name,on){on?nodes.get(selector).classes.add(name):nodes.get(selector).classes.delete(name)}},setAttribute(key,value){this.attributes[key]=value}});return nodes.get(selector)};
- const context=vm.createContext({$,AbortController,Date,authTransition:0,state:{devices:[{id:'old'}],mappings:[]},setTimeout(fn){timer=fn;return 1},clearTimeout(){timer=null},uiIcon:()=>'<svg></svg>',toast:message=>notices.push(message),render(){renders++},api:async(path,method,body,options)=>{calls.push(path);return apiImpl(path,options)}});
+ const context=vm.createContext({$,AbortController,Date:Clock,authTransition:0,state:{devices:[{id:'old'}],mappings:[]},setTimeout(fn,delay){const id=++nextTimer;timers.set(id,{fn,at:now+delay});return id},clearTimeout(id){timers.delete(id)},uiIcon:()=>'<svg></svg>',toast:message=>notices.push(message),render(){renders++},api:async(path,method,body,options)=>{calls.push(path);return apiImpl(path,options)}});
  vm.runInContext(fs.readFileSync('cmd/server/web/refresh.js','utf8'),context);
- return {context,$,calls,notices,renders:()=>renders,timeout:()=>timer()};
+ return {context,$,calls,notices,renders:()=>renders,timeout:()=>{const entry=[...timers].sort((a,b)=>a[1].at-b[1].at)[0];if(entry){timers.delete(entry[0]);now=entry[1].at;entry[1].fn()}},advance:ms=>{now+=ms}};
 }
 const snapshot=path=>path==='state'?{devices:[{id:'new'}],mappings:[]}:path==='package'?{server:{version:'1.2.3'}}:[{id:'domain'}];
 test('manual refresh joins an ongoing update and shows progress, then completion',async()=>{
@@ -25,8 +25,8 @@ test('partial failure preserves the current data and reports the error; retry wo
 });
 test('a stalled refresh times out and re-enables the button',async()=>{
  const page=refreshPage((path,{signal})=>new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Object.assign(Error('aborted'),{name:'AbortError'})))));
- const refresh=page.context.refreshManually();page.timeout();await refresh;
- assert.match(page.notices[0],/刷新超时/);assert.equal(page.$('#refresh').disabled,false);assert.equal(page.renders(),0);
+ const refresh=page.context.refreshManually();for(let i=0;i<30&&!page.notices.length;i++){page.timeout();await new Promise(resolve=>setImmediate(resolve))}await refresh;
+ assert.match(page.notices[0],/恢复 30 秒/);assert.equal(page.$('#refresh').disabled,false);assert.equal(page.renders(),0);
 });
 test('responses started before logout cannot replace the current data',async()=>{
  let release;const pending=new Promise(resolve=>{release=resolve});
@@ -41,4 +41,20 @@ test('a new login starts its own refresh and old cleanup cannot enable its butto
  const current=page.context.refresh();releaseOld();await old;
  assert.equal(page.$('#refresh').disabled,true);assert.equal(page.renders(),0);assert.equal(page.context.refresh(),current);
  releaseNew();await current;assert.equal(page.$('#refresh').disabled,false);assert.equal(page.renders(),1);
+});
+
+test('transient failures preserve data and recover quietly before the grace ends',async()=>{
+ let fail=true;const page=refreshPage(async path=>{if(fail)throw Object.assign(Error('network'),{name:'TypeError'});return snapshot(path)});
+ const pending=page.context.refreshManually();await new Promise(resolve=>setImmediate(resolve));
+ assert.match(page.$('#sync').textContent,/正在恢复连接/);assert.equal(page.context.state.devices[0].id,'old');assert.deepEqual(page.notices,[]);
+ fail=false;page.timeout();await pending;assert.equal(page.context.state.devices[0].id,'new');assert.deepEqual(page.notices,['已刷新最新数据']);
+});
+test('a permanent authorization failure bypasses the network grace period',async()=>{
+ const page=refreshPage(async()=>{throw Object.assign(Error('权限不足'),{status:403})});await page.context.refreshManually();
+ assert.deepEqual(page.notices,['权限不足']);assert.equal(page.calls.length,3);assert.equal(page.$('#refresh').disabled,false);
+});
+test('logout aborts recovery without allowing the old data to render',async()=>{
+ const page=refreshPage(async()=>{throw Object.assign(Error('network'),{name:'TypeError'})});const pending=page.context.refresh().catch(()=>{});
+ await new Promise(resolve=>setImmediate(resolve));page.context.authTransition++;vm.runInContext('refreshController.abort()',page.context);await pending;
+ assert.equal(page.renders(),0);assert.equal(page.context.state.devices[0].id,'old');
 });

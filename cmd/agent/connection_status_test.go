@@ -31,6 +31,10 @@ func TestConnectionReportTracksHandshakeHeartbeatFailureAndRecovery(t *testing.T
 		return value
 	}
 	r.attempting()
+	initialRecovery := read().RecoveryStartedAt
+	if initialRecovery == "" {
+		t.Fatal("missing initial recovery window")
+	}
 	if read().State != "connecting" {
 		t.Fatal(read())
 	}
@@ -39,6 +43,9 @@ func TestConnectionReportTracksHandshakeHeartbeatFailureAndRecovery(t *testing.T
 	r.connected()
 	r.heartbeat()
 	value := read()
+	if value.RecoveryStartedAt != "" {
+		t.Fatal("successful handshake retained recovery window")
+	}
 	if value.State != "connected" || value.ConnectedAt == "" || value.LastHeartbeatAt == "" || value.ServerIP != "192.0.2.1" || value.DNSMode != "encrypted" {
 		t.Fatal(value)
 	}
@@ -51,6 +58,9 @@ func TestConnectionReportTracksHandshakeHeartbeatFailureAndRecovery(t *testing.T
 		t.Fatal(value)
 	}
 	r.attempting()
+	if read().RecoveryStartedAt != value.RecoveryStartedAt {
+		t.Fatal("retry reset grace period")
+	}
 	if read().State != "reconnecting" {
 		t.Fatal(read())
 	}

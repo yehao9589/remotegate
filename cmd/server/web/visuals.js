@@ -1,5 +1,7 @@
 // One local icon set keeps navigation, status and actions visually consistent.
 const consoleIconPaths={
+ mail:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 6 9 7 9-7"/>',
+ users:'<path d="M3 21v-2a5 5 0 0 1 5-5h3a5 5 0 0 1 5 5v2m1-10a4 4 0 0 1 4 4v6"/><circle cx="9" cy="7" r="4"/><path d="M17 3a4 4 0 0 1 0 8"/>',
 	terminal:'<rect x="2" y="3" width="20" height="18" rx="3"/><path d="m6 8 4 4-4 4m7 0h5"/>',
 	file:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"/><path d="M14 2v6h6M8 13h8m-8 4h6"/>',
 	 pin:'<path d="m16 3 5 5-4 2-1 5-3 1-5-5 1-3 5-1 2-4ZM11 16l-7 7"/>',
@@ -36,7 +38,7 @@ const consoleIconPaths={
 };
 function uiIcon(name){return `<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${consoleIconPaths[name]||consoleIconPaths.globe}</svg>`}
 function consoleBrand(){return `<span class="brand-symbol" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M9 25V9a4 4 0 0 1 4-4h10v20" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M5 25h22M14 12h13m-4-4 4 4-4 4M14 18h6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>RemoteGate</span>`}
-const consolePageVisuals={overview:{icon:'monitor',caption:'DEVICE WORKSPACE'},domains:{icon:'globe',caption:'DOMAINS & CERTIFICATES'},packages:{icon:'package',caption:'INSTALL & UPDATE'},deploy:{icon:'network',caption:'CONNECT & DEPLOY'},security:{icon:'shield',caption:'ACCOUNT & SECURITY'}};
+const consolePageVisuals={operations:{icon:'activity',caption:'HEALTH & TRAFFIC'},overview:{icon:'monitor',caption:'DEVICE WORKSPACE'},domains:{icon:'globe',caption:'DOMAINS & CERTIFICATES'},packages:{icon:'package',caption:'INSTALL & UPDATE'},security:{icon:'shield',caption:'ACCOUNT & SECURITY'}};
 function updateConsoleVisuals(){
  const visual=consolePageVisuals[page]||consolePageVisuals.overview;
  $('#pageEmblem').innerHTML=uiIcon(visual.icon);

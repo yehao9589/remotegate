@@ -31,12 +31,13 @@ var errCurrentPassword = errors.New("当前密码错误")
 var entryPattern = regexp.MustCompile(`^/[A-Za-z0-9][A-Za-z0-9_-]{2,63}$`)
 
 type adminRecord struct {
-	Version      int       `json:"version"`
-	Username     string    `json:"username"`
-	PasswordHash string    `json:"passwordHash"`
-	CreatedAt    time.Time `json:"createdAt"`
-	EntryPath    string    `json:"entryPath,omitempty"`
-	UpdatedAt    time.Time `json:"updatedAt,omitempty"`
+	Users        []regularUser `json:"users,omitempty"`
+	Version      int           `json:"version"`
+	Username     string        `json:"username"`
+	PasswordHash string        `json:"passwordHash"`
+	CreatedAt    time.Time     `json:"createdAt"`
+	EntryPath    string        `json:"entryPath,omitempty"`
+	UpdatedAt    time.Time     `json:"updatedAt,omitempty"`
 }
 type adminSession struct {
 	user    string
@@ -67,6 +68,9 @@ func openAdminManager(path, user, pass string) (*adminManager, error) {
 			return nil, errors.New("管理员密码哈希无效")
 		}
 		m.record = &record
+		if err := validateRegularUsers(record); err != nil {
+			return nil, err
+		}
 		if record.EntryPath != "" {
 			entry, e := normalizeAdminEntry(record.EntryPath)
 			if e != nil || entry != record.EntryPath {
@@ -96,6 +100,9 @@ func validateAdminInput(user, pass string) error {
 	if !usernamePattern.MatchString(user) {
 		return errors.New("账号需为 3–32 位字母、数字、下划线、点或短横线，首位为字母或数字")
 	}
+	return validateAccountPassword(pass)
+}
+func validateAccountPassword(pass string) error {
 	if utf8.RuneCountInString(pass) < 8 || strings.TrimSpace(pass) == "" {
 		return errors.New("密码至少需要 8 个字符")
 	}
@@ -193,7 +200,9 @@ func (m *adminManager) sessionUser(r *http.Request) (string, bool) {
 			delete(m.sessions, key)
 			continue
 		}
-		return s.user, true
+		if m.validSessionLocked(s) && s.user == m.record.Username {
+			return s.user, true
+		}
 	}
 	return "", false
 }
@@ -213,7 +222,17 @@ func (m *adminManager) loginSession(w http.ResponseWriter, r *http.Request, user
 		return false
 	}
 	validUser := subtle.ConstantTimeCompare([]byte(user), []byte(m.record.Username)) == 1
-	validPassword := bcrypt.CompareHashAndPassword([]byte(m.record.PasswordHash), []byte(pass)) == nil
+	hash := m.record.PasswordHash
+	if !validUser {
+		for _, account := range m.record.Users {
+			if account.Username == user && account.active(time.Now()) {
+				hash = account.PasswordHash
+				validUser = true
+				break
+			}
+		}
+	}
+	validPassword := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) == nil
 	if !validUser || !validPassword {
 		return false
 	}
@@ -304,8 +323,12 @@ func (a *app) authStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "认证服务未初始化", 503)
 		return
 	}
-	user, logged := a.auth.sessionUser(r)
+	identity, logged := a.auth.identity(r)
+	user := identity.Username
 	result := map[string]any{"initialized": a.auth.initialized(), "authenticated": logged, "username": user, "build": buildinfo.Current()}
+	if logged {
+		result["role"] = identity.Role
+	}
 	if logged {
 		result["entryPath"] = a.auth.entryPath()
 	}
@@ -415,7 +438,11 @@ func (a *app) authLogin(w http.ResponseWriter, r *http.Request) {
 	a.auth.mu.Lock()
 	delete(a.auth.limits, peer)
 	a.auth.mu.Unlock()
-	writeJSON(w, map[string]any{"username": strings.TrimSpace(in.Username), "entryPath": a.auth.entryPath()})
+	role := "user"
+	if strings.TrimSpace(in.Username) == a.auth.securityInfo()["username"] {
+		role = "admin"
+	}
+	writeJSON(w, map[string]any{"username": strings.TrimSpace(in.Username), "entryPath": a.auth.entryPath(), "role": role})
 }
 func (a *app) authLogout(w http.ResponseWriter, r *http.Request) {
 	var in struct{}
@@ -423,6 +450,7 @@ func (a *app) authLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner, authenticated := a.remoteOwner(r)
+	mappingOwners := [][32]byte{}
 	if authenticated {
 		a.remoteMu.Lock()
 		manager := a.remote
@@ -433,6 +461,13 @@ func (a *app) authLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.auth != nil {
 		a.auth.mu.Lock()
+		if session, ok := a.auth.sessions[owner]; ok {
+			for key, item := range a.auth.sessions {
+				if item.user == session.user {
+					mappingOwners = append(mappingOwners, key)
+				}
+			}
+		}
 		for _, name := range []string{adminCookie, httpAdminCookie} {
 			if c, e := r.Cookie(name); e == nil {
 				delete(a.auth.sessions, sha256.Sum256([]byte(c.Value)))
@@ -441,7 +476,9 @@ func (a *app) authLogout(w http.ResponseWriter, r *http.Request) {
 		a.auth.mu.Unlock()
 	}
 	if authenticated {
-		a.revokeMappingAccess()
+		for _, key := range mappingOwners {
+			a.revokeOwnerMappingAccess(key)
+		}
 	}
 	clearAdminCookies(w)
 	w.WriteHeader(204)

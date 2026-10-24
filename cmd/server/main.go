@@ -30,6 +30,9 @@ import (
 var webFS embed.FS
 
 type app struct {
+	mailMu            sync.Mutex
+	mail              *notificationMailer
+	mailErr           error
 	certs             *certificateManager
 	certMu            sync.Mutex
 	certManagers      map[string]*certificateManager
@@ -102,6 +105,18 @@ func main() {
 	a.certManagers = make(map[string]*certificateManager)
 	a.httpsSettingsPath = filepath.Join(filepath.Dir(statePath), "https.json")
 	go a.maintainPackageOperations(context.Background())
+	monitorContext, stopMonitors := context.WithCancel(context.Background())
+	monitorsDone := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() { defer wg.Done(); a.maintainCertificates(monitorContext) }()
+		go func() { defer wg.Done(); a.maintainAlerts(monitorContext) }()
+		go func() { defer wg.Done(); a.maintainMail(monitorContext) }()
+		wg.Wait()
+		close(monitorsDone)
+	}()
+	defer func() { stopMonitors(); <-monitorsDone }()
 	a.startCertificateServices()
 	if err := a.bootstrapCertificate(os.Getenv); err != nil {
 		log.Printf("首次 HTTPS 配置失败：%v；本机初始化入口仍可使用", err)
@@ -124,6 +139,16 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/auth/login", a.authLogin)
 	mux.HandleFunc("/api/auth/logout", a.authLogout)
 	mux.HandleFunc("/api/admin/security", a.admin(a.securitySettings))
+	mux.HandleFunc("/api/admin/users", a.admin(a.usersHTTP))
+	mux.HandleFunc("/api/admin/mail", a.admin(a.mailHTTP))
+	mux.HandleFunc("/api/admin/mail/preview", a.admin(a.mailPreviewHTTP))
+	mux.HandleFunc("/api/admin/mail/templates", a.admin(a.mailTemplatesHTTP))
+	mux.HandleFunc(memberPath, a.memberPage)
+	mux.HandleFunc("/api/member/state", a.member(a.memberState))
+	mux.HandleFunc("/api/member/devices/", a.member(a.memberDeviceHTTP))
+	mux.HandleFunc("/api/member/traffic/trends", a.member(a.memberTrends))
+	mux.HandleFunc("/api/member/remote/", a.member(a.remoteSessionHTTP))
+	mux.HandleFunc("/api/member/remote-assets/", a.member(a.remoteAssets))
 	mux.HandleFunc("/api/admin/version", a.admin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			http.Error(w, "method not allowed", 405)
@@ -139,6 +164,9 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("/api/admin/domains", a.admin(a.domains))
 	mux.HandleFunc("/api/admin/domains/check", a.admin(a.domainCheck))
+	mux.HandleFunc("/api/admin/diagnose", a.admin(a.diagnose))
+	mux.HandleFunc("/api/admin/notifications", a.admin(a.notifications))
+	mux.HandleFunc("/api/admin/traffic/trends", a.admin(a.trafficTrends))
 	mux.HandleFunc("/api/admin/domains/", a.admin(a.domainByID))
 	mux.HandleFunc("/api/admin/package", a.admin(a.packageInfo))
 	mux.HandleFunc("/api/admin/package-center", a.admin(a.packageCenterHTTP))
@@ -211,6 +239,14 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideJS = append(guideJS, packageJS...)
 		releasesJS, _ := webFS.ReadFile("web/server-version.js")
 		guideJS = append(guideJS, releasesJS...)
+		operationsJS, _ := webFS.ReadFile("web/operations.js")
+		guideJS = append(guideJS, operationsJS...)
+		accountJS, _ := webFS.ReadFile("web/account-settings.js")
+		guideJS = append(guideJS, accountJS...)
+		mailPreviewJS, _ := webFS.ReadFile("web/mail-preview.js")
+		guideJS = append(guideJS, mailPreviewJS...)
+		mailTemplatesJS, _ := webFS.ReadFile("web/mail-template-editor.js")
+		guideJS = append(guideJS, mailTemplatesJS...)
 		guideCSS, _ := webFS.ReadFile("web/install-guide.css")
 		consoleCSS, _ := webFS.ReadFile("web/console.css")
 		guideCSS = append(guideCSS, consoleCSS...)
@@ -236,6 +272,14 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		guideCSS = append(guideCSS, packageCSS...)
 		releasesCSS, _ := webFS.ReadFile("web/server-version.css")
 		guideCSS = append(guideCSS, releasesCSS...)
+		operationsCSS, _ := webFS.ReadFile("web/operations.css")
+		guideCSS = append(guideCSS, operationsCSS...)
+		accountCSS, _ := webFS.ReadFile("web/account-settings.css")
+		guideCSS = append(guideCSS, accountCSS...)
+		mailPreviewCSS, _ := webFS.ReadFile("web/mail-preview.css")
+		guideCSS = append(guideCSS, mailPreviewCSS...)
+		mailTemplatesCSS, _ := webFS.ReadFile("web/mail-template-editor.css")
+		guideCSS = append(guideCSS, mailTemplatesCSS...)
 		page := strings.Replace(string(data), "/* INSTALL_GUIDE_JS */", string(guideJS), 1)
 		page = strings.Replace(page, "/* INSTALL_GUIDE_CSS */", string(guideCSS), 1)
 		page = a.renderConsoleAuth(page, r)
@@ -265,8 +309,31 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 	id := makeID()
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	resp, err := a.hub.Request(ctx, mapping.DeviceID, protocol.Message{Type: "request", ID: id, Method: r.Method, Target: mapping.Target, Path: r.URL.RequestURI(), Headers: mappingProxyHeaders(r), Body: body}, mapping.ID)
+	message := protocol.Message{Type: "request", ID: id, Method: r.Method, Target: mapping.Target, Path: r.URL.RequestURI(), Headers: mappingProxyHeaders(r), Body: body}
+	resp, err := a.hub.Request(ctx, mapping.DeviceID, message, mapping.ID)
+	if errors.Is(err, hub.ErrOffline) {
+		if grace := a.mappingRecoveryGrace(mapping.DeviceID, time.Now()); grace > 0 {
+			if waitErr := a.hub.WaitOnline(ctx, mapping.DeviceID, grace); waitErr == nil {
+				// The mapping, session or device grants may have changed while
+				// waiting. Never send a queued request using stale authorization.
+				current, exists := a.store.MappingForHost(r.Host)
+				if !exists || current != mapping {
+					http.Error(w, "映射配置已变化，请重新访问", http.StatusConflict)
+					return
+				}
+				if current.AccessMode != "public" && !a.requireMappingAccess(w, r, current) {
+					return
+				}
+				resp, err = a.hub.Request(ctx, mapping.DeviceID, message, mapping.ID)
+			} else if r.Context().Err() != nil {
+				return
+			}
+		}
+	}
 	if err != nil {
+		if a.mappingRecoveryPage(w, r, mapping.DeviceID) {
+			return
+		}
 		if errors.Is(err, hub.ErrOffline) {
 			http.Error(w, "device offline", http.StatusBadGateway)
 		} else {
@@ -275,6 +342,9 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if resp.Error != "" {
+		if resp.Error == "device disconnected" && a.mappingRecoveryPage(w, r, mapping.DeviceID) {
+			return
+		}
 		http.Error(w, resp.Error, http.StatusBadGateway)
 		return
 	}
@@ -334,11 +404,12 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("device connected: %s (%s)", d.Name, id)
 	defer func() {
-		a.hub.Detach(c)
-		_ = conn.Close()
+		// Publish the recovery timestamp before waking pending HTTP requests.
 		if err := a.store.RecordDisconnect(id, c.Since, time.Now()); err != nil {
 			log.Printf("device disconnect information failed: %v", err)
 		}
+		a.hub.Detach(c)
+		_ = conn.Close()
 		log.Printf("device disconnected: %s (%s)", d.Name, id)
 	}()
 	if err := a.hub.ReadLoop(c, func(iface string) error {

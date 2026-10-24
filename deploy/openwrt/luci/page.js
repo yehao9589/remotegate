@@ -6,7 +6,9 @@ function remotegateConnectionView(status){
  if(state==='connected'&&connection.serverIP)note+=' 服务器地址：'+connection.serverIP+'。';
  if(state==='connected')note+=connection.routeProtected&&connection.egressInterface?' 已绑定出口 '+connection.egressInterface+' 并应用独立路由和代理绕过规则；公网出口以服务端记录为准。':' 当前插件未上报 WAN 直连保护，不能据此确认是否经过代理。';
  if(state==='reconnecting'&&connection.nextRetryAt)note+=' 下次重试：'+time(connection.nextRetryAt)+'。';
- return {state:state,label:labels[state]||labels.unknown,className:state==='connected'?'is-running':state==='reconnecting'||state==='connecting'?'is-retrying':'',connectedAt:time(connection.connectedAt),note:note,error:state==='connected'||state==='disabled'?'':connection.lastError||''};
+ var started=Date.parse(connection.recoveryStartedAt),buffering=(state==='reconnecting'||state==='connecting')&&isFinite(started)&&Date.now()-started>=0&&Date.now()-started<30000&&!/401|403|Unauthorized|Forbidden|身份|令牌|证书|certificate|x509/i.test(connection.lastError||'');
+ if(buffering){labels[state]='正在恢复连接';note='网络短暂波动，正在自动重试；预留 30 秒恢复时间，期间无需重复操作。'}
+ return {state:state,label:labels[state]||labels.unknown,className:state==='connected'?'is-running':state==='reconnecting'||state==='connecting'?'is-retrying':'',connectedAt:time(connection.connectedAt),note:note,error:state==='connected'||state==='disabled'||buffering?'':connection.lastError||''};
 }
 (function(){
  'use strict';
@@ -14,7 +16,7 @@ function remotegateConnectionView(status){
  var updateURLs={check:script&&script.getAttribute('data-update-check'),start:script&&script.getAttribute('data-update-start'),status:script&&script.getAttribute('data-update-status')},csrfToken=script&&script.getAttribute('data-token');
  function initialize(){
  var root=document.getElementById('cbi-remotegate');if(!root)return;
- var busy=false;
+ var busy=false,statusFailureSince=null;
  document.body.classList.add('rg-page');
  function switchTab(name){root.querySelectorAll('[data-rg-tab]').forEach(function(b){b.setAttribute('aria-pressed',b.getAttribute('data-rg-tab')===name?'true':'false')});document.getElementById('rg-basic').hidden=name!=='basic';document.getElementById('rg-advanced').hidden=name!=='advanced';}
  root.querySelectorAll('[data-rg-tab]').forEach(function(b){b.addEventListener('click',function(){switchTab(b.getAttribute('data-rg-tab'))})});
@@ -24,7 +26,7 @@ function remotegateConnectionView(status){
  consoleLink(document.getElementById('rg-server').textContent.trim());
  function message(text){var el=document.getElementById('rg-message');el.textContent=text;el.hidden=!text}
  function renderConnection(s){var view=remotegateConnectionView(s),badge=document.getElementById('rg-state');badge.className=view.className;badge.replaceChildren();badge.appendChild(document.createElement('i'));badge.appendChild(document.createTextNode(view.label));if(view.state!=='unavailable'){document.getElementById('rg-server').textContent=s.server||'尚未配置';document.getElementById('rg-device').textContent=s.deviceId||'尚未绑定';document.getElementById('rg-connection').textContent=view.connectedAt;consoleLink(s.server)}document.getElementById('rg-status-note').textContent=view.note;var error=document.getElementById('rg-connection-error');error.textContent=view.error;error.hidden=!view.error}
- function refresh(){if(busy||document.hidden)return;busy=true;var button=document.getElementById('rg-refresh');button.disabled=true;button.textContent='刷新中…';var controller=new AbortController(),timeout=setTimeout(function(){controller.abort()},10000);fetch(statusURL,{credentials:'same-origin',cache:'no-store',signal:controller.signal}).then(function(r){if(!r.ok)throw Error('请重新登录路由器后台');return r.json()}).then(function(s){if(!s.connection||typeof s.connection.state!=='string')throw Error('连接状态接口未更新，请重新打开插件页面；若仍出现，请重新安装最新版插件以刷新缓存');renderConnection(s);message('')}).catch(function(e){renderConnection({connection:{state:'unavailable'}});message('状态读取失败：'+(e.name==='AbortError'?'请求超时，请检查网络后重试':e.message))}).finally(function(){clearTimeout(timeout);busy=false;button.disabled=false;button.textContent='↻ 刷新状态'})}
+ function refresh(){if(busy||document.hidden)return;busy=true;var button=document.getElementById('rg-refresh');button.disabled=true;button.textContent='刷新中…';var controller=new AbortController(),timeout=setTimeout(function(){controller.abort()},10000);fetch(statusURL,{credentials:'same-origin',cache:'no-store',signal:controller.signal}).then(function(r){if(!r.ok){var error=Error(r.status===401||r.status===403?'请重新登录路由器后台':'连接状态请求失败');error.status=r.status;throw error}return r.json()}).then(function(s){if(!s.connection||typeof s.connection.state!=='string')throw Error('连接状态接口未更新，请重新打开插件页面；若仍出现，请重新安装最新版插件以刷新缓存');statusFailureSince=null;renderConnection(s);message('')}).catch(function(e){var transient=e.name==='TypeError'||e.name==='AbortError'||[502,503,504].indexOf(e.status)>=0;if(transient&&statusFailureSince===null)statusFailureSince=Date.now();var buffering=transient&&Date.now()-statusFailureSince<30000;if(buffering){renderConnection({connection:{state:'reconnecting',recoveryStartedAt:new Date(statusFailureSince).toISOString()}});message('')}else{renderConnection({connection:{state:'unavailable'}});message('状态读取失败：'+(e.name==='AbortError'?'请求超时，请检查网络后重试':e.message))}}).finally(function(){clearTimeout(timeout);busy=false;button.disabled=false;button.textContent='↻ 刷新状态'})}
  document.getElementById('rg-refresh').addEventListener('click',refresh);
  window.setInterval(refresh,5000);
  refresh();

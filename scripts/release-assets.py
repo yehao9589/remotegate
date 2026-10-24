@@ -31,7 +31,7 @@ with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
 
 bundle = output / f"RemoteGate-{tag}-compose.tar.gz"
 with tarfile.open(bundle, "w:gz") as archive:
-    for name in ("docker-compose.yml", "docker-compose.https.yml", "DEPLOYMENT.md", "README.md", "CHANGELOG.md", "docs/releasing.md", "docs/device-status.md", "docs/traffic.md"):
+    for name in ("docker-compose.yml", "docker-compose.https.yml", "DEPLOYMENT.md", "README.md", "CHANGELOG.md", "docs/releasing.md", "docs/device-status.md", "docs/traffic.md", "docs/users.md", "docs/notifications.md"):
         archive.add(name, arcname=name)
     for guide in sorted(Path("docs/deployment").rglob("*.md")):
         archive.add(guide, arcname=guide.as_posix())

@@ -3,7 +3,6 @@
 body{background:radial-gradient(ellipse at 85% 0%,#e8f3f680,transparent 45%),#f5f7fb}
 body[data-page=domains]{--module:#7b5bce;--module-soft:#f3effc;--module-rgb:123,91,206}
 body[data-page=packages]{--module:#b77825;--module-soft:#fff5e6;--module-rgb:183,120,37}
-body[data-page=deploy]{--module:#168c8e;--module-soft:#e8f7f5;--module-rgb:22,140,142}
 body[data-page=security]{--module:#517493;--module-soft:#edf4f9;--module-rgb:81,116,147}
 .ui-icon{display:inline-block;width:18px;height:18px;flex-shrink:0;vertical-align:-4px;pointer-events:none}
 button[data-copy-feedback]{flex-shrink:0;white-space:nowrap}button[data-copy-feedback] .ui-icon{margin:0}
@@ -21,7 +20,7 @@ button .ui-icon,a .ui-icon{margin-right:5px}button.icon-button .ui-icon,.mapping
 #shell nav button:hover{background:#ffffff08;color:#f1f6ff}
 #shell nav button.active{background:linear-gradient(110deg,#536ed62c,#617fd018);color:#f4f7ff;border-color:#8ea8f324;box-shadow:inset 3px 0 #839bff}
 .nav-icon{width:29px;height:29px;display:grid;place-items:center;border-radius:8px;background:#6584df1a;color:#98b4ff}
-nav [data-page=domains] .nav-icon{background:#a480ee1a;color:#c4a5ff}nav [data-page=packages] .nav-icon{background:#e2b35f1a;color:#eec787}nav [data-page=deploy] .nav-icon{background:#51c3bf1a;color:#7fd6d1}nav [data-page=security] .nav-icon{background:#8cb6de1a;color:#a4c9e7}
+nav [data-page=domains] .nav-icon{background:#a480ee1a;color:#c4a5ff}nav [data-page=packages] .nav-icon{background:#e2b35f1a;color:#eec787}nav [data-page=security] .nav-icon{background:#8cb6de1a;color:#a4c9e7}
 .nav-icon .ui-icon{margin:0;width:18px;height:18px}#shell .foot{color:#859bb7;border-top:1px solid #ffffff10;padding-top:18px;right:22px;font-size:10px;line-height:1.9}
 #shell header:not(.cert-dialog-head){background:#ffffffd9;border-color:#e4eaf2}#shell header h1{color:#526681;font-size:14px}#shell header h1:before{color:#8593a7;font-size:12px}
 #shell header>div{display:flex;align-items:center;gap:8px}#shell header button{display:inline-flex;align-items:center;gap:1px;padding:7px 10px;color:#657892;border-color:#e3e9f2;background:#fff;font-size:12px}#shell header .ui-icon{width:15px;height:15px}#shell #sync{color:#72849b;font-size:11px}#shell #sync:not(:empty):before{content:'';display:inline-block;width:5px;height:5px;background:#33a98d;border-radius:50%;margin-right:6px;vertical-align:2px}

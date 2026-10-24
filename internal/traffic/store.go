@@ -20,8 +20,15 @@ type Counter struct {
 }
 
 type Snapshot struct {
-	Version  int                `json:"version"`
-	Since    time.Time          `json:"since"`
+	Version      int                `json:"version"`
+	Since        time.Time          `json:"since"`
+	Devices      map[string]Counter `json:"devices"`
+	Mappings     map[string]Counter `json:"mappings"`
+	HistorySince time.Time          `json:"historySince,omitempty"`
+	Days         map[string]Day     `json:"days,omitempty"`
+}
+
+type Day struct {
 	Devices  map[string]Counter `json:"devices"`
 	Mappings map[string]Counter `json:"mappings"`
 }
@@ -37,7 +44,8 @@ type Store struct {
 }
 
 func New() *Store {
-	return &Store{state: Snapshot{Version: 1, Since: time.Now().UTC(), Devices: map[string]Counter{}, Mappings: map[string]Counter{}}, revision: 1}
+	now := time.Now().UTC()
+	return &Store{state: Snapshot{Version: 1, Since: now, HistorySince: now, Days: map[string]Day{}, Devices: map[string]Counter{}, Mappings: map[string]Counter{}}, revision: 1}
 }
 
 // Open keeps the same start time even when the first period has no traffic.
@@ -49,6 +57,7 @@ func Open(path string) (*Store, error) {
 		if len(raw) > 32<<20 {
 			return nil, errors.New("traffic file exceeds size limit")
 		}
+		s.state = Snapshot{}
 		if err = json.Unmarshal(raw, &s.state); err != nil || s.state.Version != 1 || s.state.Since.IsZero() {
 			return nil, errors.New("invalid traffic statistics file; original data preserved")
 		}
@@ -59,6 +68,13 @@ func Open(path string) (*Store, error) {
 			s.state.Mappings = map[string]Counter{}
 		}
 		s.saved = s.revision
+		if s.state.HistorySince.IsZero() {
+			s.state.HistorySince = time.Now().UTC()
+			s.revision++
+		}
+		if s.state.Days == nil {
+			s.state.Days = map[string]Day{}
+		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -95,6 +111,10 @@ func plus(a, b uint64) uint64 {
 // Add is called only for actual payload transfers, never for heartbeats or control messages.
 // Upload means towards the device; download means from the device.
 func (s *Store) Add(device, mapping string, upload, download uint64) {
+	s.addAt(device, mapping, upload, download, time.Now().UTC())
+}
+
+func (s *Store) addAt(device, mapping string, upload, download uint64, now time.Time) {
 	if device == "" || upload == 0 && download == 0 {
 		return
 	}
@@ -102,29 +122,69 @@ func (s *Store) Add(device, mapping string, upload, download uint64) {
 	defer s.mu.Unlock()
 	update := func(c Counter) Counter {
 		c.UploadBytes, c.DownloadBytes = plus(c.UploadBytes, upload), plus(c.DownloadBytes, download)
-		c.UpdatedAt = time.Now().UTC()
+		c.UpdatedAt = now.UTC()
 		return c
 	}
 	s.state.Devices[device] = update(s.state.Devices[device])
 	if mapping != "" {
 		s.state.Mappings[mapping] = update(s.state.Mappings[mapping])
 	}
+	date := now.UTC().Format("2006-01-02")
+	day, exists := s.state.Days[date]
+	if !exists {
+		day = Day{Devices: map[string]Counter{}, Mappings: map[string]Counter{}}
+		cutoff := now.UTC().AddDate(0, 0, -365).Format("2006-01-02")
+		for key := range s.state.Days {
+			if key < cutoff {
+				delete(s.state.Days, key)
+			}
+		}
+	}
+	if day.Devices == nil {
+		day.Devices = map[string]Counter{}
+	}
+	if day.Mappings == nil {
+		day.Mappings = map[string]Counter{}
+	}
+	day.Devices[device] = update(day.Devices[device])
+	if mapping != "" {
+		day.Mappings[mapping] = update(day.Mappings[mapping])
+	}
+	s.state.Days[date] = day
 	s.revision++
 }
 
 func (s *Store) Snapshot() Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.copyLocked()
+	out := s.copyTotalsLocked()
+	return out
 }
 
-func (s *Store) copyLocked() Snapshot {
+func (s *Store) copyTotalsLocked() Snapshot {
 	out := Snapshot{Version: s.state.Version, Since: s.state.Since, Devices: make(map[string]Counter, len(s.state.Devices)), Mappings: make(map[string]Counter, len(s.state.Mappings))}
 	for id, c := range s.state.Devices {
 		out.Devices[id] = c
 	}
 	for id, c := range s.state.Mappings {
 		out.Mappings[id] = c
+	}
+	return out
+}
+
+func (s *Store) copyLocked() Snapshot {
+	out := s.copyTotalsLocked()
+	out.HistorySince = s.state.HistorySince
+	out.Days = map[string]Day{}
+	for date, day := range s.state.Days {
+		copy := Day{Devices: map[string]Counter{}, Mappings: map[string]Counter{}}
+		for id, c := range day.Devices {
+			copy.Devices[id] = c
+		}
+		for id, c := range day.Mappings {
+			copy.Mappings[id] = c
+		}
+		out.Days[date] = copy
 	}
 	return out
 }

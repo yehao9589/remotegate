@@ -75,6 +75,26 @@ func (a *app) revokeMappingAccess() {
 	clear(manager.codes)
 	clear(manager.sessions)
 }
+func (a *app) revokeOwnerMappingAccess(owner [32]byte) {
+	a.mappingMu.Lock()
+	manager := a.mappingAccess
+	a.mappingMu.Unlock()
+	if manager == nil {
+		return
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for key, item := range manager.sessions {
+		if item.Owner == owner {
+			delete(manager.sessions, key)
+		}
+	}
+	for key, item := range manager.codes {
+		if item.Owner == owner {
+			delete(manager.codes, key)
+		}
+	}
+}
 func accessToken() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -208,7 +228,16 @@ func (a *app) accessOwnerValid(owner [32]byte) (time.Time, bool) {
 	a.auth.mu.Lock()
 	defer a.auth.mu.Unlock()
 	s, exists := a.auth.sessions[owner]
-	return s.expires, exists && time.Now().Before(s.expires)
+	if !exists || !a.auth.validSessionLocked(s) {
+		return time.Time{}, false
+	}
+	expires := s.expires
+	for _, u := range a.auth.record.Users {
+		if u.Username == s.user && u.ExpiresAt != nil && u.ExpiresAt.Before(expires) {
+			expires = *u.ExpiresAt
+		}
+	}
+	return expires, true
 }
 func accessCookieNames(m config.Mapping) (string, string) {
 	if m.PublicScheme == "https" {
@@ -335,6 +364,7 @@ func (a *app) mappingSessionValid(r *http.Request, m config.Mapping, console *ur
 		return false
 	}
 	_, valid := a.accessOwnerValid(session.Owner)
+	valid = valid && a.auth.ownerAllows(session.Owner, m.DeviceID, "view")
 	if !valid {
 		manager.mu.Lock()
 		delete(manager.sessions, key)
@@ -448,6 +478,10 @@ func (a *app) authorizeMappingAccess(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, console.String()+a.auth.entryPath()+"?access_request="+id, http.StatusFound)
 		return
 	}
+	if !a.auth.ownerAllows(owner, m.DeviceID, "view") {
+		accessError(w, 403, "当前账号未获授权访问这台设备，请联系管理员", "")
+		return
+	}
 	code := accessToken()
 	if code == "" {
 		accessError(w, 503, "暂时无法完成验证", origin.String()+"/")
@@ -485,7 +519,7 @@ func (a *app) completeMappingAccess(w http.ResponseWriter, r *http.Request, m co
 	}
 	manager.mu.Unlock()
 	expires, valid := a.accessOwnerValid(grant.Owner)
-	if !valid {
+	if !valid || !a.auth.ownerAllows(grant.Owner, m.DeviceID, "view") {
 		accessError(w, 403, "后台登录已失效，请重新登录", origin.String()+"/")
 		return
 	}

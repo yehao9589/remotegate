@@ -1,3 +1,4 @@
+function remoteAPIBase(){return typeof memberPortal!=='undefined'&&memberPortal?'/api/member/':'/api/admin/'}
 // SSH credentials remain in the current form and are never saved to storage.
 let remoteContext=null,remoteTerminalAssets=null;
 const previousRemoteAction=action,previousRemoteWorkbench=renderWorkbench;
@@ -26,7 +27,7 @@ function remoteDialog(){
 function closeRemote(c){
  if(!c||c.closed)return;
  c.closed=true;c.nameResolve?.(null);c.controllers.forEach(controller=>controller.abort());c.observer?.disconnect();c.socket?.close();c.terminal?.dispose();
- if(c.session)fetch('/api/admin/remote/'+encodeURIComponent(c.session.id),{method:'DELETE',credentials:'same-origin',keepalive:true}).catch(()=>{});
+ if(c.session)fetch(remoteAPIBase()+'remote/'+encodeURIComponent(c.session.id),{method:'DELETE',credentials:'same-origin',keepalive:true}).catch(()=>{});
  if(remoteContext===c){remoteContext=null;$('#remoteContents').replaceChildren();$('#remoteDisconnect').hidden=true}
 }
 window.addEventListener('pagehide',()=>closeRemote(remoteContext));
@@ -64,7 +65,7 @@ function remoteLoginBusy(c,active){c.busy=active;$('#remoteProbe').disabled=acti
 async function probeRemote(c){
  if(!remoteCurrent(c)||c.busy)return;
  const target=remoteTarget();remoteLoginBusy(c,true);$('#remoteLoginError').textContent='';$('#remoteFingerprint').textContent='正在读取主机指纹…';
- try{const fp=await remoteCall(c,'devices/'+encodeURIComponent(c.device.id)+'/remote','POST',{action:'fingerprint',...target});if(!remoteCurrent(c))return;c.fp={...fp,...target};$('#remoteFingerprint').innerHTML='<code>'+esc(fp.fingerprint)+'</code><span>'+esc(fp.algorithm)+' · '+esc(fp.target)+'</span>';$('#remoteTrustRow').hidden=false;$('#remoteTrust').checked=false}
+ try{const fp=await remoteCall(c,'devices/'+encodeURIComponent(c.device.id)+'/remote','POST',{action:'fingerprint',view:c.view,...target});if(!remoteCurrent(c))return;c.fp={...fp,...target};$('#remoteFingerprint').innerHTML='<code>'+esc(fp.fingerprint)+'</code><span>'+esc(fp.algorithm)+' · '+esc(fp.target)+'</span>';$('#remoteTrustRow').hidden=false;$('#remoteTrust').checked=false}
  catch(e){if(remoteCurrent(c)){$('#remoteLoginError').textContent=e.message;$('#remoteFingerprint').textContent='检测失败，请重试。';c.fp=null}}
  finally{if(remoteCurrent(c))remoteLoginBusy(c,false)}
 }
@@ -72,7 +73,7 @@ async function connectRemote(c){
  if(!remoteCurrent(c)||c.busy)return;
  const target=remoteTarget();
  if(!c.fp||c.fp.host!==target.host||c.fp.port!==target.port||!$('#remoteTrust').checked){$('#remoteLoginError').textContent='请先检测、核对并勾选信任主机指纹。';return}
- const body={action:'connect',...target,username:$('#remoteUsername').value.trim(),fingerprint:c.fp.fingerprint};
+ const body={action:'connect',view:c.view,...target,username:$('#remoteUsername').value.trim(),fingerprint:c.fp.fingerprint};
  if($('#remoteAuthMethod').value==='key'){body.privateKey=$('#remoteKey').value;body.passphrase=$('#remotePassphrase').value}else body.password=$('#remotePassword').value;
  remoteLoginBusy(c,true);$('#remoteLoginError').textContent='';$('#remoteConnect').textContent='正在连接…';
  try{
@@ -85,7 +86,7 @@ async function connectRemote(c){
 function renderRemoteConnected(c){
  $('#remoteContents').innerHTML='<div class="remote-connected"><div class="remote-session-line"><span class="pill on" id="remoteSessionBadge">SSH 已连接</span><code>'+esc(c.session.target)+'</code><span class="muted">SSH 登录会话</span></div><div class="remote-view-tabs"><button type="button" data-remote-view="terminal">'+uiIcon('terminal')+'SSH 终端</button><button type="button" data-remote-view="files">'+uiIcon('folder')+'文件管理</button></div><p class="remote-error" id="remoteSessionError" role="alert"></p><section id="remoteTerminalPanel"><div id="remoteTerminal" class="remote-terminal" aria-label="SSH 交互终端"></div><div class="remote-terminal-tools"><button type="button" id="remoteInterrupt">Ctrl+C 中断</button><button type="button" id="remoteClear">清空显示</button><span>终端中的命令会在当前 SSH 账号下执行</span></div></section><section id="remoteFilesPanel" hidden><div class="remote-file-toolbar"><button type="button" id="remoteUp" aria-label="上一级目录">'+uiIcon('arrow')+'上一级</button><form id="remotePathForm"><input id="remotePath" aria-label="当前远程目录" placeholder="目录路径"><button type="submit">前往</button></form><button type="button" id="remoteFileRefresh">'+uiIcon('refresh')+'刷新</button></div><div class="remote-file-actions"><input id="remoteFileSearch" placeholder="搜索当前目录" aria-label="搜索当前目录"><button type="button" id="remoteMkdir">'+uiIcon('plus')+'新建文件夹</button><button type="button" id="remoteUpload" class="primary">'+uiIcon('upload')+'上传文件</button><input type="file" id="remoteUploadInput" hidden></div><p id="remoteFileStatus" class="muted" role="status"></p><div id="remoteTransfer" hidden></div><div class="tablewrap remote-file-table"><table><thead><tr><th>名称</th><th>大小</th><th>修改时间 / 权限</th><th>操作</th></tr></thead><tbody id="remoteFileRows"></tbody></table></div><div id="remoteDownloadLinks"></div></section></div>';
  $('#remoteDisconnect').hidden=false;$('#remoteFooter').textContent='当前会话凭据仅保存在内存；关闭后释放连接';
- $('#remoteContents').querySelectorAll('[data-remote-view]').forEach(button=>button.onclick=()=>selectRemoteView(c,button.dataset.remoteView));
+ $('#remoteContents').querySelectorAll('[data-remote-view]').forEach(button=>{if(c.device.permissions)button.hidden=!(button.dataset.remoteView==='terminal'?c.device.permissions.ssh:c.device.permissions.files);button.onclick=()=>selectRemoteView(c,button.dataset.remoteView)});
  $('#remoteInterrupt').onclick=()=>remoteTerminalSend(c,{type:'input',data:'\x03'});
  $('#remoteClear').onclick=()=>c.terminal?.clear();
  $('#remoteUp').onclick=()=>refreshRemoteFiles(c,remoteParent(c.dir));
@@ -97,14 +98,14 @@ function renderRemoteConnected(c){
  $('#remoteUploadInput').onchange=()=>{const file=$('#remoteUploadInput').files[0];$('#remoteUploadInput').value='';if(file)uploadRemoteFile(c,file)};
 }
 async function selectRemoteView(c,view){
- if(!remoteCurrent(c)||!c.session)return;c.view=view;
+ if(!remoteCurrent(c)||!c.session)return;if(c.device.permissions&&!(view==='terminal'?c.device.permissions.ssh:c.device.permissions.files)){toast('此工具未获授权');return}c.view=view;
  $('#remoteTerminalPanel').hidden=view!=='terminal';$('#remoteFilesPanel').hidden=view!=='files';
  $('#remoteContents').querySelectorAll('[data-remote-view]').forEach(button=>button.classList.toggle('active',button.dataset.remoteView===view));
  try{if(view==='terminal')await startRemoteTerminal(c);else if(!c.dir)await refreshRemoteFiles(c,'')}
  catch(e){if(remoteCurrent(c))$('#remoteSessionError').textContent=e.message}
 }
 function loadRemoteScript(name){
- return new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='/api/admin/remote-assets/'+name;script.onload=resolve;script.onerror=()=>{script.remove();reject(Error('终端组件加载失败，请重试'))};document.head.appendChild(script)});
+ return new Promise((resolve,reject)=>{const script=document.createElement('script');script.src=remoteAPIBase()+'remote-assets/'+name;script.onload=resolve;script.onerror=()=>{script.remove();reject(Error('终端组件加载失败，请重试'))};document.head.appendChild(script)});
 }
 async function terminalAssets(){
  if(window.Terminal&&window.FitAddon?.FitAddon)return;
@@ -117,7 +118,7 @@ async function startRemoteTerminal(c){
  await terminalAssets();if(!remoteCurrent(c))return;
  const terminal=new window.Terminal({cursorBlink:true,fontSize:13,fontFamily:'Cascadia Mono,Consolas,monospace',scrollback:2000,screenReaderMode:true,theme:{background:'#101c30',foreground:'#d9e7f8',cursor:'#8aaef0',selectionBackground:'#42649f77'}}),fit=new window.FitAddon.FitAddon();
  c.terminal=terminal;c.fit=fit;terminal.loadAddon(fit);terminal.open($('#remoteTerminal'));fit.fit();
- const address=new URL('/api/admin/remote/'+encodeURIComponent(c.session.id)+'/terminal',location.origin);address.protocol=location.protocol==='https:'?'wss:':'ws:';address.searchParams.set('ticket',c.session.terminalTicket);c.session.terminalTicket='';
+ const address=new URL(remoteAPIBase()+'remote/'+encodeURIComponent(c.session.id)+'/terminal',location.origin);address.protocol=location.protocol==='https:'?'wss:':'ws:';address.searchParams.set('ticket',c.session.terminalTicket);c.session.terminalTicket='';
  const socket=new WebSocket(address);c.socket=socket;socket.binaryType='arraybuffer';
  socket.onopen=()=>{if(!remoteCurrent(c)){socket.close();return}remoteTerminalSend(c,{type:'resize',cols:terminal.cols,rows:terminal.rows});terminal.focus()};
  socket.onmessage=event=>{if(remoteCurrent(c))terminal.write(typeof event.data==='string'?event.data:new Uint8Array(event.data))};

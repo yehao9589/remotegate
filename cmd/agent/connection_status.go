@@ -15,22 +15,23 @@ import (
 const routerConnectionPath = "/var/run/remotegate/connection.json"
 
 type connectionSnapshot struct {
-	PID             int    `json:"pid"`
-	Server          string `json:"server"`
-	DeviceID        string `json:"deviceId"`
-	State           string `json:"state"`
-	ConnectedAt     string `json:"connectedAt,omitempty"`
-	LastAttemptAt   string `json:"lastAttemptAt,omitempty"`
-	LastHeartbeatAt string `json:"lastHeartbeatAt,omitempty"`
-	NextRetryAt     string `json:"nextRetryAt,omitempty"`
-	LastError       string `json:"lastError,omitempty"`
-	LastErrorAt     string `json:"lastErrorAt,omitempty"`
-	ServerIP        string `json:"serverIP,omitempty"`
-	DNSMode         string `json:"dnsMode,omitempty"`
-	EgressInterface string `json:"egressInterface,omitempty"`
-	RouteProtected  bool   `json:"routeProtected,omitempty"`
-	UpdatedAt       string `json:"updatedAt"`
-	UpdatedUnix     int64  `json:"updatedUnix"`
+	PID               int    `json:"pid"`
+	Server            string `json:"server"`
+	DeviceID          string `json:"deviceId"`
+	State             string `json:"state"`
+	ConnectedAt       string `json:"connectedAt,omitempty"`
+	LastAttemptAt     string `json:"lastAttemptAt,omitempty"`
+	LastHeartbeatAt   string `json:"lastHeartbeatAt,omitempty"`
+	NextRetryAt       string `json:"nextRetryAt,omitempty"`
+	LastError         string `json:"lastError,omitempty"`
+	LastErrorAt       string `json:"lastErrorAt,omitempty"`
+	RecoveryStartedAt string `json:"recoveryStartedAt,omitempty"`
+	ServerIP          string `json:"serverIP,omitempty"`
+	DNSMode           string `json:"dnsMode,omitempty"`
+	EgressInterface   string `json:"egressInterface,omitempty"`
+	RouteProtected    bool   `json:"routeProtected,omitempty"`
+	UpdatedAt         string `json:"updatedAt"`
+	UpdatedUnix       int64  `json:"updatedUnix"`
 }
 
 type connectionReporter struct {
@@ -113,6 +114,9 @@ func (r *connectionReporter) attempting() {
 		r.state.State = "reconnecting"
 	}
 	r.state.LastAttemptAt = connectionTime(time.Now())
+	if r.state.RecoveryStartedAt == "" {
+		r.state.RecoveryStartedAt = r.state.LastAttemptAt
+	}
 	r.state.NextRetryAt = ""
 	r.saveLocked()
 }
@@ -144,6 +148,7 @@ func (r *connectionReporter) connected() {
 	r.state.ConnectedAt = connectionTime(time.Now())
 	r.state.LastHeartbeatAt = ""
 	r.state.NextRetryAt = ""
+	r.state.RecoveryStartedAt = ""
 	r.saveLocked()
 }
 func (r *connectionReporter) heartbeat() {
@@ -164,6 +169,9 @@ func (r *connectionReporter) disconnected(err error, delay time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.state.State = "reconnecting"
+	if r.state.RecoveryStartedAt == "" {
+		r.state.RecoveryStartedAt = connectionTime(time.Now())
+	}
 	r.state.NextRetryAt = connectionTime(time.Now().Add(delay))
 	if err != nil {
 		r.state.LastError = safeConnectionError(err, r.token)

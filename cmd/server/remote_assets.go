@@ -11,6 +11,9 @@ func (a *app) remoteAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/api/admin/remote-assets/")
+	if name == r.URL.Path {
+		name = strings.TrimPrefix(r.URL.Path, "/api/member/remote-assets/")
+	}
 	if name != "xterm.js" && name != "addon-fit.js" {
 		http.NotFound(w, r)
 		return

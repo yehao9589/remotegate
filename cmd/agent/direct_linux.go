@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -418,7 +419,11 @@ func (d *directWANDialer) DialContext(ctx context.Context, network, address stri
 
 func maintainDirectRoute(ctx context.Context, cfg Config) {
 	d := newDirectWANDialer(cfg)
-	timer := time.NewTicker(10 * time.Second)
+	events := make(chan struct{}, 1)
+	go monitorDirectFirewall(ctx, events)
+	// The independent nft table survives ordinary OpenClash reloads. Also
+	// reconcile promptly on FW3, or after a full firewall reset on either stack.
+	timer := time.NewTicker(2 * time.Second)
 	defer timer.Stop()
 	var previous string
 	for {
@@ -435,6 +440,52 @@ func maintainDirectRoute(ctx context.Context, cfg Config) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+		case <-events:
 		}
 	}
+}
+
+// Subscribe to external rule creation so protection is reconciled during a
+// reload, rather than waiting for the periodic fallback. Our own insertions
+// carry a comment and are ignored to avoid a self-triggered repair loop.
+func monitorDirectFirewall(ctx context.Context, events chan<- struct{}) {
+	if _, err := exec.LookPath("nft"); err != nil {
+		return
+	}
+	for ctx.Err() == nil {
+		cmd := exec.CommandContext(ctx, "nft", "monitor", "ruleset")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}
+		out, err := cmd.StdoutPipe()
+		if err == nil {
+			err = cmd.Start()
+		}
+		if err == nil {
+			scanner := bufio.NewScanner(out)
+			scanner.Buffer(make([]byte, 4096), 1024*1024)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if firewallRepairEvent(line) {
+					select {
+					case events <- struct{}{}:
+					default:
+					}
+				}
+			}
+			// A long/invalid monitor line must not leave an unread child process.
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			_ = cmd.Wait()
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+func firewallRepairEvent(line string) bool {
+	return strings.Contains(line, "inet fw4") && !strings.Contains(line, "remotegate-") &&
+		(strings.HasPrefix(line, "add rule ") || strings.HasPrefix(line, "add chain ") || strings.HasPrefix(line, "delete table ") || strings.HasPrefix(line, "flush table "))
 }

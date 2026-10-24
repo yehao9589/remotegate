@@ -37,7 +37,7 @@ function connection_state(c, running)
  local allowed={connecting=true,connected=true,reconnecting=true,stopped=true}
  if not allowed[value.state] then return {state="unknown"} end
  local result={state=value.state}
- for _,key in ipairs({"connectedAt","lastAttemptAt","lastHeartbeatAt","nextRetryAt","lastError","lastErrorAt","serverIP","dnsMode","egressInterface"}) do
+ for _,key in ipairs({"connectedAt","lastAttemptAt","lastHeartbeatAt","nextRetryAt","lastError","lastErrorAt","recoveryStartedAt","serverIP","dnsMode","egressInterface"}) do
   if type(value[key])=="string" and #value[key]<=1500 then result[key]=value[key] end
  end
  result.routeProtected=value.routeProtected==true
