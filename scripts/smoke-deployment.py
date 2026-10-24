@@ -141,6 +141,29 @@ if phase == "setup":
     ENTRY = "/smoke-final-entry"
     call("/api/auth/login", {"username": USER, "password": PASSWORD})
     assert b'id="loginform"' in call(ENTRY)
+# Exercise the new account and template paths against the packaged server too.
+# These credentials and templates belong only to this disposable CI volume.
+member_name = "测试用户1"
+member_password = "disposable-member-password-123"
+mail_template = {"subject": "RemoteGate 部署检查", "body": "当前状态：{{status}}"}
+if phase == "setup":
+    user = call("/api/admin/users", {"username": member_name, "password": member_password,
+                                     "enabled": True, "grants": []})
+    assert user["username"] == member_name and not user["grants"]
+    call("/api/admin/mail/templates", {"action": "save", "kind": "test", "template": mail_template})
+users = call("/api/admin/users")["users"]
+assert len(users) == 1 and users[0]["username"] == member_name
+assert call("/api/admin/mail/templates")["templates"]["test"] == mail_template
+assert not call("/api/admin/mail")["enabled"], "Template editing must not enable SMTP"
+preview = call("/api/admin/mail/preview?kind=test")
+assert preview["subject"] == mail_template["subject"] and "{{status}}" not in preview["body"]
+assert preview["example"]
+call("/api/auth/logout", {}, expected=204)
+assert call("/api/auth/login", {"username": member_name, "password": member_password})["role"] == "user"
+member_state = call("/api/member/state")
+assert member_state["account"]["username"] == member_name and not member_state["devices"]
+for forbidden in ("/api/admin/users", "/api/admin/mail", "/api/admin/mail/templates"):
+    call(forbidden, expected=401)
 call("/api/auth/logout", {}, expected=204)
 call("/api/admin/state", expected=401)
-print("PASS:", phase, "administrator, persistence, package download, install ticket and native HTTPS")
+print("PASS:", phase, "administrator, persistence, package download, native HTTPS, Chinese member isolation and mail templates")

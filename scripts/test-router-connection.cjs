@@ -6,6 +6,13 @@ const context=vm.createContext({document:{currentScript:null,readyState:'loading
 vm.runInContext(fs.readFileSync('deploy/openwrt/luci/page.js','utf8'),context);
 const view=status=>context.remotegateConnectionView(status);
 
+test('network errors have one bounded recovery window but credential errors stay immediate',()=>{
+ const status={enabled:true,running:true,connection:{state:'reconnecting',lastError:'i/o timeout',recoveryStartedAt:new Date(Date.now()-10000).toISOString()}};
+ let result=view(status);assert.equal(result.label,'正在恢复连接');assert.equal(result.error,'');assert.equal(result.className,'is-retrying');
+ status.connection.recoveryStartedAt=new Date(Date.now()-31000).toISOString();result=view(status);assert.match(result.error,/timeout/);
+ status.connection.recoveryStartedAt=new Date().toISOString();status.connection.lastError='connect: 401 Unauthorized';assert.match(view(status).error,/401/);
+});
+
 test('a running process alone never claims a connected tunnel',()=>{
  assert.equal(view({enabled:true,running:true}).state,'unknown');
  assert.doesNotMatch(view({enabled:true,running:true}).label,/已连接/);

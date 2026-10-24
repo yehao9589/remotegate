@@ -151,14 +151,18 @@ func TestMappingCertificateChecksStayScopedAndPersist(t *testing.T) {
 func TestEndpointCertificateResultsAreBounded(t *testing.T) {
 	s, _ := Open(t.TempDir() + "/state.json")
 	d, _ := s.PutDomain(DomainSettings{BaseDomain: "example.com"})
-	for port := 10000; port < 10045; port++ {
-		if err := s.SetDomainHTTPSChecks(d.ID, []PublicHTTPSCheck{{Host: d.BaseDomain, Port: port, CheckedAt: time.Now()}}); err != nil {
-			t.Fatal(err)
-		}
+	checks := []PublicHTTPSCheck{}
+	for port := 10000; port < 10000+MaxHTTPSChecks+5; port++ {
+		checks = append(checks, PublicHTTPSCheck{Host: d.BaseDomain, Port: port, CheckedAt: time.Now()})
 	}
-	if checks := s.Domains()[0].HTTPSChecks; len(checks) != 40 || checks[0].Port != 10005 {
-		t.Fatal("unbounded observations", checks)
+	if err := s.SetDomainHTTPSChecks(d.ID, checks); err != nil {
+		t.Fatal(err)
 	}
+	got := s.Domains()[0].HTTPSChecks
+	if len(got) != MaxHTTPSChecks || got[0].Port != 10005 || got[len(got)-1].Port != 10000+MaxHTTPSChecks+4 {
+		t.Fatalf("unexpected observation retention: length=%d, first=%d, last=%d", len(got), got[0].Port, got[len(got)-1].Port)
+	}
+
 }
 
 func TestMultipleDomainsAndDeleteGuard(t *testing.T) {

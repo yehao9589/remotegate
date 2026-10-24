@@ -26,8 +26,8 @@ test('root and wildcard SAN success does not claim a child or another port is ve
 });
 test('stale, expired, failed and soon-expiring observations need attention',()=>{
  let d=domain();d.publicHTTPS.checkedAt=new Date(now-25*3600000).toISOString();
- assert.equal(context.rootPublicHealth(d,now).text,'公网待复检');
- d=domain();d.publicHTTPS.expiresAt=new Date(now-1000).toISOString();
+ assert.equal(context.rootPublicHealth(d,now).text,'上次公网 HTTPS 正常');
+ d=domain();d.publicHTTPS.checkedAt=new Date(now-48*3600000).toISOString();d.publicHTTPS.expiresAt=new Date(now-1000).toISOString();
  assert.equal(context.rootPublicHealth(d,now).text,'公网证书已过期');
  d=domain();d.publicHTTPS.expiresAt=new Date(now+10*86400000).toISOString();
  assert.equal(context.rootPublicHealth(d,now).text,'证书即将到期');

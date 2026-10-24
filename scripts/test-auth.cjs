@@ -20,6 +20,16 @@ test('login page verifies the current cookie and stays logged out for an invalid
  assert.equal(page.$('#login').hidden,false);assert.equal(page.$('#firstInstall').hidden,true);assert.equal(page.$('#shell').hidden,true);assert.equal(page.refreshes(),0);
  assert.equal(page.requests.length,1);assert.equal(page.requests[0].url,'/api/auth/status');assert.equal(page.requests[0].options.cache,'no-store');assert.equal(page.requests[0].options.credentials,'same-origin');
 });
+test('ordinary login opens the member portal without fetching administrator data',async()=>{
+ const page=authPage('login');page.context.URLSearchParams=URLSearchParams;page.context.location.search='';let destination='';page.context.location.replace=url=>destination=url;
+ await page.context.enterAccount({role:'user',entryPath:'/private-panel'});
+ assert.equal(destination,'/user/devices');assert.equal(page.refreshes(),0);
+});
+test('ordinary login preserves only a validated mapping authorization challenge',async()=>{
+ const page=authPage('login');page.context.URLSearchParams=URLSearchParams;let destination='';page.context.location.replace=url=>destination=url;
+ page.context.location.search='?access_request='+('a'.repeat(64));await page.context.enterAccount({role:'user'});assert.equal(destination,'/.remotegate/access/authorize?request='+('a'.repeat(64)));
+ page.context.location.search='?access_request=https://evil.example';await page.context.enterAccount({role:'user'});assert.equal(destination,'/user/devices');assert.equal(page.refreshes(),0);
+});
 test('fresh page shows only installation without requesting status',async()=>{
  const page=authPage('firstInstall');await page.context.initializeAuth();
  assert.equal(page.$('#firstInstall').hidden,false);assert.equal(page.$('#login').hidden,true);assert.equal(page.refreshes(),0);

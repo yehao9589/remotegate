@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net"
@@ -86,6 +87,43 @@ func TestDirectWANIsolatedNetwork(t *testing.T) {
 		}
 	}
 	checkDirect()
+	// Keep real TCP sockets open through rule destruction, without a new dial
+	// (which would repair the rules and hide the reload window).
+	var persistent []net.Conn
+	var readers []*bufio.Reader
+	for _, host := range []string{"203.0.113.10:18088", "[2001:db8:30::10]:18088"} {
+		c, err := d.DialContext(ctx, "tcp", host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		persistent = append(persistent, c)
+		readers = append(readers, bufio.NewReader(c))
+	}
+	checkPersistent := func() {
+		t.Helper()
+		for i, c := range persistent {
+			c.SetDeadline(time.Now().Add(3 * time.Second))
+			if _, err := io.WriteString(c, "GET / HTTP/1.1\r\nHost: fixture\r\n\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			r, err := http.ReadResponse(readers[i], nil)
+			if err != nil {
+				t.Fatal("persistent direct socket interrupted", err)
+			}
+			body, err := io.ReadAll(r.Body)
+			r.Body.Close()
+			if err != nil || !strings.HasPrefix(string(body), "WAN ") {
+				t.Fatal("persistent socket left WAN", string(body), err)
+			}
+		}
+	}
+	checkPersistent()
+	for _, host := range []string{"203.0.113.10", "[2001:db8:30::10]"} {
+		if body, err := get(unmarked, host); err != nil || body != "PROXY" {
+			t.Fatal("direct protection changed unrelated proxy traffic", host, body, err)
+		}
+	}
 	proxy.Close()
 	proxy6.Close() // The proxy node is now unavailable.
 	for _, host := range []string{"203.0.113.10", "[2001:db8:30::10]"} {
@@ -103,6 +141,56 @@ func TestDirectWANIsolatedNetwork(t *testing.T) {
 		}
 		if _, err := routeExec(ctx, "nft", "insert", "rule", "inet", "fw4", "nat_output", "tcp", "dport", "18088", "redirect", "to", ":7892"); err != nil {
 			t.Fatal(err)
+		}
+		// NAT rules alone cannot steal a new marked connection either.
+		for _, host := range []string{"203.0.113.10:18088", "[2001:db8:30::10]:18088"} {
+			c, err := boundDialer("wan0", directMark).DialContext(ctx, "tcp", host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.SetDeadline(time.Now().Add(2 * time.Second))
+			io.WriteString(c, "GET / HTTP/1.1\r\nHost: fixture\r\nConnection: close\r\n\r\n")
+			r, err := http.ReadResponse(bufio.NewReader(c), nil)
+			if err != nil {
+				c.Close()
+				t.Fatal("persistent NAT protection failed", err)
+			}
+			body, err := io.ReadAll(r.Body)
+			r.Body.Close()
+			c.Close()
+			if err != nil || !strings.HasPrefix(string(body), "WAN ") {
+				t.Fatal(string(body), err)
+			}
+		}
+		for _, rule := range []string{"flush chain inet fw4 mangle_output", "add rule inet fw4 mangle_output tcp dport 18088 meta mark set 0x162"} {
+			if _, err := routeExec(ctx, "nft", strings.Fields(rule)...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		checkPersistent()
+		// No prepare here: new sockets may be blocked by a transient foreign
+		// policy route, but must never enter the failed proxy. Existing sockets
+		// above continue to work. Reconciliation below restores new connections.
+		for _, host := range []string{"203.0.113.10:18088", "[2001:db8:30::10]:18088"} {
+			probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+			c, err := boundDialer("wan0", directMark).DialContext(probeCtx, "tcp", host)
+			cancel()
+			if err != nil {
+				continue
+			}
+			c.SetDeadline(time.Now().Add(3 * time.Second))
+			io.WriteString(c, "GET / HTTP/1.1\r\nHost: fixture\r\nConnection: close\r\n\r\n")
+			r, err := http.ReadResponse(bufio.NewReader(c), nil)
+			if err != nil {
+				c.Close()
+				t.Fatal("new socket intercepted before reconciliation", err)
+			}
+			body, err := io.ReadAll(r.Body)
+			r.Body.Close()
+			c.Close()
+			if err != nil || !strings.HasPrefix(string(body), "WAN ") {
+				t.Fatal("new socket left WAN", string(body), err)
+			}
 		}
 	} else {
 		for _, cmd := range []string{"iptables", "ip6tables"} {

@@ -6,6 +6,50 @@ MARK_HEX=0x52470001
 TABLE=138039
 COMMENT=remotegate-direct
 
+nft_persistent() {
+ # Keep the socket identity and NAT exemption outside fw4/OpenClash's table.
+ # Explicit identity DNAT establishes a binding before later REDIRECT hooks.
+ # Merely ACCEPTing (even in a NAT chain) does NOT skip later NAT base chains.
+ command -v nft >/dev/null 2>&1 || return 0
+ replace=
+ if nft list table inet remotegate_direct >/dev/null 2>&1; then
+  nft list chain inet remotegate_direct rg_owned_52470001 >/dev/null 2>&1 || {
+   echo 'RemoteGate direct table is owned by another configuration' >&2; return 1;
+  }
+  if [ "$1" = stop ]; then nft delete table inet remotegate_direct; return 0; fi
+  rules="$(nft list table inet remotegate_direct)"
+  intact=1
+  for marker in save route nat4 nat6; do
+   printf '%s\n' "$rules" | grep -q "comment \"remotegate-persist-$marker\"" || intact=0
+  done
+  [ "$intact" = 0 ] || return 0
+  replace='delete table inet remotegate_direct'
+ fi
+ [ "$1" != stop ] || return 0
+ nft list table inet fw4 >/dev/null 2>&1 || return 0
+ {
+ [ -z "$replace" ] || printf '%s\n' "$replace"
+ cat <<'EOF'
+table inet remotegate_direct {
+ chain rg_owned_52470001 { }
+ chain remember_socket {
+  type filter hook output priority -199; policy accept;
+  meta mark 0x52470001 ct mark set 0x52470001 comment "remotegate-persist-save"
+ }
+ chain restore_route {
+  type route hook output priority -101; policy accept;
+  ct mark 0x52470001 meta mark set 0x52470001 comment "remotegate-persist-route"
+ }
+ chain direct_nat {
+  type nat hook output priority -110; policy accept;
+  meta nfproto ipv4 ct mark 0x52470001 counter dnat ip to ip daddr comment "remotegate-persist-nat4"
+  meta nfproto ipv6 ct mark 0x52470001 counter dnat ip6 to ip6 daddr comment "remotegate-persist-nat6"
+ }
+}
+EOF
+ } | nft -f -
+}
+
 nft_rules() {
  command -v nft >/dev/null 2>&1 || return 0
  nft list table inet fw4 >/dev/null 2>&1 || return 0
@@ -54,9 +98,9 @@ iptables_rules() {
 }
 
 case "${1:-refresh}" in
- start|refresh) nft_rules refresh; iptables_rules refresh ;;
+ start|refresh) nft_persistent refresh; nft_rules refresh; iptables_rules refresh ;;
  stop)
-  nft_rules stop; iptables_rules stop
+  nft_persistent stop; nft_rules stop; iptables_rules stop
   for family in -4 -6; do
    if ip "$family" rule del priority 1 fwmark "$MARK_HEX/0xffffffff" lookup "$TABLE" 2>/dev/null; then
     ip "$family" route flush table "$TABLE" proto 242

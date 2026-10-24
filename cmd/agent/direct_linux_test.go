@@ -10,6 +10,19 @@ import (
 	"testing"
 )
 
+func TestFirewallRepairEventsIgnoreOwnChanges(t *testing.T) {
+	for _, line := range []string{"add chain inet fw4 openclash_output", "add rule inet fw4 nat_output jump openclash_output", "delete table inet fw4"} {
+		if !firewallRepairEvent(line) {
+			t.Fatal("missed external reload", line)
+		}
+	}
+	for _, line := range []string{`add rule inet fw4 nat_output meta mark 0x52470001 return comment "remotegate-direct"`, "delete rule inet fw4 nat_output handle 123", "add rule inet unrelated output counter", "add chain inet remotegate_direct restore_route"} {
+		if firewallRepairEvent(line) {
+			t.Fatal("repair loop or unrelated event", line)
+		}
+	}
+}
+
 func TestWANDiscoveryPrefersNetifdWANOverTunnelAndLAN(t *testing.T) {
 	raw := `{"interface":[{"interface":"lan","up":true,"l3_device":"br-lan","route":[{"target":"0.0.0.0","mask":0,"nexthop":"10.0.0.1","metric":0}]},{"interface":"wan","up":true,"proto":"pppoe","l3_device":"pppoe-wan","route":[{"target":"0.0.0.0","mask":0,"nexthop":"100.64.0.1","metric":50}]},{"interface":"wan6","up":true,"l3_device":"eth1","route":[{"target":"::","mask":0,"nexthop":"fe80::1"}]}]}`
 	run := func(_ context.Context, name string, args ...string) (string, error) {

@@ -50,6 +50,7 @@ type Mapping struct {
 var mappingHostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type State struct {
+	Alerts           []Alert                      `json:"alerts,omitempty"`
 	ConnectionEvents map[string][]ConnectionEvent `json:"connectionEvents,omitempty"`
 	Domain           DomainSettings               `json:"domain"`
 	Domains          []DomainSettings             `json:"domains,omitempty"`

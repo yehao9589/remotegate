@@ -1,5 +1,5 @@
 // Public observations are always scoped to the concrete host and port checked.
-const domainPanels=new Map(),domainChecks=new Map(),domainCheckInputs=new Map();
+const domainPanels=new Map(),domainChecks=new Map(),domainCheckInputs=new Map(),domainHistoryPages=new Map();
 let domainSearch='',domainFilter='',domainGeneration=0,domainListPage=0;
 const domainIcons={dns:'dns',certificate:'shield',history:'history'};
 function domainMappings(d){return state.mappings.filter(m=>m.host===d.baseDomain||m.host.endsWith('.'+d.baseDomain))}
@@ -13,19 +13,19 @@ function publicEndpointHealth(d,host,port,now=Date.now()){
  const r=publicEndpointObservation(d,host,port),endpoint=host+':'+port;
  if(!r)return {key:'attention',text:'待检测',tone:'quiet',detail:endpoint};
  const checked=Date.parse(r.checkedAt),expires=Date.parse(r.expiresAt),days=Math.floor((expires-now)/86400000);
- if(!Number.isFinite(checked)||checked>now+60000||now-checked>24*3600000)return {key:'attention',text:'待复检',tone:'quiet',detail:'上次检测 '+certDate(r.checkedAt),result:r};
- if(r.valid&&Number.isFinite(expires)&&expires>now)return {key:days<=30?'attention':'valid',text:days<=30?'证书即将到期':'HTTPS 已验证',tone:days<=30?'warn':'green',detail:'剩余 '+days+' 天 · '+(r.issuer||'可信证书'),result:r};
+ const stale=!Number.isFinite(checked)||checked>now+60000||now-checked>24*3600000;
+ if(r.valid&&Number.isFinite(expires)&&expires>now)return {key:days<=30?'attention':'valid',text:days<=30?'证书即将到期':stale?'上次 HTTPS 正常':'HTTPS 已验证',tone:days<=30?'warn':stale?'quiet':'green',detail:'剩余 '+days+' 天 · '+(stale?'等待自动复检 · 上次 '+certDate(r.checkedAt):(r.issuer||'可信证书')),result:r};
  return {key:'attention',text:r.valid?'证书已过期':'HTTPS 异常',tone:'warn',detail:r.error||endpoint,result:r};
 }
 function rootPublicHealth(d,now=Date.now()){
  const h=publicEndpointHealth(d,d.baseDomain,Number(d.rootHTTPSPort)||443,now);
- return {...h,text:({ '待检测':'公网待检测','待复检':'公网待复检','HTTPS 已验证':'公网 HTTPS 已验证','证书已过期':'公网证书已过期','HTTPS 异常':'公网 HTTPS 异常' })[h.text]||h.text};
+ return {...h,text:({ '待检测':'公网待检测','HTTPS 已验证':'公网 HTTPS 已验证','上次 HTTPS 正常':'上次公网 HTTPS 正常','证书已过期':'公网证书已过期','HTTPS 异常':'公网 HTTPS 异常' })[h.text]||h.text};
 }
 function applyPublicHTTPSCheck(d,r){
  for(const row of r.dns||[]){
   if(!row.certificate&&!row.error)continue;
   const check={...(row.certificate||{}),host:row.host,port:row.port,addresses:row.addresses||[],checkedAt:r.checkedAt,...(row.error?{valid:false,error:row.error}:{})};
-  d.httpsChecks=[...(d.httpsChecks||[]).filter(x=>x.host!==check.host||Number(x.port)!==Number(check.port)),check].slice(-40);
+  d.httpsChecks=[...(d.httpsChecks||[]).filter(x=>x.host!==check.host||Number(x.port)!==Number(check.port)),check].slice(-2000);
   if(check.host===d.baseDomain&&Number(check.port)===(Number(d.rootHTTPSPort)||443))d.publicHTTPS=check;
  }
 }
@@ -75,15 +75,17 @@ function domainCheckResult(r){
 }
 function domainCertificatePanel(d){
  const mappings=domainMappings(d);
- return publicHTTPSPanel(d)+`<div class="dc-panel-heading"><div><h4>映射域名 · HTTPS 检测</h4><p>直接读取每个映射入口的证书，核对信任链、域名与有效期。</p></div></div><div class="tablewrap"><table class="https-deploy-table"><thead><tr><th>访问地址</th><th>实际证书状态</th><th>操作</th></tr></thead><tbody>${mappings.map(m=>{const access=mappingPublicAccess(m),https=access.scheme==='https',h=https?publicEndpointHealth(d,m.host,access.port):{text:'使用 HTTP',tone:'quiet',detail:'此映射未使用 HTTPS'},device=(state.devices||[]).find(x=>x.id===m.deviceId);return `<tr><td><b>${esc(publicMappingURL(m))}</b><small>${!m.enabled?'映射已停用':device?.online?'设备在线':'设备离线'}</small></td><td><span class="dc-badge ${h.tone}">${h.text}</span><small>${esc(h.detail)}</small></td><td><button data-dc-mapping-check="${esc(m.id)}" ${https?'':'disabled'}>检测 HTTPS</button></td></tr>`}).join('')||'<tr><td colspan="3">暂无映射。添加后可逐条检测。</td></tr>'}</tbody></table></div>${domainChecks.has(d.id)?domainCheckResult(domainChecks.get(d.id)):''}<p class="dc-help">HTTPS 验证通过只代表公网证书正常，设备在线与内网目标可用需在设备工作台另外确认。</p><details class="dc-guide"><summary>宝塔泛域名证书怎么申请？</summary><div>${baotaCertificateGuide(d)}</div></details>`;
+ return publicHTTPSPanel(d)+`<div class="dc-panel-heading"><div><h4>映射域名 · HTTPS 检测</h4><p>后台每天自动核对信任链、域名与有效期；需要时可手动立即检测。</p></div></div><div class="tablewrap"><table class="https-deploy-table"><thead><tr><th>访问地址</th><th>实际证书状态</th><th>操作</th></tr></thead><tbody>${mappings.map(m=>{const access=mappingPublicAccess(m),https=access.scheme==='https',h=https?publicEndpointHealth(d,m.host,access.port):{text:'使用 HTTP',tone:'quiet',detail:'此映射未使用 HTTPS'},device=(state.devices||[]).find(x=>x.id===m.deviceId);return `<tr><td><b>${esc(publicMappingURL(m))}</b><small>${!m.enabled?'映射已停用':device?.online?'设备在线':'设备离线'}</small></td><td><span class="dc-badge ${h.tone}">${h.text}</span><small>${esc(h.detail)}</small></td><td><button data-dc-mapping-check="${esc(m.id)}" ${https?'':'disabled'}>检测 HTTPS</button></td></tr>`}).join('')||'<tr><td colspan="3">暂无映射。添加后会自动检测，也可手动检查。</td></tr>'}</tbody></table></div>${domainChecks.has(d.id)?domainCheckResult(domainChecks.get(d.id)):''}<p class="dc-help">HTTPS 验证通过只代表公网证书正常，设备在线与内网目标可用需在设备工作台另外确认。</p><details class="dc-guide"><summary>宝塔泛域名证书怎么申请？</summary><div>${baotaCertificateGuide(d)}</div></details>`;
 }
 function domainHistoryPanel(d){
  const checks=[...(d.httpsChecks||[])].sort((a,b)=>Date.parse(b.checkedAt)-Date.parse(a.checkedAt));
  if(d.publicHTTPS&&!checks.some(x=>x.host===d.publicHTTPS.host&&x.port===d.publicHTTPS.port))checks.push(d.publicHTTPS);
- return `<div class="dc-panel-heading"><div><h4>HTTPS 检测记录</h4><p>保留最近 40 个地址的最新结果；超过 24 小时提示复检。</p></div></div>${checks.map(r=>{const h=publicEndpointHealth(d,r.host,r.port);return `<div class="dc-check-result"><b>${esc(r.host)}:${r.port}</b> <span class="dc-badge ${h.tone}">${h.text}</span>${publicCertificateDetails(r)}</div>`}).join('')||'<p class="dc-help">暂无检测记录。点击主域名或映射旁的检测按钮。</p>'}`;
+ const page=Math.min(domainHistoryPages.get(d.id)||0,Math.max(0,Math.ceil(checks.length/10)-1));domainHistoryPages.set(d.id,page);
+ return `<div class="dc-panel-heading"><div><h4>HTTPS 检测记录</h4><p>后台每天自动复检主域名与已启用的 HTTPS 映射；失败后每小时重试。保留上次结果及时间，不会每天清空。</p></div></div>${checks.slice(page*10,page*10+10).map(r=>{const h=publicEndpointHealth(d,r.host,r.port);return `<div class="dc-check-result"><b>${esc(r.host)}:${r.port}</b> <span class="dc-badge ${h.tone}">${h.text}</span>${publicCertificateDetails(r)}</div>`}).join('')||'<p class="dc-help">暂无检测记录。点击主域名或映射旁的检测按钮。</p>'}${checks.length>10?`<div class="dc-pagination"><span>共 ${checks.length} 个地址 · 第 ${page+1} / ${Math.ceil(checks.length/10)} 页</span><button data-dc-history-page="-1" ${page===0?'disabled':''}>上一页</button><button data-dc-history-page="1" ${page>=Math.ceil(checks.length/10)-1?'disabled':''}>下一页</button></div>`:''}`;
 }
 function bindDomainPanel(d){
  const node=document.getElementById('domainPanel-'+d.id);if(!node)return;
+ node.querySelectorAll('[data-dc-history-page]').forEach(b=>b.onclick=()=>{domainHistoryPages.set(d.id,(domainHistoryPages.get(d.id)||0)+Number(b.dataset.dcHistoryPage));drawDomainList()});
  node.querySelectorAll('[data-dc-copy]').forEach(b=>b.onclick=()=>copyText(b.dataset.dcCopy,{button:b,source:b.closest('tr').querySelector('td:nth-child(3) code'),success:'记录值已复制'}));
  node.querySelectorAll('[data-check-host],[data-check-port]').forEach(input=>input.oninput=()=>domainCheckInputs.set(d.id,{host:node.querySelector('[data-check-host]').value,port:node.querySelector('[data-check-port]').value}));
  node.querySelector('[data-dc-check]')?.addEventListener('click',e=>runDomainCheck(d,node.querySelector('[data-check-host]').value.trim(),node.querySelector('[data-check-port]').value,e.currentTarget));

@@ -58,6 +58,7 @@ cat > "$temporary/server.py" <<'EOF'
 import socket, socketserver
 from http.server import HTTPServer, BaseHTTPRequestHandler
 class Handler(BaseHTTPRequestHandler):
+    protocol_version='HTTP/1.1'
     def do_GET(self):
         peer=self.client_address[0].removeprefix('::ffff:')
         body=('WAN '+peer).encode()
@@ -66,7 +67,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
     def log_message(self,*args): pass
-class Server(HTTPServer):
+class Server(socketserver.ThreadingMixIn,HTTPServer):
+    daemon_threads=True
     address_family=socket.AF_INET6
     def server_bind(self):
         self.socket.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)

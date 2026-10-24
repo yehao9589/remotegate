@@ -9,6 +9,13 @@ function showAuthPanel(panel,message=''){
  if(panel==='login'){$('#password').value='';$('#loginerror').textContent=message;$('#username').focus()}
  if(panel==='firstInstall')$('#setupUsername').focus();
 }
+function enterAccount(result){
+ if(result?.role==='user'){
+  const request=new URLSearchParams(location.search).get('access_request');
+  location.replace(/^[a-f0-9]{64}$/.test(request||'')?'/.remotegate/access/authorize?request='+encodeURIComponent(request):'/user/devices');return;
+ }
+ return enterAdmin(result?.entryPath);
+}
 async function enterAdmin(entryPath){
  const transition=++authTransition;
  $('.auth-wordmark').href=entryPath||location.pathname;
@@ -48,10 +55,10 @@ async function initializeAuth(){
  }catch(e){/* A failed or timed-out check must still leave a usable login form. */}
  finally{clearTimeout(timeout)}
  if(transition!==authTransition)return;
- if(status?.authenticated)await enterAdmin(status.entryPath);
+ if(status?.authenticated)await enterAccount(status);
  else showAuthPanel('login');
 }
-async function loginWithAccount(){authTransition++;const button=$('#loginSubmit');button.disabled=true;$('#loginerror').textContent='';try{const result=await authRequest('login',{username:$('#username').value.trim(),password:$('#password').value});await enterAdmin(result.entryPath)}catch(e){$('#loginerror').textContent=e.message}finally{button.disabled=false}}
+async function loginWithAccount(){authTransition++;const button=$('#loginSubmit');button.disabled=true;$('#loginerror').textContent='';try{const result=await authRequest('login',{username:$('#username').value.trim(),password:$('#password').value});await enterAccount(result)}catch(e){$('#loginerror').textContent=e.message}finally{button.disabled=false}}
 async function logoutAccount(){authTransition++;try{await authRequest('logout',{});showAuthPanel('login')}catch(e){toast('退出失败：'+e.message)}}
 $('#setupShowPassword').onchange=e=>{const type=e.target.checked?'text':'password';$('#setupPassword').type=type;$('#setupConfirm').type=type};
 $('#setupForm').onsubmit=async e=>{e.preventDefault();const password=$('#setupPassword').value,confirmPassword=$('#setupConfirm').value,button=$('#setupSubmit');$('#setupError').textContent='';if(password!==confirmPassword){$('#setupError').textContent='两次输入的密码不一致';$('#setupConfirm').focus();return}button.disabled=true;button.textContent='正在创建管理员…';try{const username=$('#setupUsername').value.trim();const result=await authRequest('setup',{username,password,confirmPassword,entryPath:$('#setupEntry').value.trim()});$('#setupForm').reset();$('#setupPassword').type='password';$('#setupConfirm').type='password';$('#username').value=username;await enterAdmin(result.entryPath);toast('安装完成，请收藏当前后台地址')}catch(err){if(err.status===409){showAuthPanel('login');$('#loginerror').textContent='管理员已创建，请使用已有账号登录'}else $('#setupError').textContent=err.message}finally{button.disabled=false;button.textContent='创建管理员并进入后台 →'}};

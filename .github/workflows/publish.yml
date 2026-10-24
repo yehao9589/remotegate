@@ -38,7 +38,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_release_metadata.py'
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
           cache: true
       - name: Run tests and vet
         run: |
@@ -47,19 +47,7 @@ jobs:
           go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
           for file in cmd/server/web/*.js deploy/openwrt/luci/page.js; do node --check "$file"; done
           node scripts/check-console.cjs
-          node --test scripts/test-mapping-editor.cjs
-          node --test scripts/test-auth.cjs
-          node --test scripts/test-mapping-access.cjs
-          node --test scripts/test-refresh.cjs
-          node --test scripts/test-clipboard.cjs
-          node --test scripts/test-domain-https.cjs
-          node --test scripts/test-https-deploy.cjs
-          node --test scripts/test-plugin-update.cjs
-          node --test scripts/test-device-center.cjs
-          node --test scripts/test-remote-access.cjs
-          node --test scripts/test-package-center.cjs
-          node --test scripts/test-router-connection.cjs
-          node --test scripts/test-server-version.cjs
+          node --test scripts/test-*.cjs
       - name: Verify WAN routing survives proxy failures
         run: |
           go test -c -o /tmp/remotegate-agent.test ./cmd/agent
