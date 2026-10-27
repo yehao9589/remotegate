@@ -1,5 +1,5 @@
 {
-  "version": "0.1.18",
-  "title": "插件手动更新与 QWRT 兼容",
-  "packageRevision": 3
+  "version": "0.1.19",
+  "title": "路由器固件兼容与插件手动更新",
+  "packageRevision": 1
 }
