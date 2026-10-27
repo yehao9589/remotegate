@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/local/remotegate/internal/routercompat"
 	"net/http"
 	"strings"
 	"time"
@@ -70,8 +71,9 @@ func (a *app) installReportHTTP(w http.ResponseWriter, r *http.Request) {
 }
 func installScriptText(t installTicket, sum string, size int) string {
 	var choices strings.Builder
-	fmt.Fprintf(&choices, "pkg_url=%s\npkg_sha=%s\npkg_size=%d\ncase \"$(uname -m)\" in\n", shellQuote(t.Server+"/downloads/remotegate.run"), shellQuote(sum), size)
-	for _, choice := range []struct{ uname, arch string }{{"x86_64", "amd64"}, {"aarch64", "arm64"}, {"armv7l", "armv7"}} {
+	choices.WriteString(routercompat.ArchitectureShell + "\narch=$(remotegate_arch) || exit 1\n")
+	fmt.Fprintf(&choices, "pkg_url=%s\npkg_sha=%s\npkg_size=%d\ncase \"$arch\" in\n", shellQuote(t.Server+"/downloads/remotegate.run"), shellQuote(sum), size)
+	for _, choice := range []struct{ uname, arch string }{{"amd64", "amd64"}, {"arm64", "arm64"}, {"armv7", "armv7"}} {
 		fmt.Fprintf(&choices, " %s)\n", choice.uname)
 		if item, exists := t.Packages[choice.arch]; exists {
 			fmt.Fprintf(&choices, "  pkg_url=%s; pkg_sha=%s; pkg_size=%d\n", shellQuote(t.Server+"/downloads/remotegate.run?artifact="+item.Manifest.SHA256), shellQuote(item.Manifest.SHA256), item.Manifest.Size)
@@ -115,7 +117,7 @@ report preflight
 [ "$(id -u)" = 0 ] || { echo 'Please run as root'; exit 1; }
 report preflight root
 fail_reason=opkg
-command -v opkg >/dev/null || { echo 'Requires iStoreOS/OpenWrt with opkg'; exit 1; }
+command -v opkg >/dev/null || { echo 'Requires an opkg-based OpenWrt-family firmware with LuCI; APK packages are not provided by this build'; exit 1; }
 report preflight opkg
 fail_reason=curl
 command -v curl >/dev/null && command -v sha256sum >/dev/null || { echo 'curl and sha256sum are required'; exit 1; }

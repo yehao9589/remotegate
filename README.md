@@ -55,7 +55,7 @@ RemoteGate 由服务器后台和路由器插件组成。路由器主动连接服
 
 - 一台有公网访问入口的 Linux 服务器，已安装 Docker 和 Docker Compose。
 - 一个域名，用于后台及设备访问地址。
-- 一台支持插件的 iStoreOS / OpenWrt 路由器：支持 x86_64、ARM64、ARMv7，使用 opkg 包管理。
+- 一台使用 opkg 与 LuCI 的 OpenWrt 系列路由器（如 OpenWrt、ImmortalWrt、iStoreOS、QWRT），支持 x86_64、ARM64、ARMv7。具体依赖与验证范围见[路由器兼容说明](docs/deployment/router.md#固件兼容范围)。
 
 服务端只需一个容器，不需要数据库。官方镜像已内置路由器安装包。
 

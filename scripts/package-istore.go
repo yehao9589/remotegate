@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/local/remotegate/internal/buildinfo"
+	"github.com/local/remotegate/internal/routercompat"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,7 +116,7 @@ reload_service() { /usr/libexec/remotegate-route-guard refresh; stop; start; }
 			panic(err)
 		}
 		data := archive(append(append([]entry{}, files...), entry{"usr/sbin/remotegate-agent", b, 0755}))
-		control := archive([]entry{text("control", fmt.Sprintf("Package: luci-app-remotegate\nVersion: %s\nArchitecture: all\nMaintainer: RemoteGate\nSection: net\nPriority: optional\nDepends: luci-base, luci-compat, ip-full\nDescription: RemoteGate agent and LuCI configuration (%s)\n", buildinfo.PackageVersion(), arch), 0644), text("conffiles", "/etc/config/remotegate\n", 0644), source("postinst", "deploy/openwrt/remotegate.postinst", 0755), text("prerm", `#!/bin/sh
+		control := archive([]entry{text("control", fmt.Sprintf("Package: luci-app-remotegate\nVersion: %s\nArchitecture: all\nMaintainer: RemoteGate\nSection: net\nPriority: optional\nDepends: luci-base, luci-compat, ip-full, ca-bundle\nDescription: RemoteGate agent and LuCI configuration (%s)\n", buildinfo.PackageVersion(), arch), 0644), text("conffiles", "/etc/config/remotegate\n", 0644), source("postinst", "deploy/openwrt/remotegate.postinst", 0755), text("prerm", `#!/bin/sh
 [ -n "$IPKG_INSTROOT" ] && exit 0
 /etc/init.d/remotegate stop
 /etc/init.d/remotegate disable
@@ -135,15 +136,11 @@ exit 0
 	header := `#!/bin/sh
 set -eu
 [ "$(id -u)" = 0 ] || { echo 'Root required'; exit 1; }
-command -v opkg >/dev/null || { echo 'This build requires opkg (iStoreOS 21.02/22.03/24.10).'; exit 1; }
+command -v opkg >/dev/null || { echo 'Requires an opkg-based OpenWrt-family firmware with LuCI. APK firmware requires an APK package; do not install this IPK/RUN.'; exit 1; }
 mode=${1:-install}
 case "$mode" in install|--update) ;; *) echo 'Unsupported installer option'; exit 1;; esac
-case "$(uname -m)" in
- x86_64) arch=amd64;;
- aarch64) arch=arm64;;
- armv7l) arch=armv7;;
- *) echo 'Unsupported CPU architecture'; exit 1;;
-esac
+__ARCH_DETECTION__
+arch=$(remotegate_arch) || exit 1
 dir=$(mktemp -d /tmp/remotegate-install.XXXXXX)
 trap 'rm -f "$dir"/*.ipk; rmdir "$dir"' EXIT
 line=$(awk '/^__PAYLOAD__$/ {print NR+1; exit}' "$0")
@@ -160,6 +157,7 @@ echo 'Refresh LuCI, then open Services -> RemoteGate.'
 exit 0
 __PAYLOAD__
 `
+	header = strings.ReplaceAll(header, "__ARCH_DETECTION__", routercompat.ArchitectureShell)
 	header = strings.ReplaceAll(header, "__VERSION__", buildinfo.PackageVersion())
 	out := append([]byte(header), archive(payload)...)
 	output := filepath.Join("dist", buildinfo.PackageFilename())
