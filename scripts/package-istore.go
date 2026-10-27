@@ -83,8 +83,8 @@ func main() {
 local u = require("uci").cursor()
 local json = require "luci.jsonc"
 local c = u:get_all("remotegate", "main") or {}
-if c.enabled ~= "1" and arg[1] ~= "--for-update" then os.exit(1) end
-if not c.server or c.server == "" or not c.device_id or c.device_id == "" or not c.token or c.token == "" then os.exit(1) end
+if c.enabled ~= "1" and arg[1] ~= "--for-update" and arg[1] ~= "--for-local-update" then os.exit(1) end
+if arg[1] ~= "--for-local-update" and (not c.server or c.server == "" or not c.device_id or c.device_id == "" or not c.token or c.token == "") then os.exit(1) end
 io.write(json.stringify({serverUrl=c.server,deviceId=c.device_id,token=c.token,interface=c.interface or "",directWAN=true,allowPublicTargets=false,remoteAccess=c.remote_access~="0"}))
 `, 0755),
 		entry{"usr/libexec/remotegate-route-guard", routeGuard, 0755},
@@ -166,7 +166,7 @@ __PAYLOAD__
 	if err := os.WriteFile(output, out, 0755); err != nil {
 		panic(err)
 	}
-	manifest := map[string]any{"size": len(out), "sha256": fmt.Sprintf("%x", sha256.Sum256(out)), "packageVersion": buildinfo.PackageVersion(), "agentVersion": buildinfo.Version(), "release": buildinfo.Current(), "packageName": "luci-app-remotegate", "architectures": []string{"x86_64", "ARM64", "ARMv7"}, "contents": []string{"RemoteGate 客户端", "新版 LuCI 路由器面板", "路由器与后台在线更新", "按架构精简下载与安装检查", "兼容版本回退工具", "在线更新失败自动回滚", "状态刷新与接入引导", "SSH / SFTP 管理通道（默认开启）", "版本上报", "开机启动服务", "连接配置生成器", "直连路由保护脚本"}}
+	manifest := map[string]any{"size": len(out), "sha256": fmt.Sprintf("%x", sha256.Sum256(out)), "packageVersion": buildinfo.PackageVersion(), "agentVersion": buildinfo.Version(), "release": buildinfo.Current(), "packageName": "luci-app-remotegate", "architectures": []string{"x86_64", "ARM64", "ARMv7"}, "contents": []string{"RemoteGate 客户端", "新版 LuCI 路由器面板", "路由器与后台在线更新", "按架构精简下载与安装检查", "兼容版本回退工具", "在线更新失败自动回滚", "插件内上传 IPK / RUN 手动更新", "状态刷新与接入引导", "SSH / SFTP 管理通道（默认开启）", "版本上报", "开机启动服务", "连接配置生成器", "直连路由保护脚本"}}
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		panic(err)

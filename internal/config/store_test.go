@@ -178,3 +178,51 @@ func TestPendingEnrollment(t *testing.T) {
 		t.Fatal("duplicate activation")
 	}
 }
+
+func TestSnapshotRetainsAdditionOrderAfterEditsAndReopen(t *testing.T) {
+	name := t.TempDir() + "/state.json"
+	s, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := s.CreateDevice("Z first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := s.CreateDevice("A second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.PutMapping(Mapping{Host: "z.example.com", DeviceID: first.ID, Target: "http://127.0.0.1:80", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.PutMapping(Mapping{Host: "a.example.com", DeviceID: first.ID, Target: "http://127.0.0.1:81", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed := "ZZ renamed"
+	if err = s.UpdateDevice(first.ID, &renamed, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	a.Host = "zz.example.com"
+	if _, err = s.PutMapping(a); err != nil {
+		t.Fatal(err)
+	}
+	check := func(store *Store) {
+		t.Helper()
+		snapshot := store.Snapshot()
+		if snapshot.Devices[0].ID != first.ID || snapshot.Devices[1].ID != second.ID {
+			t.Fatal("device addition order changed")
+		}
+		if snapshot.Mappings[0].ID != a.ID || snapshot.Mappings[1].ID != b.ID {
+			t.Fatal("mapping addition order changed")
+		}
+	}
+	check(s)
+	reopened, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(reopened)
+}

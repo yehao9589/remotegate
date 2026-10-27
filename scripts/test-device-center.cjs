@@ -212,3 +212,22 @@ test('a recent real disconnection shows recovery without claiming the device is 
  assert.match(f.node('#deviceCards').innerHTML,/pill recovering/);assert.match(f.node('#deviceCards').innerHTML,/恢复中/);assert.equal(d.online,false);
  d.lastDisconnectedAt=new Date(Date.now()-31000).toISOString();f.context.deviceCards();assert.doesNotMatch(f.node('#deviceCards').innerHTML,/pill recovering/);
 });
+
+test('addition order survives device renaming, online changes, pinning and pagination',()=>{
+ const f=fixture();manyDevices(f);
+ // Names deliberately oppose addition order, so alphabetical sorting fails.
+ f.context.state.devices.forEach((d,i)=>{d.name='路由器 '+String(25-i).padStart(2,'0')});
+ f.context.deviceCards();let html=f.node('#deviceCards').innerHTML;
+ assert.ok(html.indexOf('<strong>路由器 25')<html.indexOf('<strong>路由器 24'));
+ assert.doesNotMatch(html,/<strong>路由器 01/);
+ f.context.state.devices[0].name='AAA 更名';f.context.state.devices[1].online=false;
+ f.context.deviceCards();html=f.node('#deviceCards').innerHTML;
+ assert.ok(html.indexOf('<strong>AAA 更名')<html.indexOf('<strong>路由器 24'));
+ f.context.changeDevicePage('devices','',1);html=f.node('#deviceCards').innerHTML;
+ assert.match(html,/<strong>路由器 15/);assert.doesNotMatch(html,/<strong>AAA 更名/);
+ f.context.state.devices[24].pinned=true;f.context.changeDevicePage('devices','',0);
+ html=f.node('#deviceCards').innerHTML;
+ assert.ok(html.indexOf('<strong>路由器 01')<html.indexOf('<strong>AAA 更名'));
+ f.context.state.devices[24].pinned=false;f.context.deviceCards();html=f.node('#deviceCards').innerHTML;
+ assert.match(html,/<strong>AAA 更名/);assert.doesNotMatch(html,/<strong>路由器 01/);
+});

@@ -1,5 +1,5 @@
 {
-  "version": "0.1.17",
-  "title": "用户授权、邮件通知与连接恢复",
-  "packageRevision": 1
+  "version": "0.1.18",
+  "title": "插件手动更新与 QWRT 兼容",
+  "packageRevision": 3
 }

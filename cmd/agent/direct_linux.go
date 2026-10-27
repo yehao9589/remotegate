@@ -35,6 +35,7 @@ type wanRoute struct {
 type directWANDialer struct {
 	mu     sync.Mutex
 	manual string
+	names  func() (ipRouteNames, error)
 	run    routeCommand
 	guard  string
 	lock   func(context.Context) (func(), error)
@@ -251,7 +252,8 @@ func virtualUplinkProtocol(proto string) bool {
 
 func (d *directWANDialer) configureFamily(ctx context.Context, family string, route wanRoute) error {
 	run := func(args ...string) (string, error) { return d.run(ctx, "ip", append([]string{family}, args...)...) }
-	rules, err := run("-N", "rule", "show")
+	inspect := d.ipInspector(ctx, family)
+	rules, err := inspect("rule", "show")
 	if err != nil {
 		return err
 	}
@@ -271,18 +273,24 @@ func (d *directWANDialer) configureFamily(ctx context.Context, family string, ro
 		}
 		return errors.New("直连路由优先级 1 已被其他规则使用；未修改原规则")
 	}
-	existing, err := run("-N", "route", "show", "table", directTable)
+	existing, err := inspect("route", "show", "table", directTable)
 	if err != nil {
 		// Older OpenWrt kernels/iproute2 report only "Dump terminated" for
 		// an absent table. Verify against a full successful dump instead of
 		// relying on the error wording or treating arbitrary failures as empty.
-		all, allErr := run("-N", "route", "show", "table", "all")
+		all, allErr := inspect("route", "show", "table", "all")
 		if allErr != nil {
 			return err
 		}
 		existing = ""
 		for _, line := range strings.Split(all, "\n") {
-			if routeField(strings.Fields(line), "table") == directTable {
+			table := routeField(strings.Fields(line), "table")
+			if table != "" {
+				if _, parseErr := strconv.ParseUint(table, 10, 32); parseErr != nil {
+					return errors.New("无法确认路由表名称对应的编号；未修改原路由")
+				}
+			}
+			if table == directTable {
 				existing += line + "\n"
 			}
 		}
@@ -320,7 +328,7 @@ func (d *directWANDialer) configureFamily(ctx context.Context, family string, ro
 	if !installed {
 		if _, err = run("rule", "add", "priority", directPriority, "fwmark", mark+"/0xffffffff", "lookup", directTable); err != nil {
 			// Concurrent updater/agent setup may have installed the exact rule.
-			now, _ := run("-N", "rule", "show")
+			now, _ := inspect("rule", "show")
 			if !strings.Contains(now, mark) || !strings.Contains(now, "lookup "+directTable) {
 				return err
 			}

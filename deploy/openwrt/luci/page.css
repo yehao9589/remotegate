@@ -7,3 +7,92 @@
 .rg-shell .cbi-value-field select{width:100%!important;max-width:100%!important;min-height:38px;padding:8px 12px!important;border:1px solid #dfe7f2!important;border-radius:7px!important;background:#fbfcff!important;color:#425b7b!important;font-size:13px!important;box-shadow:none!important}.rg-shell .cbi-value-field select:focus{outline:0;border-color:#88abe9!important;box-shadow:0 0 0 3px #3569df0b!important}
 #rg-state.is-retrying{color:#b5812f}#rg-state.is-retrying i{background:#c89846}#rg-connection-error{margin:0 20px 16px;padding:11px 14px;border:1px solid #f0dfbd;border-radius:8px;background:#fff9ef;color:#a57331;font-size:12px;line-height:1.8;overflow-wrap:anywhere}
 @media(max-width:750px){.rg-status-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:12px}.rg-status-top>div{flex-direction:column;align-items:flex-start;gap:8px;min-width:0}.rg-status-label,.rg-status-top>.rg-button{white-space:nowrap}.rg-status strong{line-height:1.6}#rg-connection-error{margin:0 17px 16px}}
+
+/* LuCI theme compatibility: keep control text within its own box. */
+.rg-shell .cbi-value-field select,
+.rg-shell input[type=text],
+.rg-shell input[type=password],
+.rg-shell input[type=url]{
+ box-sizing:border-box!important;
+ height:40px!important;
+ min-height:40px!important;
+ max-height:none!important;
+ margin:0!important;
+ padding:8px 12px!important;
+ font-family:inherit!important;
+ font-size:13px!important;
+ font-weight:400!important;
+ line-height:22px!important;
+ text-indent:0!important;
+ vertical-align:middle!important;
+}
+.rg-shell .control-group button{
+ box-sizing:border-box!important;
+ display:inline-flex!important;
+ align-items:center!important;
+ justify-content:center!important;
+ height:40px!important;
+ min-height:40px!important;
+ max-height:none!important;
+ padding:8px!important;
+ line-height:22px!important;
+}
+.rg-shell .rg-button,
+.rg-shell .rg-tabs button{
+ box-sizing:border-box!important;
+ height:auto!important;
+ min-height:36px!important;
+ max-height:none!important;
+ line-height:18px!important;
+ vertical-align:middle!important;
+}
+.rg-page .cbi-page-actions{
+ align-items:center!important;
+ flex-wrap:wrap!important;
+ height:auto!important;
+ min-height:0!important;
+ max-height:none!important;
+ overflow:visible!important;
+}
+.rg-page .cbi-page-actions input[type=submit],
+.rg-page .cbi-page-actions input[type=button],
+.rg-page .cbi-page-actions input[type=reset],
+.rg-page .cbi-page-actions button{
+ box-sizing:border-box!important;
+ height:40px!important;
+ min-height:40px!important;
+ max-height:none!important;
+ margin:0!important;
+ padding:8px 18px!important;
+ font-family:inherit!important;
+ font-size:13px!important;
+ font-weight:400!important;
+ line-height:22px!important;
+ text-align:center!important;
+ text-indent:0!important;
+ vertical-align:middle!important;
+ white-space:nowrap!important;
+}
+.rg-shell .cbi-value-description,
+.rg-shell .rg-advanced>p,
+.rg-shell .rg-advanced details p,
+.rg-shell .rg-config-heading p,
+.rg-shell .rg-footer-note,
+.rg-shell .rg-update p{
+ color:#64748b!important;
+ opacity:1!important;
+}
+.rg-shell .cbi-value-description{
+ font-size:12px!important;
+ line-height:1.7!important;
+}
+
+.rg-manual-update{margin-top:16px;border-top:1px solid #e6ebf3;padding-top:14px}
+.rg-manual-update summary{cursor:pointer;color:#425b7b;font-size:13px;font-weight:600}
+.rg-manual-update p{margin:10px 0;color:#64748b;line-height:1.7}
+.rg-manual-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}
+.rg-manual-actions input[type=file]{box-sizing:border-box!important;height:auto!important;min-height:36px!important;max-width:100%!important;min-width:0!important;padding:6px!important;line-height:22px!important;font-size:12px!important}
+.rg-local-preview{padding:14px 16px;background:#f7f9fd;border:1px solid #e1e8f3;border-radius:8px}
+.rg-local-preview dl{display:grid;grid-template-columns:100px minmax(0,1fr);gap:9px 14px;margin:0;font-size:12px;line-height:1.7}
+.rg-local-preview dt{color:#64748b}.rg-local-preview dd{margin:0;color:#304761;overflow-wrap:anywhere}.rg-local-preview code{word-break:break-all;font-size:11px}
+#rg-local-message{font-size:12px;color:#377d67}#rg-local-message.is-error{color:#ae6b30}
