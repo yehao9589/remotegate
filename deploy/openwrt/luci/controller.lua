@@ -5,6 +5,10 @@ function index()
  entry({"admin", "services", "remotegate", "update_check"}, call("update_check")).leaf = true
  entry({"admin", "services", "remotegate", "update_status"}, call("update_status")).leaf = true
  entry({"admin", "services", "remotegate", "update_start"}, post("update_start")).leaf = true
+ -- Multipart bodies must not be consumed by dispatcher.post() before the file handler.
+ -- Both endpoints explicitly require a root session and the session CSRF header.
+ entry({"admin", "services", "remotegate", "update_upload"}, call("update_upload")).leaf = true
+ entry({"admin", "services", "remotegate", "update_local_start"}, call("update_local_start")).leaf = true
 end
 function status()
  local u = require("uci").cursor()
@@ -61,9 +65,9 @@ local function update_command(command, fallback)
  update_reply(value)
 end
 
-local function update_configuration()
+local function update_configuration(local_update)
  -- The fixed command reads saved UCI settings; credentials are never sent to the browser.
- return luci.sys.call("umask 077; mkdir -p /var/run/remotegate-update && /usr/libexec/remotegate-config --for-update > /var/run/remotegate-update/agent.json.tmp && mv /var/run/remotegate-update/agent.json.tmp /var/run/remotegate-update/agent.json") == 0
+ return luci.sys.call("umask 077; mkdir -p /var/run/remotegate-update && /usr/libexec/remotegate-config " .. (local_update and "--for-local-update" or "--for-update") .. " > /var/run/remotegate-update/agent.json.tmp && mv /var/run/remotegate-update/agent.json.tmp /var/run/remotegate-update/agent.json") == 0
 end
 
 function saved_update_view()
@@ -111,4 +115,92 @@ function update_start()
  end
  if not update_configuration() then update_reply({error="请先保存服务器地址、设备 ID 和令牌"}); return end
  update_command("/usr/sbin/remotegate-agent --update-start /var/run/remotegate-update/agent.json '" .. version .. "' '" .. sha .. "'")
+end
+
+
+local function manual_auth()
+ local http=luci.http
+ if http.getenv("REQUEST_METHOD")~="POST" then http.status(405,"Method Not Allowed");return false end
+ local context=require("luci.dispatcher").context or {}
+ local token=http.getenv("HTTP_X_REMOTEGATE_TOKEN") or ""
+ if token=="" or token~=context.authtoken or not context.authsession then http.status(403,"Forbidden");return false end
+ local util=require("luci.util")
+ local user=context.authuser
+ if not user then
+  local ok,session=pcall(util.ubus,"session","get",{ubus_rpc_session=context.authsession})
+  if ok and type(session)=="table" and type(session.data)=="table" then user=session.data.username end
+ end
+ local ok,access=pcall(util.ubus,"session","access",{ubus_rpc_session=context.authsession,scope="uci",object="remotegate",["function"]="write"})
+ if user~="root" or not ok or type(access)~="table" or access.access~=true then http.status(403,"Forbidden");return false end
+ return true
+end
+
+local function manual_lock()
+ local fs=require("nixio.fs")
+ if luci.sys.call("umask 077; mkdir -p /var/run/remotegate-update && chmod 700 /var/run/remotegate-update")~=0 then return false end
+ local state=saved_update_view()
+ local active={checking=true,downloading=true,backing_up=true,installing=true,restarting=true,verifying=true,rolling_back=true}
+ if state and (active[state.state.phase] or state.state.rollbackFailed) then return false end
+ local lock="/var/run/remotegate-update/upload.lock"
+ if fs.mkdir(lock) then return true end
+ local modified=fs.stat(lock,"mtime")
+ if modified and os.time()-modified>600 and fs.rmdir(lock) then return fs.mkdir(lock) and true or false end
+ return false
+end
+local function manual_unlock() require("nixio.fs").rmdir("/var/run/remotegate-update/upload.lock") end
+local function manual_command(command)
+ local raw=luci.sys.exec(command)
+ local ok,value=pcall(require("luci.jsonc").parse,raw or "")
+ if not ok or type(value)~="table" then return {error="手动更新工具无法读取安装包，请检查插件是否完整安装"} end
+ return value
+end
+
+function update_upload()
+ if not manual_auth() then return end
+ if not manual_lock() then update_reply({error="已有更新或上传正在执行，或上次回滚尚未完成"});return end
+ local fs=require("nixio.fs")
+ local part="/var/run/remotegate-update/upload.part"
+ local length=tonumber(luci.http.getenv("CONTENT_LENGTH"))
+ if length and length>16*1024*1024 then manual_unlock();luci.http.status(413,"Payload Too Large");update_reply({error="安装包最大 15 MiB"});return end
+ local file,finished,failure=nil,false,nil
+ local size=0
+ fs.unlink(part)
+ luci.http.setfilehandler(function(meta,chunk,eof)
+  if failure then return end
+  if finished or type(meta)~="table" or meta.name~="package" then failure="请只上传一个 RemoteGate 安装包";return end
+  if not file then file=require("nixio").open(part,"w",384);if not file then failure="无法保存上传文件，请检查临时空间";return end end
+  if chunk and #chunk>0 then
+   size=size+#chunk
+   if size>15*1024*1024 then failure="安装包最大 15 MiB";return end
+   local written=file:writeall(chunk)
+   if written~=true and written~=#chunk then failure="写入上传文件失败，请检查临时空间";return end
+  end
+  if eof then file:close();file=nil;finished=true end
+ end)
+ local parsed=pcall(luci.http.formvalue,"package")
+ if file then file:close() end
+ local stat=fs.stat(part)
+ if not parsed or not finished or not stat or stat.size~=size or size==0 then failure=failure or "上传未完成，请重新选择安装包" end
+ local value
+ if failure then value={error=failure}
+ else
+  value=manual_command("/usr/sbin/remotegate-agent --update-local-check /var/run/remotegate-update/upload.part")
+  if not value.error then
+   if type(value.manifest)~="table" or type(value.fileSHA256)~="string" or #value.fileSHA256~=64 then value={error="安装包校验结果无效"}
+   elseif not fs.rename(part,"/var/run/remotegate-update/upload.bin") then value={error="无法保存已校验安装包"} end
+  end
+ end
+ fs.unlink(part);manual_unlock();update_reply(value)
+end
+
+function update_local_start()
+ if not manual_auth() then return end
+ if not manual_lock() then update_reply({error="已有更新或上传正在执行，或上次回滚尚未完成"});return end
+ local version=luci.http.formvalue("version") or ""
+ local sha=luci.http.formvalue("sha256") or ""
+ if #version>64 or not version:match("^%d+%.%d+%.%d+%-%d+$") or #sha~=64 or not sha:match("^[a-f0-9]+$") then manual_unlock();update_reply({error="更新参数无效，请重新上传并校验"});return end
+ if not update_configuration(true) then manual_unlock();update_reply({error="无法读取路由器保存的插件配置"});return end
+ local value=manual_command("/usr/sbin/remotegate-agent --update-local-start /var/run/remotegate-update/agent.json '"..version.."' '"..sha.."'")
+ if not value.error and type(value.state)=="table" and value.state.phase=="checking" then require("nixio.fs").unlink("/var/run/remotegate-update/upload.bin") end
+ manual_unlock();update_reply(value)
 end

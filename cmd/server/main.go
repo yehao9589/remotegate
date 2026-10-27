@@ -175,6 +175,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/install/", a.installScript)
 	mux.HandleFunc("/api/install/report", a.installReportHTTP)
 	mux.HandleFunc("/downloads/remotegate.run", a.installerDownload)
+	mux.HandleFunc("/downloads/remotegate.ipk", a.ipkDownload)
 	mux.HandleFunc("/api/agent/connect", a.connectAgent)
 	mux.HandleFunc("/api/agent/update", a.agentUpdateResource)
 	mux.HandleFunc("/api/agent/update/package", a.agentUpdateResource)

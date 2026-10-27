@@ -82,3 +82,19 @@ test('install progress marks completion only from a verified succeeded record',(
  const f=fixture();const waiting=f.context.installProgressHTML({state:{phase:'waiting',message:'等待连接'}}),done=f.context.installProgressHTML({state:{phase:'succeeded',message:'设备已连接'}});
  assert.equal((waiting.match(/class="done"/g)||[]).length,6);assert.match(waiting,/class="current"/);assert.equal((done.match(/class="done"/g)||[]).length,7);
 });
+
+test('native IPK download requires an explicit architecture and uses its own checksum',async()=>{
+ const f=fixture();
+ f.eval("packageCenterData={downloads:[{arch:'',label:'通用安装包',url:'/downloads/remotegate.run',sha256:'run-all',size:9000},{arch:'arm64',label:'ARM64',url:'/downloads/remotegate.run?arch=arm64',sha256:'run-arm',size:3000,ipk:{url:'/downloads/remotegate.ipk?arch=arm64&version=0.1.17-1',sha256:'ipk-arm',size:2900}}]}");
+ assert.equal(f.context.packageSelectedDownload(),null);
+ let html=f.context.packageInstallHTML(f.eval('packageCenterData'),{},null,null);
+ assert.match(html,/请选择路由器架构/);assert.doesNotMatch(html,/href="[^"]*remotegate\.ipk/);
+ f.eval("packageDownloadArch='arm64'");
+ html=f.context.packageInstallHTML(f.eval('packageCenterData'),{},null,null);
+ assert.match(html,/下载 ARM64 \.ipk/);assert.match(html,/ipk-arm/);assert.doesNotMatch(html,/>run-arm</);
+ let copied='';f.context.copyText=async value=>{copied=value};await f.context.packageCenterAction('copyHash',null,{});assert.equal(copied,'ipk-arm');
+ f.eval("packageDownloadFormat='run'");
+ assert.equal(f.context.packageSelectedDownload().sha256,'run-arm');
+ assert.equal(f.context.packageSafeDownload('/downloads/remotegate.ipk?arch=arm64'),'/downloads/remotegate.ipk?arch=arm64');
+ assert.equal(f.context.packageSafeDownload('/downloads/remotegate.ipk/../../secret'),'/downloads/remotegate.run');
+});

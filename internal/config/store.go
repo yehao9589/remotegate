@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,8 +112,7 @@ func (s *Store) Snapshot() State {
 		}
 	}
 	copy(out.Mappings, s.state.Mappings)
-	sort.Slice(out.Devices, func(i, j int) bool { return out.Devices[i].Name < out.Devices[j].Name })
-	sort.Slice(out.Mappings, func(i, j int) bool { return out.Mappings[i].Host < out.Mappings[j].Host })
+	// Saved slices retain addition order; edits and reconnects do not move entries.
 	return out
 }
 

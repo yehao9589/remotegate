@@ -13,7 +13,7 @@ function remotegateConnectionView(status){
 (function(){
  'use strict';
  var script=document.currentScript,statusURL=script ? script.getAttribute('data-status-url') : location.pathname.replace(/\/$/,'')+'/status';
- var updateURLs={check:script&&script.getAttribute('data-update-check'),start:script&&script.getAttribute('data-update-start'),status:script&&script.getAttribute('data-update-status')},csrfToken=script&&script.getAttribute('data-token');
+ var updateURLs={check:script&&script.getAttribute('data-update-check'),start:script&&script.getAttribute('data-update-start'),status:script&&script.getAttribute('data-update-status'),upload:script&&script.getAttribute('data-update-upload'),localStart:script&&script.getAttribute('data-update-local-start')},csrfToken=script&&script.getAttribute('data-token');
  function initialize(){
  var root=document.getElementById('cbi-remotegate');if(!root)return;
  var busy=false,statusFailureSince=null;
@@ -36,7 +36,7 @@ function remotegateConnectionView(status){
  function activeUpdate(view){return !!view&&['checking','downloading','backing_up','installing','restarting','verifying','rolling_back'].indexOf((view.state||{}).phase)>=0}
  function renderUpdate(view){
   updateView=view;var state=view.state||{},active=activeUpdate(view);
-  checkButton.disabled=updateBusy||active;startButton.disabled=updateBusy||active;startButton.hidden=!view.available||active||!!view.error||state.rollbackFailed;
+  checkButton.disabled=updateBusy||active||manualBusy;startButton.disabled=updateBusy||active||manualBusy;manualControls(active||state.rollbackFailed);startButton.hidden=!view.available||active||!!view.error||state.rollbackFailed;
   var target=view.manifest&&view.manifest.packageVersion;
   updateText.textContent=view.error||(active||state.phase==='failed'?state.message:target&&view.available?'发现新版 '+target+' · 当前 '+view.installedVersion:state.message|| (target?'当前 '+view.installedVersion+'，无需更新':'点击“检查更新”对比服务器提供的插件版本。'));
   if(view.recoverySupported&&!active&&state.phase!=='failed')updateText.textContent+=' · 已启用失败自动回滚';
@@ -54,7 +54,39 @@ function remotegateConnectionView(status){
   return fetch(updateURLs[kind],options).then(function(r){if(!r.ok)throw Error(r.status===403?'登录已过期，请重新登录路由器后台':'更新请求失败（HTTP '+r.status+'）');return r.json()}).then(function(view){updateBusy=false;renderUpdate(view)}).catch(function(e){updateBusy=false;var view=Object.assign({},updateView||{},{error:e.name==='AbortError'?'请求超时，请稍后检查更新状态':e.message});renderUpdate(view)}).finally(function(){clearTimeout(timeout);updateBusy=false});
  }
  if(checkButton&&startButton){checkButton.addEventListener('click',function(){updateRequest('check')});startButton.addEventListener('click',function(){updateRequest('start')});updateRequest('status')}
- window.addEventListener('pagehide',function(){clearTimeout(updateTimer)});
+
+ var manualBusy=false,manualView=null,manualController=null;
+ var manualInput=document.getElementById('rg-local-file'),manualCheck=document.getElementById('rg-local-check'),manualStart=document.getElementById('rg-local-start'),manualPreview=document.getElementById('rg-local-preview'),manualMessage=document.getElementById('rg-local-message');
+ function manualControls(active){
+  if(!manualInput||!manualCheck||!manualStart)return;
+  var blocked=!!(active||manualBusy||updateBusy);
+  manualInput.disabled=blocked;manualCheck.disabled=blocked||!manualInput.files||!manualInput.files[0];manualStart.disabled=blocked||!manualView;
+ }
+ function manualNotice(text,error){manualMessage.textContent=text;manualMessage.className=error?'is-error':''}
+ async function manualRequest(kind,body){
+  manualController=new AbortController();var timer=setTimeout(function(){manualController.abort()},kind==='upload'?180000:25000);
+  var headers={'X-RemoteGate-Token':csrfToken||''};if(kind!=='upload')headers['Content-Type']='application/x-www-form-urlencoded';
+  try{var response=await fetch(kind==='upload'?updateURLs.upload:updateURLs.localStart,{method:'POST',credentials:'same-origin',cache:'no-store',headers:headers,body:body,signal:manualController.signal});if(!response.ok)throw Error(response.status===403?'需要路由器 root 管理员登录，请重新登录后重试':response.status===413?'安装包最大 15 MiB':'手动更新请求失败（HTTP '+response.status+'）');var value=await response.json();if(value.error)throw Error(value.error);return value}finally{clearTimeout(timer);manualController=null}
+ }
+ async function uploadLocalPackage(){
+  if(manualBusy||updateBusy||activeUpdate(updateView))return;
+  var file=manualInput.files&&manualInput.files[0];if(!file)return;
+  manualView=null;manualPreview.hidden=true;
+  if(!/\.(ipk|run)$/i.test(file.name)||file.size<=0||file.size>15*1024*1024){manualNotice('请选择不超过 15 MiB 的 .ipk 或 .run 安装包',true);manualControls(false);return}
+  manualBusy=true;manualControls(false);if(checkButton)checkButton.disabled=true;if(startButton)startButton.disabled=true;manualNotice('正在上传并校验，请保持当前页面…');
+  try{var body=new FormData();body.append('package',file);var value=await manualRequest('upload',body);if(!value.manifest||!value.available||!/^[a-f0-9]{64}$/.test(value.fileSHA256||''))throw Error('安装包校验结果无效');manualView=value;document.getElementById('rg-local-current').textContent=value.installedVersion;document.getElementById('rg-local-target').textContent=value.manifest.packageVersion;document.getElementById('rg-local-arch').textContent=(value.manifest.architectures||[]).join(' / ');document.getElementById('rg-local-sha').textContent=value.fileSHA256;manualPreview.hidden=false;manualNotice('校验通过，请核对版本后点击“确认更新”。')}
+  catch(error){manualNotice(error.name==='AbortError'?'上传超时，尚未发起安装，请重新上传':error.message,true)}
+  finally{manualBusy=false;manualControls(activeUpdate(updateView));if(checkButton)checkButton.disabled=updateBusy||activeUpdate(updateView);if(startButton)startButton.disabled=updateBusy||activeUpdate(updateView)}
+ }
+ async function startLocalPackage(){
+  if(manualBusy||updateBusy||activeUpdate(updateView)||!manualView)return;
+  manualBusy=true;manualControls(false);if(checkButton)checkButton.disabled=true;if(startButton)startButton.disabled=true;manualNotice('正在发起更新…');
+  try{var value=await manualRequest('start',new URLSearchParams({version:manualView.manifest.packageVersion,sha256:manualView.fileSHA256}).toString());if(!value.state)throw Error('无法确认更新状态，请查看更新进度');manualView=null;manualPreview.hidden=true;manualInput.value='';manualNotice('更新已发起，进度将在上方持续显示。');renderUpdate(value)}
+  catch(error){manualNotice(error.name==='AbortError'?'请求超时，正在核对更新状态，请勿重复发起':error.message,true);updateRequest('status')}
+  finally{manualBusy=false;manualControls(activeUpdate(updateView));if(checkButton)checkButton.disabled=updateBusy||activeUpdate(updateView);if(startButton)startButton.disabled=updateBusy||activeUpdate(updateView)}
+ }
+ if(manualInput&&manualCheck&&manualStart&&manualPreview&&manualMessage){manualInput.addEventListener('change',function(){manualView=null;manualPreview.hidden=true;manualNotice('');manualControls(activeUpdate(updateView))});manualCheck.addEventListener('click',uploadLocalPackage);manualStart.addEventListener('click',startLocalPackage);manualControls(false)}
+ window.addEventListener('pagehide',function(){clearTimeout(updateTimer);if(manualController)manualController.abort()});
  }
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initialize);else initialize();
 })();

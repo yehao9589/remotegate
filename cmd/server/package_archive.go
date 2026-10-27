@@ -220,7 +220,11 @@ func (a *app) packageCatalog(p *packageCenter) ([]map[string]any, []map[string]a
 	for _, arch := range []string{"amd64", "arm64", "armv7"} {
 		item, err := a.packageArtifact(p, "", arch)
 		if err == nil {
-			downloads = append(downloads, map[string]any{"arch": arch, "label": update.ArchitectureLabel(arch), "size": item.Manifest.Size, "sha256": item.Manifest.SHA256, "url": "/downloads/remotegate.run?arch=" + arch})
+			download := map[string]any{"arch": arch, "label": update.ArchitectureLabel(arch), "size": item.Manifest.Size, "sha256": item.Manifest.SHA256, "url": "/downloads/remotegate.run?arch=" + arch}
+			if _, ipk, err := packageIPK(base, arch); err == nil {
+				download["ipk"] = ipk
+			}
+			downloads = append(downloads, download)
 		}
 	}
 	return catalog, downloads, ""

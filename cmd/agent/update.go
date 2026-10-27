@@ -39,9 +39,10 @@ type updateView struct {
 }
 
 type updatePlan struct {
-	Config   Config          `json:"config"`
-	Manifest update.Manifest `json:"manifest"`
-	State    update.Status   `json:"state"`
+	LocalPackage bool            `json:"localPackage,omitempty"`
+	Config       Config          `json:"config"`
+	Manifest     update.Manifest `json:"manifest"`
+	State        update.Status   `json:"state"`
 }
 
 func installedPackage(paths updatePaths) string {
@@ -262,6 +263,17 @@ func startAgentUpdate(ctx context.Context, cfg Config, expected update.Manifest)
 	} else if !view.Available {
 		return view, errors.New("当前插件已是此服务器提供的版本，或版本更高")
 	}
+	return launchAgentUpdate(ctx, cfg, manifest, nil)
+}
+
+func launchAgentUpdate(ctx context.Context, cfg Config, manifest update.Manifest, localPackage []byte) (updateView, error) {
+	view := updateView{RecoverySupported: true, InstalledVersion: installedPackage(routerUpdatePaths), Manifest: &manifest, State: readUpdateState(routerUpdatePaths)}
+	comparison, _ := update.Compare(manifest.PackageVersion, view.InstalledVersion)
+	view.Available = comparison > 0
+	var err error
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		return view, errors.New("插件更新需要路由器 root 环境")
+	}
 	if _, err = exec.LookPath("opkg"); err != nil {
 		return view, errors.New("当前系统不支持 opkg 安装")
 	}
@@ -300,13 +312,18 @@ func startAgentUpdate(ctx context.Context, cfg Config, expected update.Manifest)
 			_ = os.RemoveAll(dir)
 		}
 	}()
+	if len(localPackage) > 0 {
+		if err = os.WriteFile(filepath.Join(dir, "uploaded.ipk"), localPackage, 0600); err != nil {
+			return view, err
+		}
+	}
 	key := make([]byte, 16)
 	if _, err = rand.Read(key); err != nil {
 		return view, err
 	}
 	view.State = update.Status{ID: hex.EncodeToString(key), Phase: "checking", FromVersion: view.InstalledVersion, ToVersion: view.Manifest.PackageVersion, Message: "正在准备插件更新", StartedAt: time.Now().UTC()}
 	view.State.AutoRollback = true
-	plan, err := json.Marshal(updatePlan{Config: cfg, Manifest: *view.Manifest, State: view.State})
+	plan, err := json.Marshal(updatePlan{Config: cfg, Manifest: *view.Manifest, State: view.State, LocalPackage: len(localPackage) > 0})
 	if err != nil {
 		return view, err
 	}
@@ -440,10 +457,22 @@ func performUpdate(ctx context.Context, plan updatePlan, dir string, paths updat
 	if err = os.WriteFile(filepath.Join(dir, "configuration.backup"), configuration, 0600); err != nil {
 		return err
 	}
-	report("downloading", "正在下载并校验安装包")
 	packagePath := filepath.Join(dir, "package.run")
-	if err = downloadUpdate(ctx, plan.Config, plan.Manifest, packagePath); err != nil {
-		return err
+	if plan.LocalPackage {
+		report("checking", "正在校验已上传的安装包")
+		packagePath = filepath.Join(dir, "uploaded.ipk")
+		verified, _, checkErr := inspectLocalPackage(packagePath, runtime.GOARCH)
+		if checkErr != nil {
+			return checkErr
+		}
+		if verified.Manifest.PackageVersion != plan.Manifest.PackageVersion || verified.Manifest.SHA256 != plan.Manifest.SHA256 || verified.Manifest.Size != plan.Manifest.Size {
+			return errors.New("上传安装包校验失败，尚未修改插件")
+		}
+	} else {
+		report("downloading", "正在下载并校验安装包")
+		if err = downloadUpdate(ctx, plan.Config, plan.Manifest, packagePath); err != nil {
+			return err
+		}
 	}
 	if recovery.Backup == nil || recovery.Restore == nil || recovery.Verify == nil {
 		return errors.New("更新恢复功能不可用，已停止更新")
@@ -560,6 +589,9 @@ func runUpdateWorker(dir string) (result error) {
 	}
 	return performUpdate(ctx, plan, dir, routerUpdatePaths, func(ctx context.Context, path string) error {
 		command := exec.CommandContext(ctx, "/bin/sh", path, "--update")
+		if plan.LocalPackage {
+			command = exec.CommandContext(ctx, "opkg", "--force-reinstall", "install", path)
+		}
 		if plan.Manifest.Rollback {
 			_, payload, err := update.PackagePayload(path, runtime.GOARCH)
 			if err != nil {
@@ -639,6 +671,10 @@ func handleUpdateCLI(args []string) bool {
 		if err = runUpdateWorker(args[1]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
+		return true
+	}
+	if args[0] == "--update-local-check" || args[0] == "--update-local-start" {
+		localUpdateCLI(args)
 		return true
 	}
 	if args[0] == "--update-status" {

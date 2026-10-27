@@ -7,11 +7,13 @@ temporary="$(mktemp -d /tmp/remotegate-routing.XXXXXX)"
 router="rg-r-$$"
 wan="rg-w-$$"
 server_pid=
+real_ip="$(command -v ip)"
+legacy="${REMOTEGATE_TEST_LEGACY_IP:-0}"
 cleanup() {
  [ -z "$server_pid" ] || kill "$server_pid" 2>/dev/null || true
  ip netns del "$router" 2>/dev/null || true
  ip netns del "$wan" 2>/dev/null || true
- rm -f "$temporary"/ubus "$temporary"/wan.json "$temporary"/server.py "$temporary"/route-guard
+ rm -f "$temporary"/ubus "$temporary"/wan.json "$temporary"/server.py "$temporary"/route-guard "$temporary"/ip
  rmdir "$temporary" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
@@ -52,6 +54,19 @@ cat > "$temporary/ubus" <<'EOF'
 cat "$REMOTEGATE_WAN_FIXTURE"
 EOF
 chmod 755 "$temporary/ubus"
+cat > "$temporary/ip" <<'EOF'
+#!/bin/sh
+if [ "${REMOTEGATE_TEST_LEGACY_IP:-0}" = 1 ]; then
+ for argument in "$@"; do
+  if [ "$argument" = -N ]; then
+   echo 'Option "-N" is unknown, try "ip -help".' >&2
+   exit 255
+  fi
+ done
+fi
+exec "$REMOTEGATE_TEST_REAL_IP" "$@"
+EOF
+chmod 755 "$temporary/ip"
 cp "$root/deploy/openwrt/remotegate-route-guard" "$temporary/route-guard"
 chmod 755 "$temporary/route-guard"
 cat > "$temporary/server.py" <<'EOF'
@@ -108,6 +123,6 @@ EOF
  fi
  # The test deliberately marks WAN down at the end; reset its fixture per run.
  printf '%s\n' '{"interface":[{"interface":"wan","up":true,"l3_device":"wan0","route":[{"target":"0.0.0.0","mask":0,"nexthop":"10.23.1.1"}]},{"interface":"wan6","up":true,"l3_device":"wan0","route":[{"target":"::","mask":0,"nexthop":"2001:db8:10::1"}]}]}' > "$temporary/wan.json"
- echo "Testing WAN routing with $backend interception"
- ip netns exec "$router" env PATH="$temporary:$PATH" REMOTEGATE_DIRECT_NETNS_TEST=1 REMOTEGATE_FIREWALL_BACKEND="$backend" REMOTEGATE_WAN_FIXTURE="$temporary/wan.json" REMOTEGATE_GUARD_PATH="$temporary/route-guard" "$test_binary" -test.run '^TestDirectWANIsolatedNetwork$' -test.v
+ echo "Testing WAN routing with $backend interception (legacy ip=$legacy)"
+ ip netns exec "$router" env PATH="$temporary:$PATH" REMOTEGATE_TEST_REAL_IP="$real_ip" REMOTEGATE_TEST_LEGACY_IP="$legacy" REMOTEGATE_DIRECT_NETNS_TEST=1 REMOTEGATE_FIREWALL_BACKEND="$backend" REMOTEGATE_WAN_FIXTURE="$temporary/wan.json" REMOTEGATE_GUARD_PATH="$temporary/route-guard" "$test_binary" -test.run '^TestDirectWANIsolatedNetwork$' -test.v
 done

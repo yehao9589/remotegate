@@ -156,7 +156,7 @@ deviceCards=()=>{
  const matched=state.devices.filter(d=>{
   const maps=state.mappings.filter(m=>m.deviceId===d.id);
   return (!filter||filter==='pinned'&&d.pinned||filter==='yes'&&d.online||filter==='no'&&!d.online)&&[d.name,d.id,d.note,d.info?.hostname,d.info?.peerIP,d.network?.operator,JSON.stringify(maps)].join(' ').toLowerCase().includes(query.toLowerCase());
- }).sort((a,b)=>Number(Boolean(b.pinned))-Number(Boolean(a.pinned))||a.name.localeCompare(b.name));
+ }).sort((a,b)=>Number(Boolean(b.pinned))-Number(Boolean(a.pinned)));
  const {start,end,pages}=devicePageWindow(matched.length,deviceListPaging),visible=matched.slice(start,end);
  container.innerHTML=devicePagerHTML('devices','',matched.length,deviceListPaging,'top')+(visible.map(d=>{
   const mappings=state.mappings.filter(m=>m.deviceId===d.id),operation=deviceOperations.get(d.id);
