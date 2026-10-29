@@ -1,5 +1,5 @@
 {
-  "version": "0.1.19",
-  "title": "路由器固件兼容与插件手动更新",
+  "version": "0.1.20",
+  "title": "网页流式转发与请求取消",
   "packageRevision": 1
 }

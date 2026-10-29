@@ -26,12 +26,15 @@ type Client struct {
 	CanRemote               bool
 	CanManageUpdate         bool
 	CanRecoverUpdate        bool
+	CanStreamHTTP           bool
+	CanCancelHTTP           bool
 	conn                    *websocket.Conn
-	writeMu                 sync.Mutex
+	writeMu                 contextMutex
 	pending                 sync.Map
 	pings                   sync.Map
 	streams                 sync.Map
 	streamCount             atomic.Int32
+	webCount                atomic.Int32
 	metricsMu               sync.Mutex
 	lastActiveAt, latencyAt time.Time
 	latency                 time.Duration
@@ -60,6 +63,7 @@ type Hub struct {
 	clients      map[string]*Client
 	changed      chan struct{}
 	waiting      int
+	httpWaiting  int
 	pingInterval time.Duration
 	pongWait     time.Duration
 	writeWait    time.Duration
@@ -93,6 +97,8 @@ func (h *Hub) Attach(deviceID, name, version string, conn *websocket.Conn, updat
 	c.CanRemote = len(updater) > 1 && updater[1]
 	c.CanManageUpdate = len(updater) > 2 && updater[2]
 	c.CanRecoverUpdate = len(updater) > 3 && updater[3]
+	c.CanStreamHTTP = len(updater) > 4 && updater[4]
+	c.CanCancelHTTP = len(updater) > 5 && updater[5]
 	c.lastActiveAt = c.Since
 	h.mu.Lock()
 	old := h.clients[deviceID]
@@ -193,7 +199,7 @@ func (h *Hub) ReadLoop(c *Client, reportEgress ...func(string) error) error {
 		if msg.Type == "tcp-data" || msg.Type == "tcp-close" || msg.Type == "tcp-credit" {
 			if value, ok := c.streams.Load(msg.ID); ok {
 				stream := value.(*tcpConn)
-				if msg.Type == "tcp-data" && len(msg.Body) <= protocol.MaxStreamBytes && c.record != nil {
+				if msg.Type == "tcp-data" && !stream.web && len(msg.Body) <= protocol.MaxStreamBytes && c.record != nil {
 					c.record("", 0, uint64(len(msg.Body)))
 				}
 				if msg.Type == "tcp-credit" {
@@ -218,12 +224,10 @@ func (h *Hub) keepAlive(c *Client, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			// Serialize with requests so a large in-flight data frame is not
-			// mistaken for a failed ping. All writes still have a time limit.
-			c.writeMu.Lock()
+			// Control frames may interleave data fragments. Waiting on the data
+			// mutex here would let a slow request starve the tunnel heartbeat.
 			select {
 			case <-stop:
-				c.writeMu.Unlock()
 				return
 			default:
 			}
@@ -233,7 +237,6 @@ func (h *Hub) keepAlive(c *Client, stop <-chan struct{}) {
 			c.heartbeat, c.heartbeatAt = payload, now
 			c.metricsMu.Unlock()
 			err := c.conn.WriteControl(websocket.PingMessage, []byte(payload), now.Add(h.writeWait))
-			c.writeMu.Unlock()
 			if err != nil {
 				_ = c.conn.Close()
 				return
@@ -330,7 +333,9 @@ func (h *Hub) requestTo(ctx context.Context, c *Client, msg protocol.Message, ma
 	}
 	c.pending.Store(msg.ID, pending)
 	defer c.pending.Delete(msg.ID)
-	c.writeMu.Lock()
+	if err := c.writeMu.LockContext(ctx); err != nil {
+		return protocol.Message{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		c.writeMu.Unlock()
 		return protocol.Message{}, err
@@ -338,6 +343,12 @@ func (h *Hub) requestTo(ctx context.Context, c *Client, msg protocol.Message, ma
 	deadline := time.Now().Add(h.writeWait)
 	if expires, ok := ctx.Deadline(); ok && expires.Before(deadline) {
 		deadline = expires
+	}
+	if msg.Type == "request" {
+		if expires, ok := ctx.Deadline(); ok {
+			msg.Deadline = expires.UnixMilli()
+			msg.TimeoutMillis = max(1, time.Until(expires).Milliseconds())
+		}
 	}
 	err := c.conn.SetWriteDeadline(deadline)
 	if err == nil {
@@ -348,6 +359,11 @@ func (h *Hub) requestTo(ctx context.Context, c *Client, msg protocol.Message, ma
 		_ = c.conn.Close()
 		return protocol.Message{}, err
 	}
+	defer func() {
+		if msg.Type == "request" && c.CanCancelHTTP && ctx.Err() != nil {
+			go c.cancelRequest(msg.ID)
+		}
+	}()
 	if pending.account && c.record != nil {
 		c.record(pending.mapping, uint64(len(msg.Body)), 0)
 	}

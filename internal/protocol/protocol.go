@@ -8,6 +8,7 @@ const MaxBodyBytes = 16 << 20
 const MaxMessageBytes = ((MaxBodyBytes + 2) / 3 * 4) + (1 << 20)
 const MaxStreamBytes = 32 << 10
 const MaxDeviceStreams = 4
+const MaxHTTPStreams = 16
 const StreamWindowBytes = 4 * MaxStreamBytes
 
 type Message struct {
@@ -22,6 +23,7 @@ type Message struct {
 	Error           string              `json:"error,omitempty"`
 	DeviceName      string              `json:"deviceName,omitempty"`
 	Version         string              `json:"version,omitempty"`
+	TimeoutMillis   int64               `json:"timeoutMillis,omitempty"`
 	Deadline        int64               `json:"deadline,omitempty"`
 	EgressInterface string              `json:"egressInterface,omitempty"`
 }

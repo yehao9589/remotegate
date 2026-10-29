@@ -35,33 +35,49 @@ type tcpConn struct {
 	creditChanged   chan struct{}
 	creditReady     chan struct{}
 	consumed        atomic.Int64
+	web             bool
+	webBuffer       *protocol.ByteBuffer
 }
 
 func (h *Hub) OpenTCP(ctx context.Context, deviceID, target string) (net.Conn, error) {
+	return h.openStream(ctx, deviceID, target, false)
+}
+
+func (h *Hub) openStream(ctx context.Context, deviceID, target string, web bool) (net.Conn, error) {
 	h.mu.RLock()
 	c := h.clients[deviceID]
 	h.mu.RUnlock()
 	if c == nil {
 		return nil, ErrOffline
 	}
-	if !c.CanRemote {
+	if (!web && !c.CanRemote) || (web && !c.CanStreamHTTP) {
 		return nil, errors.New("请升级插件，并在路由器插件中启用 SSH / 文件管理")
 	}
-	if c.streamCount.Add(1) > protocol.MaxDeviceStreams {
-		c.streamCount.Add(-1)
+	count, limit, prefix, kind := &c.streamCount, protocol.MaxDeviceStreams, "tcp:", "tcp-open"
+	if web {
+		count, limit, prefix, kind = &c.webCount, protocol.MaxHTTPStreams, "http:", "http-open"
+	}
+	if count.Add(1) > int32(limit) {
+		count.Add(-1)
+		if web {
+			return nil, ErrHTTPBusy
+		}
 		return nil, errors.New("这台设备的远程连接数量已达上限")
 	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		c.streamCount.Add(-1)
+		count.Add(-1)
 		return nil, err
 	}
-	id := "tcp:" + hex.EncodeToString(nonce[:])
-	stream := &tcpConn{client: c, id: id, target: target, incoming: make(chan []byte, 8), done: make(chan struct{}), changed: make(chan struct{}, 1), credit: protocol.StreamWindowBytes, creditChanged: make(chan struct{}, 1), creditReady: make(chan struct{}, 1)}
+	id := prefix + hex.EncodeToString(nonce[:])
+	stream := &tcpConn{client: c, id: id, target: target, incoming: make(chan []byte, 8), done: make(chan struct{}), changed: make(chan struct{}, 1), credit: protocol.StreamWindowBytes, creditChanged: make(chan struct{}, 1), creditReady: make(chan struct{}, 1), web: web, webBuffer: protocol.NewByteBuffer()}
 	c.streams.Store(id, stream)
-	reply, err := h.requestTo(ctx, c, protocol.Message{Type: "tcp-open", ID: id, Target: target})
+	reply, err := h.requestTo(ctx, c, protocol.Message{Type: kind, ID: id, Target: target})
 	if err == nil && reply.Error != "" {
 		err = errors.New(reply.Error)
+		if web && reply.Status == 503 {
+			err = ErrHTTPBusy
+		}
 	}
 	if err != nil {
 		stream.Close()
@@ -72,6 +88,12 @@ func (h *Hub) OpenTCP(ctx context.Context, deviceID, target string) (net.Conn, e
 }
 
 func (c *tcpConn) feed(body []byte) bool {
+	if c.web {
+		if len(body) > protocol.MaxStreamBytes {
+			return false
+		}
+		return c.webBuffer.Push(body)
+	}
 	if len(body) == 0 {
 		return true
 	}
@@ -94,7 +116,11 @@ func (c *tcpConn) finish(err error, notify bool) {
 		c.cause = err
 		c.mu.Unlock()
 		c.client.streams.Delete(c.id)
-		c.client.streamCount.Add(-1)
+		if c.web {
+			c.client.webCount.Add(-1)
+		} else {
+			c.client.streamCount.Add(-1)
+		}
 		close(c.done)
 		if notify {
 			go func() { _ = c.send(protocol.Message{Type: "tcp-close", ID: c.id}, time.Now().Add(5*time.Second)) }()
@@ -103,7 +129,14 @@ func (c *tcpConn) finish(err error, notify bool) {
 }
 
 func (c *tcpConn) send(msg protocol.Message, deadline time.Time) error {
-	c.client.writeMu.Lock()
+	if deadline.IsZero() {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	if err := c.client.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer c.client.writeMu.Unlock()
 	if !deadline.IsZero() && !time.Now().Before(deadline) {
 		return os.ErrDeadlineExceeded
@@ -115,13 +148,16 @@ func (c *tcpConn) send(msg protocol.Message, deadline time.Time) error {
 		_ = c.client.conn.Close()
 		return err
 	}
-	if msg.Type == "tcp-data" && c.client.record != nil {
+	if msg.Type == "tcp-data" && !c.web && c.client.record != nil {
 		c.client.record("", uint64(len(msg.Body)), 0)
 	}
 	return nil
 }
 
 func (c *tcpConn) Read(p []byte) (int, error) {
+	if c.web {
+		return c.readWeb(p)
+	}
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 	if len(p) == 0 {
