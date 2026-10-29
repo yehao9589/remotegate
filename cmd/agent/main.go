@@ -120,6 +120,8 @@ func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, sta
 	q.Set("token", cfg.Token)
 	q.Set("version", buildinfo.Version())
 	q.Set("info", "1")
+	q.Set("http_stream", "1")
+	q.Set("cancel_http", "1")
 	if remoteTransportAllowed(cfg) {
 		q.Set("remote", "1")
 	}
@@ -196,7 +198,8 @@ func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, sta
 		}
 		return err
 	}
-	bridge := tcpbridge.New(sessionContext, remoteTransportAllowed(cfg), send)
+	bridge := tcpbridge.New(sessionContext, remoteTransportAllowed(cfg), send, func(ctx context.Context, target string) (net.Conn, error) { return dialHTTPTarget(ctx, cfg, target) })
+	var tasks targetTasks
 	var workers sync.WaitGroup
 	queue := make(chan protocol.Message, 32)
 	var queuedBytes atomic.Int64
@@ -211,7 +214,12 @@ func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, sta
 				case msg := <-queue:
 					var result protocol.Message
 					if msg.Type == "request" {
-						result = handleWithContext(sessionContext, client, cfg, msg)
+						workCtx := sessionContext
+						if task, ok := tasks.pending.Load(msg.ID); ok {
+							workCtx = task.(*targetTask).ctx
+						}
+						result = handleWithContext(workCtx, client, cfg, msg)
+						tasks.finish(msg.ID)
 					} else {
 						result = updateControl(sessionContext, cfg, msg)
 					}
@@ -227,15 +235,28 @@ func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, sta
 		if err = conn.ReadJSON(&msg); err != nil {
 			return err
 		}
+		if msg.Type == "request-cancel" {
+			tasks.cancel(msg.ID)
+			continue
+		}
 		if bridge.Handle(msg) {
 			continue
 		}
 		if msg.Type != "request" && msg.Type != "update-start" && msg.Type != "update-status" && msg.Type != "update-preflight" {
 			continue
 		}
+		if msg.Type == "request" {
+			if msg.TimeoutMillis > 0 {
+				msg.Deadline = time.Now().Add(time.Duration(min(msg.TimeoutMillis, 55000)) * time.Millisecond).UnixMilli()
+			}
+			if _, ok := tasks.add(sessionContext, msg.ID, msg.Deadline); !ok {
+				continue
+			}
+		}
 		size := queuedMessageBytes(msg)
 		if queuedBytes.Add(size) > protocol.MaxBodyBytes+(1<<20) {
 			queuedBytes.Add(-size)
+			tasks.finish(msg.ID)
 			_ = send(protocol.Message{Type: "response", ID: msg.ID, Error: "device is busy, please retry"})
 			continue
 		}
@@ -243,6 +264,7 @@ func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, sta
 		case queue <- msg:
 		default:
 			queuedBytes.Add(-size)
+			tasks.finish(msg.ID)
 			_ = send(protocol.Message{Type: "response", ID: msg.ID, Error: "device is busy, please retry"})
 		}
 	}
@@ -265,12 +287,21 @@ func handle(client *http.Client, cfg Config, msg protocol.Message) protocol.Mess
 
 func handleWithContext(ctx context.Context, client *http.Client, cfg Config, msg protocol.Message) protocol.Message {
 	out := protocol.Message{Type: "response", ID: msg.ID}
+	if msg.Deadline > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, time.UnixMilli(msg.Deadline))
+		defer cancel()
+	}
+	if err := ctx.Err(); err != nil {
+		out.Error = err.Error()
+		return out
+	}
 	base, err := url.Parse(msg.Target)
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Hostname() == "" || base.User != nil {
 		out.Error = "invalid mapping target"
 		return out
 	}
-	if !cfg.AllowPublicTargets && !privateTarget(base.Hostname()) {
+	if !cfg.AllowPublicTargets && !privateTargetContext(ctx, base.Hostname()) {
 		out.Error = "target is outside private address space"
 		return out
 	}
@@ -312,11 +343,16 @@ func handleWithContext(ctx context.Context, client *http.Client, cfg Config, msg
 	return out
 }
 
-func privateTarget(host string) bool {
+func privateTarget(host string) bool { return privateTargetContext(context.Background(), host) }
+func privateTargetContext(ctx context.Context, host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}
-	ips, err := net.LookupIP(host)
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	ips := make([]net.IP, 0, len(addresses))
+	for _, address := range addresses {
+		ips = append(ips, address.IP)
+	}
 	if err != nil || len(ips) == 0 {
 		return false
 	}

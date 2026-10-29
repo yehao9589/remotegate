@@ -13,45 +13,67 @@ import (
 )
 
 type Bridge struct {
-	ctx     context.Context
-	enabled bool
-	send    func(protocol.Message) error
-	mu      sync.Mutex
-	streams map[string]*agentTCP
-	wg      sync.WaitGroup
+	ctx      context.Context
+	enabled  bool
+	send     func(protocol.Message) error
+	mu       sync.Mutex
+	streams  map[string]*agentTCP
+	wg       sync.WaitGroup
+	httpDial func(context.Context, string) (net.Conn, error)
 }
 type agentTCP struct {
-	bridge   *Bridge
-	id       string
-	ctx      context.Context
-	cancel   context.CancelFunc
-	mu       sync.Mutex
-	conn     net.Conn
-	incoming chan []byte
-	credit   int
-	changed  chan struct{}
-	once     sync.Once
+	bridge    *Bridge
+	id        string
+	ctx       context.Context
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	conn      net.Conn
+	incoming  chan []byte
+	credit    int
+	changed   chan struct{}
+	once      sync.Once
+	web       bool
+	webBuffer *protocol.ByteBuffer
 }
 
-func New(ctx context.Context, enabled bool, send func(protocol.Message) error) *Bridge {
-	return &Bridge{ctx: ctx, enabled: enabled, send: send, streams: make(map[string]*agentTCP)}
+func New(ctx context.Context, enabled bool, send func(protocol.Message) error, httpDial ...func(context.Context, string) (net.Conn, error)) *Bridge {
+	b := &Bridge{ctx: ctx, enabled: enabled, send: send, streams: make(map[string]*agentTCP)}
+	if len(httpDial) > 0 {
+		b.httpDial = httpDial[0]
+	}
+	return b
 }
 
 func (b *Bridge) Handle(msg protocol.Message) bool {
-	if !strings.HasPrefix(msg.Type, "tcp-") {
+	web := msg.Type == "http-open"
+	if !web && !strings.HasPrefix(msg.Type, "tcp-") {
 		return false
 	}
-	if msg.Type == "tcp-open" {
+	if web || msg.Type == "tcp-open" {
 		b.mu.Lock()
 		_, duplicate := b.streams[msg.ID]
-		valid := b.enabled && len(msg.ID) == 36 && strings.HasPrefix(msg.ID, "tcp:") && !duplicate && len(b.streams) < protocol.MaxDeviceStreams
+		count := 0
+		for _, s := range b.streams {
+			if s.web == web {
+				count++
+			}
+		}
+		valid := !duplicate && ((!web && b.enabled && len(msg.ID) == 36 && strings.HasPrefix(msg.ID, "tcp:") && count < protocol.MaxDeviceStreams) || (web && b.httpDial != nil && len(msg.ID) == 37 && strings.HasPrefix(msg.ID, "http:") && count < protocol.MaxHTTPStreams))
 		if !valid {
 			b.mu.Unlock()
-			_ = b.send(protocol.Message{Type: "response", ID: msg.ID, Error: "远程连接未启用或连接数量已达上限"})
+			status := 0
+			message := "远程连接未启用或连接数量已达上限"
+			if web {
+				message = "网页连接未启用或连接数量已达上限"
+				if b.httpDial != nil && !duplicate && count >= protocol.MaxHTTPStreams {
+					status = 503
+				}
+			}
+			_ = b.send(protocol.Message{Type: "response", ID: msg.ID, Status: status, Error: message})
 			return true
 		}
 		ctx, cancel := context.WithCancel(b.ctx)
-		s := &agentTCP{bridge: b, id: msg.ID, ctx: ctx, cancel: cancel, incoming: make(chan []byte, 8), credit: protocol.StreamWindowBytes, changed: make(chan struct{}, 1)}
+		s := &agentTCP{bridge: b, id: msg.ID, ctx: ctx, cancel: cancel, incoming: make(chan []byte, 8), credit: protocol.StreamWindowBytes, changed: make(chan struct{}, 1), web: web, webBuffer: protocol.NewByteBuffer()}
 		b.streams[msg.ID] = s
 		b.wg.Add(1)
 		b.mu.Unlock()
@@ -82,6 +104,12 @@ func (b *Bridge) Handle(msg protocol.Message) bool {
 		default:
 		}
 	case "tcp-data":
+		if s.web {
+			if len(msg.Body) > protocol.MaxStreamBytes || !s.webBuffer.Push(msg.Body) {
+				s.close(true)
+			}
+			return true
+		}
 		if len(msg.Body) == 0 {
 			return true
 		}
@@ -136,7 +164,11 @@ func dialPrivateTCP(ctx context.Context, target string) (net.Conn, error) {
 func (s *agentTCP) run(target string) {
 	defer s.close(true)
 	ctx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
-	conn, err := dialPrivateTCP(ctx, target)
+	dial := dialPrivateTCP
+	if s.web {
+		dial = s.bridge.httpDial
+	}
+	conn, err := dial(ctx, target)
 	cancel()
 	if err != nil {
 		_ = s.bridge.send(protocol.Message{Type: "response", ID: s.id, Error: err.Error()})
@@ -171,22 +203,21 @@ func (s *agentTCP) run(target string) {
 	}()
 	defer func() { s.close(true); <-readDone }()
 	for {
-		select {
-		case <-s.ctx.Done():
+		body, ok := s.nextIncoming()
+		if !ok {
 			return
-		case body := <-s.incoming:
-			_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			remaining := body
-			for len(remaining) != 0 {
-				n, writeErr := conn.Write(remaining)
-				if writeErr != nil || n == 0 {
-					return
-				}
-				remaining = remaining[n:]
-			}
-			if s.bridge.send(protocol.Message{Type: "tcp-credit", ID: s.id, Status: len(body)}) != nil {
+		}
+		_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		remaining := body
+		for len(remaining) != 0 {
+			n, writeErr := conn.Write(remaining)
+			if writeErr != nil || n == 0 {
 				return
 			}
+			remaining = remaining[n:]
+		}
+		if s.bridge.send(protocol.Message{Type: "tcp-credit", ID: s.id, Status: len(body)}) != nil {
+			return
 		}
 	}
 }
@@ -234,4 +265,26 @@ func (b *Bridge) Close() {
 		stream.close(false)
 	}
 	b.wg.Wait()
+}
+
+func (s *agentTCP) nextIncoming() ([]byte, bool) {
+	if !s.web {
+		select {
+		case <-s.ctx.Done():
+			return nil, false
+		case body := <-s.incoming:
+			return body, true
+		}
+	}
+	p := make([]byte, protocol.MaxStreamBytes)
+	for {
+		if n := s.webBuffer.Pop(p); n > 0 {
+			return p[:n], true
+		}
+		select {
+		case <-s.ctx.Done():
+			return nil, false
+		case <-s.webBuffer.Ready():
+		}
+	}
 }

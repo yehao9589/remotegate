@@ -307,6 +307,10 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	if a.hub.StreamingHTTP(mapping.DeviceID) {
+		a.proxyStreamHTTP(w, r, mapping, body)
+		return
+	}
 	id := makeID()
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
@@ -349,29 +353,7 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, resp.Error, http.StatusBadGateway)
 		return
 	}
-	rewriteLocation(resp.Headers, mapping.Target, r)
-	for key, values := range resp.Headers {
-		for _, value := range values {
-			if strings.EqualFold(key, "Set-Cookie") && !mappingProxyCookie(value) {
-				continue
-			}
-			w.Header().Add(key, value)
-		}
-	}
-	if mapping.AccessMode != "public" {
-		accessNoStore(w)
-		// no-referrer makes browsers send Origin: null on same-origin form
-		// navigations, which would fail the mapping's write-origin check.
-		// Auth callbacks retain no-referrer; application pages keep their origin
-		// for local forms while still hiding it from other sites.
-		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Add("Vary", "Cookie")
-	}
-	status := resp.Status
-	if status < 100 {
-		status = http.StatusBadGateway
-	}
-	w.WriteHeader(status)
+	writeMappedResponseHeaders(w, r, mapping, resp.Headers, resp.Status)
 	_, _ = w.Write(resp.Body)
 }
 
@@ -399,7 +381,7 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(protocol.MaxMessageBytes)
-	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1", r.URL.Query().Get("update_recovery") == "1")
+	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1", r.URL.Query().Get("update_recovery") == "1", r.URL.Query().Get("http_stream") == "1", r.URL.Query().Get("cancel_http") == "1")
 	if err := a.store.RecordConnection(id, c.Since, info); err != nil {
 		log.Printf("device connection information failed: %v", err)
 	}
