@@ -329,6 +329,21 @@ func (a *app) requireMappingAccess(w http.ResponseWriter, r *http.Request, m con
 	if !accessTransport(w, r, origin) {
 		return false
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/ui/metacubexd/sw.js" && r.Header.Get("Service-Worker") == "script" {
+		// Old MetaCubeXD workers serve the cached dashboard before the browser
+		// can reach mapping authentication. Worker updates must work even when
+		// the mapping session has expired, so serve only a static retirement script.
+		accessNoStore(w)
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		_, _ = fmt.Fprint(w, `self.addEventListener('install', event => {
+  event.waitUntil(self.skipWaiting());
+});
+self.addEventListener('activate', event => {
+  event.waitUntil(self.registration.unregister());
+});
+`)
+		return false
+	}
 	if a.mappingSessionValid(r, m, console) {
 		if websocket.IsWebSocketUpgrade(r) || (r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions) {
 			if supplied := r.Header.Get("Origin"); supplied != "" {

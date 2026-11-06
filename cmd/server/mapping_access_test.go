@@ -105,6 +105,43 @@ func TestMappingAccessProtectsAllPathsAndRequiresAnActualMappingSession(t *testi
 	// accidentally return the RemoteGate management API on a mapped domain.
 	requireStatus(t, accessCall(f.app, "GET", "https://router.example.com/api/admin/state", visitor), 502)
 }
+func TestMappingAccessRetiresLegacyXDWorkerWithoutAuthorizingPanel(t *testing.T) {
+	f := newAccessFixture(t)
+	public := f.mapping
+	public.ID = ""
+	public.Host = "public.example.com"
+	public.AccessMode = "public"
+	if _, err := f.app.store.PutMapping(public); err != nil {
+		t.Fatal(err)
+	}
+	const protected = "https://router.example.com"
+	const worker = "/ui/metacubexd/sw.js"
+	for _, tc := range []struct {
+		name, method, address, workerHeader, accept string
+		status                                      int
+	}{
+		{"worker update", "GET", protected + worker, "script", "*/*", 200},
+		{"direct script URL", "GET", protected + worker, "", "text/html", 302},
+		{"different worker", "GET", protected + "/sw.js", "script", "*/*", 302},
+		{"panel navigation", "GET", protected + "/ui/metacubexd/", "", "text/html", 302},
+		{"version probe", "GET", protected + "/version", "", "application/json", 401},
+		{"non-GET", "POST", protected + worker, "script", "*/*", 401},
+		{"public mapping", "GET", "https://public.example.com" + worker, "script", "*/*", 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(tc.method, tc.address, nil)
+			r.Header.Set("Service-Worker", tc.workerHeader)
+			r.Header.Set("Accept", tc.accept)
+			w := httptest.NewRecorder()
+			f.app.routes().ServeHTTP(w, r)
+			requireStatus(t, w, tc.status)
+			if tc.status == 200 && (w.Header().Get("Content-Type") != "text/javascript; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), "self.registration.unregister()")) {
+				t.Fatal("Expected a non-cacheable worker that unregisters itself")
+			}
+		})
+	}
+}
+
 func TestMappingAccessLoginContinuationAndBrowserBoundOneTimeCode(t *testing.T) {
 	f := newAccessFixture(t)
 	authorize, state := beginAccess(t, f)
