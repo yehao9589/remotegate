@@ -35,6 +35,7 @@ type Client struct {
 	streams                 sync.Map
 	streamCount             atomic.Int32
 	webCount                atomic.Int32
+	webSocketCount          atomic.Int32
 	metricsMu               sync.Mutex
 	lastActiveAt, latencyAt time.Time
 	latency                 time.Duration

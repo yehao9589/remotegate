@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/local/remotegate/internal/protocol"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/local/remotegate/internal/protocol"
 )
 
 var ErrHTTPBusy = errors.New("设备网页连接较多，请稍后重试")
+var ErrWebSocketBusy = errors.New("设备实时连接较多，请关闭不用的面板后重试")
 
 func (h *Hub) StreamingHTTP(id string) bool {
 	h.mu.RLock()
@@ -26,6 +30,14 @@ func (h *Hub) StreamingHTTP(id string) bool {
 // Each response has a credit-limited stream. A slow browser cannot make the
 // device allocate an entire response or block the shared WebSocket reader.
 func (h *Hub) RoundTripHTTP(ctx context.Context, id string, msg protocol.Message, mapping string) (*http.Response, error) {
+	return h.roundTripHTTP(ctx, id, msg, mapping, streamHTTP)
+}
+
+func (h *Hub) RoundTripWebSocket(ctx context.Context, id string, msg protocol.Message, mapping string) (*http.Response, error) {
+	return h.roundTripHTTP(ctx, id, msg, mapping, streamWebSocket)
+}
+
+func (h *Hub) roundTripHTTP(ctx context.Context, id string, msg protocol.Message, mapping string, streamType streamKind) (*http.Response, error) {
 	base, err := url.Parse(msg.Target)
 	if err != nil || base.Hostname() == "" || base.User != nil || (base.Scheme != "http" && base.Scheme != "https") {
 		return nil, errors.New("invalid mapping target")
@@ -45,7 +57,7 @@ func (h *Hub) RoundTripHTTP(ctx context.Context, id string, msg protocol.Message
 		}
 	}()
 	for {
-		raw, err = h.openStream(openCtx, id, msg.Target, true)
+		raw, err = h.openStream(openCtx, id, msg.Target, streamType)
 		if !errors.Is(err, ErrHTTPBusy) {
 			break
 		}
@@ -103,6 +115,10 @@ func (h *Hub) RoundTripHTTP(ctx context.Context, id string, msg protocol.Message
 		req.Body = http.NoBody
 	}
 	req.Header = http.Header(protocol.FilterHeaders(http.Header(msg.Headers)))
+	if streamType == streamWebSocket {
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "websocket")
+	}
 	req.Host = base.Host
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
@@ -110,9 +126,14 @@ func (h *Hub) RoundTripHTTP(ctx context.Context, id string, msg protocol.Message
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusSwitchingProtocols {
+		backend, writable := resp.Body.(io.ReadWriteCloser)
+		if streamType == streamWebSocket && writable && websocket.IsWebSocketUpgrade(&http.Request{Header: resp.Header}) && strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") {
+			resp.Body = &webSocketBody{ReadWriteCloser: backend, cleanup: cleanup, record: conn.client.record, mapping: mapping}
+			return resp, nil
+		}
 		resp.Body.Close()
 		cleanup()
-		return nil, errors.New("WebSocket mapping is not supported")
+		return nil, errors.New("目标服务返回了无效或未请求的协议升级")
 	}
 	resp.Body = &streamHTTPBody{ReadCloser: resp.Body, conn: conn, cleanup: cleanup, count: func(n int) {
 		if conn.client.record != nil {
@@ -120,6 +141,34 @@ func (h *Hub) RoundTripHTTP(ctx context.Context, id string, msg protocol.Message
 		}
 	}}
 	return resp, nil
+}
+
+type webSocketBody struct {
+	io.ReadWriteCloser
+	cleanup func()
+	record  func(string, uint64, uint64)
+	mapping string
+}
+
+func (b *webSocketBody) Read(p []byte) (int, error) {
+	n, err := b.ReadWriteCloser.Read(p)
+	if n > 0 && b.record != nil {
+		b.record(b.mapping, 0, uint64(n))
+	}
+	return n, err
+}
+
+func (b *webSocketBody) Write(p []byte) (int, error) {
+	n, err := b.ReadWriteCloser.Write(p)
+	if n > 0 && b.record != nil {
+		b.record(b.mapping, uint64(n), 0)
+	}
+	return n, err
+}
+
+func (b *webSocketBody) Close() error {
+	b.cleanup()
+	return b.ReadWriteCloser.Close()
 }
 
 type countedHTTPBody struct {

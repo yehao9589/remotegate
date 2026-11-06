@@ -137,3 +137,80 @@ func TestBackupRejectsIncompleteOrUnsafeInstalledFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestBackupIncludesPreservedConfigurationOutsidePayloadList(t *testing.T) {
+	root, expected := installedPluginFixture(t)
+	listPath := filepath.Join(root, "usr/lib/opkg/info/luci-app-remotegate.list")
+	raw, err := os.ReadFile(listPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := strings.ReplaceAll(string(raw), "/etc/config/remotegate\n", "")
+	if err := os.WriteFile(listPath, []byte(list), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := backupInstalledPlugin(root, t.TempDir(), "0.1.15-1", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile(b.Package)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, _ := unpackTestArchive(t, raw)
+	data, _ := unpackTestArchive(t, outer["data.tar.gz"])
+	if string(data["etc/config/remotegate"]) != expected["/etc/config/remotegate"] {
+		t.Fatal("preserved live configuration was not backed up")
+	}
+	after, err := os.ReadFile(listPath)
+	if err != nil || string(after) != list {
+		t.Fatal("backup modified opkg's file list")
+	}
+}
+
+func TestBackupMissingListEntryNamesFileAndDoesNotRebuildExecutableRecords(t *testing.T) {
+	for _, name := range []string{"/usr/sbin/remotegate-agent", "/etc/init.d/remotegate", "/usr/share/remotegate/version"} {
+		t.Run(name, func(t *testing.T) {
+			root, _ := installedPluginFixture(t)
+			listPath := filepath.Join(root, "usr/lib/opkg/info/luci-app-remotegate.list")
+			raw, _ := os.ReadFile(listPath)
+			if err := os.WriteFile(listPath, []byte(strings.ReplaceAll(string(raw), name+"\n", "")), 0600); err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			_, err := backupInstalledPlugin(root, dir, "0.1.15-1", 1000)
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("missing executable record was not diagnosed: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "previous.ipk")); !os.IsNotExist(err) {
+				t.Fatal("incomplete installation produced a recovery package")
+			}
+		})
+	}
+}
+
+func TestBackupRejectsMissingOrUnsafeUnlistedConfiguration(t *testing.T) {
+	for _, bad := range []string{"missing", "symlink", "directory"} {
+		t.Run(bad, func(t *testing.T) {
+			root, _ := installedPluginFixture(t)
+			listPath := filepath.Join(root, "usr/lib/opkg/info/luci-app-remotegate.list")
+			raw, _ := os.ReadFile(listPath)
+			_ = os.WriteFile(listPath, []byte(strings.ReplaceAll(string(raw), "/etc/config/remotegate\n", "")), 0600)
+			configuration := filepath.Join(root, "etc/config/remotegate")
+			_ = os.Remove(configuration)
+			switch bad {
+			case "symlink":
+				if err := os.Symlink("/etc/passwd", configuration); err != nil {
+					t.Fatal(err)
+				}
+			case "directory":
+				if err := os.Mkdir(configuration, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := backupInstalledPlugin(root, t.TempDir(), "0.1.15-1", 1000); err == nil {
+				t.Fatal("unsafe unlisted configuration was accepted")
+			}
+		})
+	}
+}

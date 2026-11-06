@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/local/remotegate/internal/config"
 	"github.com/local/remotegate/internal/protocol"
 )
@@ -201,7 +202,7 @@ func accessTransport(w http.ResponseWriter, r *http.Request, origin *url.URL) bo
 		return true
 	}
 	accessNoStore(w)
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+	if !websocket.IsWebSocketUpgrade(r) && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		http.Redirect(w, r, origin.String()+r.URL.RequestURI(), http.StatusTemporaryRedirect)
 	} else {
 		accessError(w, http.StatusForbidden, "受保护映射须通过 HTTPS 访问，请重新打开 HTTPS 地址", origin.String()+"/")
@@ -292,6 +293,10 @@ func (a *app) mappingAccessHandler(next http.Handler) http.Handler {
 			if m.AccessMode != "public" && !a.requireMappingAccess(w, r, m) {
 				return
 			}
+			if websocket.IsWebSocketUpgrade(r) {
+				a.proxyMappingWebSocket(w, r, m)
+				return
+			}
 			// Mapping applications own their /api routes; they never reach console APIs.
 			a.root(w, r)
 			return
@@ -318,7 +323,7 @@ func (a *app) requireMappingAccess(w http.ResponseWriter, r *http.Request, m con
 		return false
 	}
 	if a.mappingSessionValid(r, m, console) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		if websocket.IsWebSocketUpgrade(r) || (r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions) {
 			if supplied := r.Header.Get("Origin"); supplied != "" {
 				actual, err := parsePublicURL(supplied)
 				if err != nil || actual.String() != origin.String() {
@@ -332,6 +337,12 @@ func (a *app) requireMappingAccess(w http.ResponseWriter, r *http.Request, m con
 			}
 		}
 		return true
+	}
+	if websocket.IsWebSocketUpgrade(r) {
+		// A WebSocket URL may contain an upstream token. Keep it out of login redirects.
+		accessNoStore(w)
+		http.Error(w, "RemoteGate: 需要先通过后台登录验证", http.StatusUnauthorized)
+		return false
 	}
 	path, err := safeAccessReturn(r.URL.RequestURI())
 	if err != nil {

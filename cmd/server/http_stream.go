@@ -30,6 +30,10 @@ func (a *app) proxyStreamHTTP(w http.ResponseWriter, r *http.Request, m config.M
 		http.Error(w, "网页连接未完成，请稍后重试", code)
 		return
 	}
+	writeMappedHTTPStream(w, r, m, resp)
+}
+
+func writeMappedHTTPStream(w http.ResponseWriter, r *http.Request, m config.Mapping, resp *http.Response) {
 	defer resp.Body.Close()
 	w.Header().Set("X-Accel-Buffering", "no")
 	writeMappedResponseHeaders(w, r, m, protocol.FilterHeaders(resp.Header), resp.StatusCode)
@@ -40,10 +44,10 @@ func (a *app) proxyStreamHTTP(w http.ResponseWriter, r *http.Request, m config.M
 		n, readErr := resp.Body.Read(buffer)
 		if n > 0 {
 			_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if _, err = w.Write(buffer[:n]); err != nil {
+			if _, err := w.Write(buffer[:n]); err != nil {
 				return
 			}
-			if err = controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			if err := controller.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
 				return
 			}
 		}
@@ -57,6 +61,14 @@ func (a *app) proxyStreamHTTP(w http.ResponseWriter, r *http.Request, m config.M
 	}
 }
 func writeMappedResponseHeaders(w http.ResponseWriter, r *http.Request, mapping config.Mapping, headers map[string][]string, status int) {
+	setMappedResponseHeaders(w, r, mapping, headers)
+	if status < 100 {
+		status = http.StatusBadGateway
+	}
+	w.WriteHeader(status)
+}
+
+func setMappedResponseHeaders(w http.ResponseWriter, r *http.Request, mapping config.Mapping, headers map[string][]string) {
 	rewriteLocation(headers, mapping.Target, r)
 	for key, values := range headers {
 		for _, value := range values {
@@ -71,8 +83,4 @@ func writeMappedResponseHeaders(w http.ResponseWriter, r *http.Request, mapping 
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Add("Vary", "Cookie")
 	}
-	if status < 100 {
-		status = http.StatusBadGateway
-	}
-	w.WriteHeader(status)
 }
