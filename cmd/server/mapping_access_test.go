@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -165,6 +166,50 @@ func TestMappingAccessRetryReturnsToOriginalPage(t *testing.T) {
 	}
 }
 
+func TestMappingAccessConcurrentNavigationsKeepTheirBrowserState(t *testing.T) {
+	f := newAccessFixture(t)
+	visitor := completeAccess(t, f)
+	m := f.mapping
+	m.ID = ""
+	m.Host = "dashboard.example.com"
+	if _, err := f.app.store.PutMapping(m); err != nil {
+		t.Fatal(err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parse := func(address string) *url.URL {
+		t.Helper()
+		u, err := url.Parse(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	jar.SetCookies(parse("https://console.example.com/"), []*http.Cookie{f.parent})
+	jar.SetCookies(parse("https://router.example.com/"), []*http.Cookie{visitor})
+	follow := func(address string) string {
+		t.Helper()
+		u := parse(address)
+		w := accessCall(f.app, "GET", address, jar.Cookies(u)...)
+		requireStatus(t, w, 302)
+		jar.SetCookies(u, w.Result().Cookies())
+		return w.Header().Get("Location")
+	}
+	panel := "https://dashboard.example.com/ui/metacubexd/"
+	firstAuthorize := follow(follow(panel))
+	secondAuthorize := follow(follow(panel + "?tab=second"))
+	first := follow(firstAuthorize)
+	second := follow(secondAuthorize)
+	if got := follow(second); got != panel+"?tab=second" {
+		t.Fatalf("Second tab returned to %q", got)
+	}
+	if got := follow(first); got != panel {
+		t.Fatalf("First tab returned to %q", got)
+	}
+}
+
 func TestMappingSessionRevokesOnLogoutExpiryAndMappingChange(t *testing.T) {
 	for _, change := range []string{"logout", "logout-after-second-login", "expiry", "mapping", "permissions", "password"} {
 		t.Run(change, func(t *testing.T) {
@@ -283,13 +328,15 @@ func TestMappingProxyNeverForwardsGatewayCredentials(t *testing.T) {
 	r.AddCookie(&http.Cookie{Name: adminCookie, Value: "administrator"})
 	r.AddCookie(&http.Cookie{Name: mappingAccessCookie, Value: "gateway"})
 	r.AddCookie(&http.Cookie{Name: mappingStateCookie, Value: "nonce"})
+	challengeCookie := accessStateCookieName(config.Mapping{PublicScheme: "https"}, strings.Repeat("a", 64))
+	r.AddCookie(&http.Cookie{Name: challengeCookie, Value: "challenge-nonce"})
 	r.AddCookie(&http.Cookie{Name: "sysauth", Value: "luci-session"})
 	r.Header.Set("Authorization", "Basic app-credentials")
 	h := http.Header(mappingProxyHeaders(r))
 	if h.Get("Cookie") != "sysauth=luci-session" || h.Get("Authorization") != "Basic app-credentials" {
 		t.Fatal(h)
 	}
-	for _, name := range []string{adminCookie, httpAdminCookie, mappingAccessCookie, mappingStateCookie, mappingAccessHTTPCookie, mappingStateHTTPCookie} {
+	for _, name := range []string{adminCookie, httpAdminCookie, mappingAccessCookie, mappingStateCookie, mappingAccessHTTPCookie, mappingStateHTTPCookie, challengeCookie} {
 		if mappingProxyCookie(name + "=evil; Path=/; Secure") {
 			t.Fatal("Reserved response cookie accepted", name)
 		}
