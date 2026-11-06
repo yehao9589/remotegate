@@ -130,6 +130,41 @@ func TestMappingAccessLoginContinuationAndBrowserBoundOneTimeCode(t *testing.T) 
 		t.Fatal("Callback must not be cached or leak its ticket")
 	}
 }
+
+func TestMappingAccessRetryReturnsToOriginalPage(t *testing.T) {
+	f := newAccessFixture(t)
+	authorize, oldState := beginAccess(t, f)
+	w := accessCall(f.app, "GET", authorize, f.parent)
+	requireStatus(t, w, 302)
+	callback := w.Header().Get("Location")
+	callbackURL, err := url.Parse(callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := "https://router.example.com" + mappingAccessPath + "start?retry=" + callbackURL.Query().Get("request")
+	w = accessCall(f.app, "GET", callback)
+	requireStatus(t, w, 403)
+	if !strings.Contains(w.Body.String(), `href="`+retry+`"`) || strings.Contains(w.Body.String(), "tab=settings") || len(w.Result().Cookies()) != 0 {
+		t.Fatal("Failed callback should offer a retry without disclosing the original URL or granting access")
+	}
+
+	w = accessCall(f.app, "GET", retry)
+	requireStatus(t, w, 302)
+	newAuthorize := w.Header().Get("Location")
+	newState := w.Result().Cookies()[0]
+	if newAuthorize == authorize || newState.Value == oldState.Value {
+		t.Fatal("Retry should start a fresh browser verification")
+	}
+	requireStatus(t, accessCall(f.app, "GET", callback, newState), 403)
+	w = accessCall(f.app, "GET", newAuthorize, f.parent)
+	requireStatus(t, w, 302)
+	w = accessCall(f.app, "GET", w.Header().Get("Location"), newState)
+	requireStatus(t, w, 302)
+	if got := w.Header().Get("Location"); got != "https://router.example.com/private?tab=settings" {
+		t.Fatalf("Retry returned to %q instead of the original page", got)
+	}
+}
+
 func TestMappingSessionRevokesOnLogoutExpiryAndMappingChange(t *testing.T) {
 	for _, change := range []string{"logout", "logout-after-second-login", "expiry", "mapping", "permissions", "password"} {
 		t.Run(change, func(t *testing.T) {

@@ -437,15 +437,25 @@ func (a *app) startMappingAccess(w http.ResponseWriter, r *http.Request, m confi
 		return
 	}
 	expires := time.Now().Add(5 * time.Minute)
+	scope := accessScope(m, console)
 	manager := a.mappingAccessManager()
 	manager.mu.Lock()
 	manager.pruneLocked(time.Now())
+	if previous := r.URL.Query().Get("retry"); previous != "" {
+		challenge, found := manager.challenges[previous]
+		if !found || challenge.Scope != scope {
+			manager.mu.Unlock()
+			accessError(w, 403, "原验证请求已失效，请从原访问地址重新打开", "")
+			return
+		}
+		path = challenge.ReturnPath
+	}
 	if len(manager.challenges) >= mappingAccessLimit {
 		manager.mu.Unlock()
 		accessError(w, 429, "验证请求过多，请稍后重试", origin.String()+"/")
 		return
 	}
-	manager.challenges[id] = accessChallenge{MappingID: m.ID, Scope: accessScope(m, console), ReturnPath: path, Verifier: sha256.Sum256([]byte(verifier)), Expires: expires}
+	manager.challenges[id] = accessChallenge{MappingID: m.ID, Scope: scope, ReturnPath: path, Verifier: sha256.Sum256([]byte(verifier)), Expires: expires}
 	manager.mu.Unlock()
 	_, name := accessCookieNames(m)
 	setMappingCookie(w, m, name, verifier, expires)
@@ -511,10 +521,8 @@ func (a *app) authorizeMappingAccess(w http.ResponseWriter, r *http.Request) {
 }
 func (a *app) completeMappingAccess(w http.ResponseWriter, r *http.Request, m config.Mapping, origin, console *url.URL) {
 	id, code := r.URL.Query().Get("request"), r.URL.Query().Get("code")
-	_, stateName := accessCookieNames(m)
-	cookie, err := r.Cookie(stateName)
-	if !validAccessToken(id) || !validAccessToken(code) || err != nil || !validAccessToken(cookie.Value) {
-		accessError(w, 403, "浏览器验证状态缺失或失效，请重新验证", origin.String()+"/")
+	if !validAccessToken(id) {
+		accessError(w, 403, "原验证请求已失效，请从原访问地址重新打开", "")
 		return
 	}
 	manager := a.mappingAccessManager()
@@ -522,21 +530,32 @@ func (a *app) completeMappingAccess(w http.ResponseWriter, r *http.Request, m co
 	manager.pruneLocked(time.Now())
 	challenge, challengeOK := manager.challenges[id]
 	grant, codeOK := manager.codes[code]
-	verifier := sha256.Sum256([]byte(cookie.Value))
-	if !challengeOK || !codeOK || grant.Request != id || challenge.MappingID != m.ID || challenge.Scope != accessScope(m, console) || subtle.ConstantTimeCompare(verifier[:], challenge.Verifier[:]) != 1 {
-		manager.mu.Unlock()
-		accessError(w, 403, "验证凭证无效、已使用或属于其他浏览器", origin.String()+"/")
+	manager.mu.Unlock()
+	if !challengeOK || challenge.Scope != accessScope(m, console) {
+		accessError(w, 403, "原验证请求已失效，请从原访问地址重新打开", "")
 		return
 	}
-	manager.mu.Unlock()
+	// Keep the original path and query on the server until the new verification succeeds.
+	retry := origin.String() + mappingAccessPath + "start?retry=" + id
+	_, stateName := accessCookieNames(m)
+	cookie, err := r.Cookie(stateName)
+	if !validAccessToken(code) || err != nil || !validAccessToken(cookie.Value) {
+		accessError(w, 403, "浏览器验证状态缺失或失效，请重新验证", retry)
+		return
+	}
+	verifier := sha256.Sum256([]byte(cookie.Value))
+	if !codeOK || grant.Request != id || subtle.ConstantTimeCompare(verifier[:], challenge.Verifier[:]) != 1 {
+		accessError(w, 403, "验证凭证无效、已使用或属于其他浏览器", retry)
+		return
+	}
 	expires, valid := a.accessOwnerValid(grant.Owner)
 	if !valid || !a.auth.ownerAllows(grant.Owner, m.DeviceID, "view") {
-		accessError(w, 403, "后台登录已失效，请重新登录", origin.String()+"/")
+		accessError(w, 403, "后台登录已失效，请重新登录", retry)
 		return
 	}
 	token := accessToken()
 	if token == "" {
-		accessError(w, 503, "暂时无法完成验证", origin.String()+"/")
+		accessError(w, 503, "暂时无法完成验证", retry)
 		return
 	}
 	manager.mu.Lock()
@@ -544,17 +563,17 @@ func (a *app) completeMappingAccess(w http.ResponseWriter, r *http.Request, m co
 	// Consume both values atomically: concurrent callbacks cannot reuse a grant.
 	if _, ok := manager.challenges[id]; !ok {
 		manager.mu.Unlock()
-		accessError(w, 403, "验证凭证已使用", origin.String()+"/")
+		accessError(w, 403, "原验证请求已失效，请从原访问地址重新打开", "")
 		return
 	}
 	if _, ok := manager.codes[code]; !ok {
 		manager.mu.Unlock()
-		accessError(w, 403, "验证凭证已使用", origin.String()+"/")
+		accessError(w, 403, "验证凭证已使用或失效，请重新验证", retry)
 		return
 	}
 	if len(manager.sessions) >= mappingAccessLimit {
 		manager.mu.Unlock()
-		accessError(w, 429, "访问会话已达上限，请稍后再试", origin.String()+"/")
+		accessError(w, 429, "访问会话已达上限，请稍后再试", retry)
 		return
 	}
 	delete(manager.challenges, id)
