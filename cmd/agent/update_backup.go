@@ -157,9 +157,25 @@ func backupInstalledPlugin(root, dir, version string, packageSize int64) (update
 		}
 		data = append(data, entry)
 	}
+	// A preserved UCI configuration can be absent from opkg's payload list.
+	// Back up the live configuration at its fixed path as well; never substitute
+	// package defaults or infer arbitrary missing executable files from disk.
+	const configuration = "/etc/config/remotegate"
+	if !seen[configuration] {
+		entry, err := regularBackupFile(root, configuration)
+		if err != nil {
+			return backup, fmt.Errorf("旧插件配置备份失败：%w", err)
+		}
+		total += entry.size
+		if total > update.MaxPackageSize {
+			return backup, errors.New("旧插件备份过大，已停止更新")
+		}
+		data = append(data, entry)
+		seen[configuration] = true
+	}
 	for _, required := range []string{"/usr/sbin/remotegate-agent", "/etc/init.d/remotegate", "/etc/config/remotegate", "/usr/share/remotegate/version"} {
 		if !seen[required] {
-			return backup, errors.New("旧插件文件不完整，已停止更新")
+			return backup, fmt.Errorf("旧插件安装清单缺少 %s，已停止更新；请通过 iStore 或系统软件包上传新版安装包", required)
 		}
 	}
 	for _, name := range []string{"control", "conffiles", "preinst", "postinst", "prerm", "postrm"} {

@@ -31,7 +31,7 @@ func TestMappedHTTPStreamFlushesPreservesLoginAndKeepsAccessProtection(t *testin
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
 	}))
-	defer backend.Close()
+	t.Cleanup(backend.Close)
 	a := freshAuthApp(t)
 	requireStatus(t, authCall(a, "/api/auth/setup", setupBody, "", nil), 200)
 	d, token, err := a.store.CreateDevice("stream fixture")
@@ -44,32 +44,7 @@ func TestMappedHTTPStreamFlushesPreservesLoginAndKeepsAccessProtection(t *testin
 		}
 	}
 	server := agentTestServer(t, a)
-	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect?device_id="+d.ID+"&token="+token+"&http_stream=1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	var writer sync.Mutex
-	bridge := tcpbridge.New(ctx, false, func(msg protocol.Message) error { writer.Lock(); defer writer.Unlock(); return ws.WriteJSON(msg) }, func(ctx context.Context, target string) (net.Conn, error) {
-		u, err := url.Parse(target)
-		if err != nil {
-			return nil, err
-		}
-		return (&net.Dialer{}).DialContext(ctx, "tcp", u.Host)
-	})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			var msg protocol.Message
-			if ws.ReadJSON(&msg) != nil {
-				return
-			}
-			bridge.Handle(msg)
-		}
-	}()
-	defer func() { cancel(); ws.Close(); bridge.Close(); <-done }()
-	waitDevice(t, a, d.ID, true)
+	ctx := attachMappedStreamFixture(t, a, server, d.ID, token)
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	request := func(host, path string, ctx context.Context) (*http.Response, error) {
 		req, _ := http.NewRequestWithContext(ctx, "GET", server.URL+path, nil)
@@ -122,4 +97,35 @@ func TestMappedHTTPStreamFlushesPreservesLoginAndKeepsAccessProtection(t *testin
 	if calls.Load() != before || protected.StatusCode == 200 {
 		t.Fatal("stream capability bypassed protected mapping authorization")
 	}
+}
+
+func attachMappedStreamFixture(t *testing.T, a *app, server *httptest.Server, id, token string) context.Context {
+	t.Helper()
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect?device_id="+id+"&token="+token+"&http_stream=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var writer sync.Mutex
+	bridge := tcpbridge.New(ctx, false, func(msg protocol.Message) error { writer.Lock(); defer writer.Unlock(); return ws.WriteJSON(msg) }, func(ctx context.Context, target string) (net.Conn, error) {
+		u, err := url.Parse(target)
+		if err != nil {
+			return nil, err
+		}
+		return (&net.Dialer{}).DialContext(ctx, "tcp", u.Host)
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			var msg protocol.Message
+			if ws.ReadJSON(&msg) != nil {
+				return
+			}
+			bridge.Handle(msg)
+		}
+	}()
+	t.Cleanup(func() { cancel(); ws.Close(); <-done; bridge.Close() })
+	waitDevice(t, a, id, true)
+	return ctx
 }

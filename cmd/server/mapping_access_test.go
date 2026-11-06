@@ -18,6 +18,7 @@ type accessFixture struct {
 	app     *app
 	mapping config.Mapping
 	parent  *http.Cookie
+	token   string
 }
 
 func newAccessFixture(t *testing.T) accessFixture {
@@ -25,7 +26,7 @@ func newAccessFixture(t *testing.T) accessFixture {
 	a := freshAuthApp(t)
 	requireStatus(t, authCall(a, "/api/auth/setup", setupBody, "", nil), 200)
 	a.consoleHost = "console.example.com"
-	d, _, err := a.store.CreateDevice("router")
+	d, token, err := a.store.CreateDevice("router")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +36,7 @@ func newAccessFixture(t *testing.T) accessFixture {
 	}
 	w := httptest.NewRecorder()
 	a.auth.issueSession(w, httptest.NewRequest("POST", "https://console.example.com/login", nil), "owner")
-	return accessFixture{a, m, w.Result().Cookies()[0]}
+	return accessFixture{app: a, mapping: m, parent: w.Result().Cookies()[0], token: token}
 }
 func accessCall(a *app, method, address string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, address, nil)

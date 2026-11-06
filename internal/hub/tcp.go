@@ -17,6 +17,17 @@ import (
 
 type tunnelAddr string
 
+type streamKind int
+
+const (
+	streamTCP streamKind = iota
+	streamHTTP
+	streamWebSocket
+)
+
+// Reserve at least half of the agent's HTTP slots for ordinary page requests.
+const maxWebSocketStreams = protocol.MaxHTTPStreams / 2
+
 func (a tunnelAddr) Network() string { return "remotegate" }
 func (a tunnelAddr) String() string  { return string(a) }
 
@@ -36,29 +47,41 @@ type tcpConn struct {
 	creditReady     chan struct{}
 	consumed        atomic.Int64
 	web             bool
+	upgrade         bool
 	webBuffer       *protocol.ByteBuffer
 }
 
 func (h *Hub) OpenTCP(ctx context.Context, deviceID, target string) (net.Conn, error) {
-	return h.openStream(ctx, deviceID, target, false)
+	return h.openStream(ctx, deviceID, target, streamTCP)
 }
 
-func (h *Hub) openStream(ctx context.Context, deviceID, target string, web bool) (net.Conn, error) {
+func (h *Hub) openStream(ctx context.Context, deviceID, target string, streamType streamKind) (net.Conn, error) {
 	h.mu.RLock()
 	c := h.clients[deviceID]
 	h.mu.RUnlock()
 	if c == nil {
 		return nil, ErrOffline
 	}
-	if (!web && !c.CanRemote) || (web && !c.CanStreamHTTP) {
+	web, upgrade := streamType != streamTCP, streamType == streamWebSocket
+	if web && !c.CanStreamHTTP {
+		return nil, errors.New("设备插件不支持网页流式转发，请先更新插件")
+	}
+	if !web && !c.CanRemote {
 		return nil, errors.New("请升级插件，并在路由器插件中启用 SSH / 文件管理")
 	}
 	count, limit, prefix, kind := &c.streamCount, protocol.MaxDeviceStreams, "tcp:", "tcp-open"
 	if web {
 		count, limit, prefix, kind = &c.webCount, protocol.MaxHTTPStreams, "http:", "http-open"
 	}
+	if upgrade && c.webSocketCount.Add(1) > maxWebSocketStreams {
+		c.webSocketCount.Add(-1)
+		return nil, ErrWebSocketBusy
+	}
 	if count.Add(1) > int32(limit) {
 		count.Add(-1)
+		if upgrade {
+			c.webSocketCount.Add(-1)
+		}
 		if web {
 			return nil, ErrHTTPBusy
 		}
@@ -67,10 +90,13 @@ func (h *Hub) openStream(ctx context.Context, deviceID, target string, web bool)
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		count.Add(-1)
+		if upgrade {
+			c.webSocketCount.Add(-1)
+		}
 		return nil, err
 	}
 	id := prefix + hex.EncodeToString(nonce[:])
-	stream := &tcpConn{client: c, id: id, target: target, incoming: make(chan []byte, 8), done: make(chan struct{}), changed: make(chan struct{}, 1), credit: protocol.StreamWindowBytes, creditChanged: make(chan struct{}, 1), creditReady: make(chan struct{}, 1), web: web, webBuffer: protocol.NewByteBuffer()}
+	stream := &tcpConn{client: c, id: id, target: target, incoming: make(chan []byte, 8), done: make(chan struct{}), changed: make(chan struct{}, 1), credit: protocol.StreamWindowBytes, creditChanged: make(chan struct{}, 1), creditReady: make(chan struct{}, 1), web: web, upgrade: upgrade, webBuffer: protocol.NewByteBuffer()}
 	c.streams.Store(id, stream)
 	reply, err := h.requestTo(ctx, c, protocol.Message{Type: kind, ID: id, Target: target})
 	if err == nil && reply.Error != "" {
@@ -118,6 +144,9 @@ func (c *tcpConn) finish(err error, notify bool) {
 		c.client.streams.Delete(c.id)
 		if c.web {
 			c.client.webCount.Add(-1)
+			if c.upgrade {
+				c.client.webSocketCount.Add(-1)
+			}
 		} else {
 			c.client.streamCount.Add(-1)
 		}
