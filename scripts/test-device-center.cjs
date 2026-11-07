@@ -2,8 +2,8 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 function fixture(){
  const nodes=new Map(),requests=[],baseActions=[],opened=[],timers=new Map();let timer=0,confirm=true;
  const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- function node(id){if(!nodes.has(id))nodes.set(id,{innerHTML:'',textContent:'',disabled:false,hidden:false,value:'',classList:{remove(){},toggle(){}},querySelectorAll(){return []},querySelector(){return null},setAttribute(){},appendChild(){},showModal(){},close(){},focus(){},setSelectionRange(){}});return nodes.get(id)}
- const context=vm.createContext({console,Map,Set,Date,Number,String,URL,AbortController,encodeURIComponent,authTransition:1,customMappingDomain:'__custom__',location:{host:'console.example.com'},query:'',filter:'',editing:null,state:{devices:[{id:'router-one',name:'主路由器',online:true,version:'0.1.3',connectedAt:new Date(Date.now()-65000).toISOString(),info:{}}],mappings:[{id:'map-one',deviceId:'router-one',host:'service.example.com',target:'http://192.168.1.1:80',note:'管理页',enabled:true,publicScheme:'https',publicPort:443}]},$:node,esc,uiIcon:()=>'',expandedFeatures:new Map(),renderWorkbench(){},render(){context.deviceCards()},deviceCards(){},mappingRow:m=>'<tr><td>'+esc(m.host)+'</td><td><button class="danger" data-action="deleteMapping">删除</button></td></tr>',pluginUpdateButton:()=>'',toggleFeature(){},action:async(a,id)=>{baseActions.push({a,id})},openEditor:(type,item)=>{opened.push({type,item});context.editing={type,item}},copyText:async()=>{},toast(){},refresh:async()=>{},api:async(path,method,body,options)=>{requests.push({path,method,body,options});return {latencyMs:27,checkedAt:new Date().toISOString()}},confirm:()=>confirm,setTimeout:fn=>{timers.set(++timer,fn);return timer},clearTimeout:id=>timers.delete(id),document:{activeElement:null,getElementById:node,createElement:()=>node('option')},FormData:class{constructor(){this.fields=new Map([['name','新名称'],['note','路由器备注'],['pinned','on']])}get(k){return this.fields.get(k)}has(k){return this.fields.has(k)}}});
+ function node(id){if(!nodes.has(id)){const listeners=new Map();nodes.set(id,{innerHTML:'',textContent:'',disabled:false,hidden:false,open:false,value:'',classList:{add(){},remove(){},toggle(){}},querySelectorAll(){return []},querySelector(){return null},setAttribute(){},appendChild(){},addEventListener(type,fn){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(fn)},showModal(){this.open=true},close(){this.open=false;for(const fn of listeners.get('close')||[])fn()},focus(){},setSelectionRange(){}})}return nodes.get(id)}
+ const context=vm.createContext({console,Map,Set,Date,Number,String,URL,AbortController,encodeURIComponent,authTransition:1,customMappingDomain:'__custom__',location:{host:'console.example.com'},query:'',filter:'',editing:null,state:{devices:[{id:'router-one',name:'主路由器',online:true,version:'0.1.3',connectedAt:new Date(Date.now()-65000).toISOString(),info:{}}],mappings:[{id:'map-one',deviceId:'router-one',host:'service.example.com',target:'http://192.168.1.1:80',note:'管理页',enabled:true,publicScheme:'https',publicPort:443}]},$:node,esc,uiIcon:()=>'',expandedFeatures:new Map(),renderWorkbench(){},render(){context.deviceCards()},deviceCards(){},mappingRow:m=>'<tr><td>'+esc(m.host)+'</td><td><button class="danger" data-action="deleteMapping">删除</button></td></tr>',pluginUpdateButton:()=>'',toggleFeature(){},action:async(a,id)=>{baseActions.push({a,id})},openEditor:(type,item)=>{opened.push({type,item});context.editing={type,item};node('#modal').showModal()},copyText:async()=>{},toast(){},refresh:async()=>{},api:async(path,method,body,options)=>{requests.push({path,method,body,options});return {latencyMs:27,checkedAt:new Date().toISOString()}},confirm:()=>confirm,setTimeout:fn=>{timers.set(++timer,fn);return timer},clearTimeout:id=>timers.delete(id),document:{activeElement:null,getElementById:node,createElement:()=>node('option')},FormData:class{constructor(){this.fields=new Map([['name','新名称'],['note','路由器备注'],['pinned','on']])}get(k){return this.fields.get(k)}has(k){return this.fields.has(k)}}});
  node('#editor').onsubmit=async()=>{};
  vm.runInContext(fs.readFileSync('cmd/server/web/device-center.js','utf8'),context);
  return {context,node,requests,baseActions,opened,timers,confirm:value=>confirm=value,eval:code=>vm.runInContext(code,context)};
@@ -230,4 +230,122 @@ test('addition order survives device renaming, online changes, pinning and pagin
  assert.ok(html.indexOf('<strong>路由器 01')<html.indexOf('<strong>AAA 更名'));
  f.context.state.devices[24].pinned=false;f.context.deviceCards();html=f.node('#deviceCards').innerHTML;
  assert.match(html,/<strong>AAA 更名/);assert.doesNotMatch(html,/<strong>路由器 01/);
+});
+
+function connectionSnapshot(overrides={}){return {limits:{webSockets:8,httpReserve:8},connections:{capacity:128,effectiveWebSockets:8,effectiveHTTPReserve:8,activeHTTP:2,activeWebSockets:4,streaming:true},...overrides}}
+async function connectionEditor(f,snapshot=connectionSnapshot()){
+ f.context.api=async(path,method,body)=>{f.requests.push({path,method,body});return snapshot};
+ await f.context.action('connectionLimits','router-one');await new Promise(resolve=>setImmediate(resolve));
+}
+
+test('connection settings distinguish target, active usage and client effective limits',async()=>{
+ const f=fixture(),d=f.context.state.devices[0];d.name='<img src=x>';
+ await connectionEditor(f,connectionSnapshot({limits:{webSockets:24,httpReserve:8},connections:{capacity:16,effectiveWebSockets:8,effectiveHTTPReserve:8,activeHTTP:2,activeWebSockets:5,streaming:true}}));
+ assert.equal(f.requests[0].path,'devices/router-one/connection-limits');assert.equal(f.requests[0].method,'GET');
+ assert.equal(f.node('#connectionWebSockets').value,'24');assert.equal(f.node('#connectionHTTPReserve').value,'8');assert.equal(f.node('#save').disabled,false);
+ assert.match(f.node('#connectionUsage').innerHTML,/5 \/ 8/);assert.match(f.node('#connectionUsage').innerHTML,/16 条/);
+ assert.match(f.node('#connectionLimitNotice').textContent,/超出部分需升级插件后生效/);assert.match(f.node('#connectionLimitTotal').textContent,/32 \/ 128/);
+ assert.equal(f.node('#modalTitle').textContent,'连接设置 · <img src=x>');assert.doesNotMatch(f.node('#fields').innerHTML,/<img/);
+ assert.match(f.node('#fields').innerHTML,/SSH 和文件管理使用单独额度/);assert.equal(f.timers.size,0);
+});
+
+test('connection presets remain drafts, refresh retains edits and save updates only the chosen device',async()=>{
+ const f=fixture();f.context.state.devices.push({id:'other',name:'办公室',connectionLimits:{webSockets:8,httpReserve:8}});await connectionEditor(f);
+ f.node('#connectionMultiPanel').onclick();assert.equal(f.node('#connectionWebSockets').value,'24');assert.equal(f.requests.length,1);
+ await f.node('#connectionRefresh').onclick();assert.equal(f.node('#connectionWebSockets').value,'24');assert.equal(f.requests.length,2);
+ f.node('#connectionDefaults').onclick();assert.equal(f.node('#connectionWebSockets').value,'8');assert.equal(f.requests.length,2);
+ f.node('#connectionMultiPanel').onclick();let refreshes=0;f.context.refresh=async()=>refreshes++;
+ f.context.api=async(path,method,body)=>{f.requests.push({path,method,body});return connectionSnapshot({limits:body})};
+ await f.node('#editor').onsubmit({preventDefault(){}});
+ assert.equal(f.requests.at(-1).method,'PUT');assert.deepEqual(JSON.parse(JSON.stringify(f.requests.at(-1).body)),{webSockets:24,httpReserve:8});
+ assert.equal(f.context.state.devices[0].connectionLimits.webSockets,24);assert.equal(f.context.state.devices[1].connectionLimits.webSockets,8);
+ assert.equal(f.node('#modal').open,false);assert.equal(f.node('#save').disabled,false);assert.equal(refreshes,1);assert.equal(f.timers.size,0);
+ assert.ok(f.requests.every(r=>!r.path.endsWith('/reconnect')));
+});
+
+test('connection quota validation blocks invalid totals and numeric values before any save',async()=>{
+ const f=fixture();await connectionEditor(f);
+ for(const [web,http] of [['0','8'],['125','4'],['8','3'],['8','65'],['100','29'],['2.5','8'],['','8'],['8','NaN']]){
+  f.node('#connectionWebSockets').value=web;f.node('#connectionHTTPReserve').value=http;await f.node('#editor').onsubmit({preventDefault(){}});
+  assert.notEqual(f.node('#formError').textContent,'');assert.equal(f.requests.length,1);assert.equal(f.node('#modal').open,true);
+ }
+ f.node('#connectionWebSockets').value='124';f.node('#connectionHTTPReserve').value='4';f.context.api=async(path,method,body)=>{f.requests.push({path,method,body});return connectionSnapshot({limits:body})};
+ await f.node('#editor').onsubmit({preventDefault(){}});assert.equal(f.requests.length,2);
+});
+
+test('offline device keeps configured targets without inventing live usage or forcing reconnection',async()=>{
+ const f=fixture();f.context.state.devices[0].online=false;await connectionEditor(f,connectionSnapshot({limits:{webSockets:24,httpReserve:8},connections:{capacity:0,effectiveWebSockets:0,effectiveHTTPReserve:0,activeHTTP:0,activeWebSockets:0,streaming:false}}));
+ assert.match(f.node('#connectionUsage').innerHTML,/设备离线/);assert.match(f.node('#connectionLimitNotice').textContent,/离线时也可以保存配置/);assert.equal(f.node('#connectionWebSockets').value,'24');
+ const d=f.context.state.devices[0];d.online=true;d.connections={capacity:16,streaming:false};
+ assert.match(f.context.deviceConnectionLimitsNotice(d,{webSockets:8,httpReserve:8}),/不支持网页流式连接/);
+});
+
+test('connection settings are absent and cannot be opened by ordinary users',async()=>{
+ const f=fixture();f.context.state.account={role:'user'};f.context.deviceCards();assert.doesNotMatch(f.node('#deviceCards').innerHTML,/class="device-manage"|data-action="connectionLimits"/);
+ await f.context.action('connectionLimits','router-one');f.context.openEditor('connectionLimits',f.context.state.devices[0]);assert.equal(f.requests.length,0);assert.equal(f.opened.length,0);
+ f.context.state.account={role:'admin'};f.context.deviceCards();assert.match(f.node('#deviceCards').innerHTML,/data-action="connectionLimits"[^>]*>连接设置/);
+ f.context.memberPortal=true;await f.context.action('connectionLimits','router-one');assert.equal(f.requests.length,0);
+});
+
+test('connection GET errors offer retry, presets cannot save before data arrives, cancellation rejects late reads',async()=>{
+ const f=fixture();f.context.api=async()=>{throw Error('读取失败')};await f.context.action('connectionLimits','router-one');await new Promise(resolve=>setImmediate(resolve));
+ assert.match(f.node('#formError').textContent,/读取失败/);assert.equal(f.node('#save').disabled,true);assert.equal(f.node('#connectionRefresh').disabled,false);
+ let saves=0;f.context.api=async()=>{saves++;return connectionSnapshot({limits:{webSockets:12,httpReserve:8}})};
+ await f.node('#editor').onsubmit({preventDefault(){}});assert.equal(saves,0);
+ await f.node('#connectionRefresh').onclick();assert.equal(f.node('#connectionWebSockets').value,'12');assert.equal(f.node('#save').disabled,false);
+ let resolve;f.context.api=()=>new Promise(r=>resolve=r);const pending=f.node('#connectionRefresh').onclick();f.node('#cancel').onclick();
+ resolve(connectionSnapshot({limits:{webSockets:99,httpReserve:8}}));await pending;assert.equal(f.node('#connectionWebSockets').value,'12');assert.equal(f.node('#save').disabled,false);assert.equal(f.timers.size,0);
+});
+
+test('connection save prevents duplicate submissions and ignores responses after logout or device removal',async()=>{
+ for(const ending of ['logout','delete']){
+  const f=fixture();await connectionEditor(f);let resolve,calls=0;f.context.api=()=>{calls++;return new Promise(r=>resolve=r)};
+  f.node('#connectionWebSockets').value='24';const pending=f.node('#editor').onsubmit({preventDefault(){}});await f.node('#editor').onsubmit({preventDefault(){}});assert.equal(calls,1);
+  if(ending==='logout')f.context.authTransition++;else f.context.state.devices=[];
+  resolve(connectionSnapshot({limits:{webSockets:24,httpReserve:8}}));await pending;
+  if(ending==='logout')assert.equal(f.context.state.devices[0].connectionLimits.webSockets,8);else assert.equal(f.context.state.devices.length,0);
+  assert.equal(f.timers.size,0);
+ }
+});
+
+test('connection save errors retain the draft and timeout cleanup allows a safe retry',async()=>{
+ const f=fixture();await connectionEditor(f);f.node('#connectionWebSockets').value='24';
+ f.context.api=async()=>{throw Error('保存失败')};await f.node('#editor').onsubmit({preventDefault(){}});
+ assert.equal(f.node('#modal').open,true);assert.equal(f.node('#connectionWebSockets').value,'24');assert.equal(f.context.state.devices[0].connectionLimits.webSockets,8);
+ assert.match(f.node('#formError').textContent,/保存失败/);assert.equal(f.node('#save').disabled,false);assert.equal(f.timers.size,0);
+ f.context.api=async(path,method,body,options)=>new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>{const error=Error('aborted');error.name='AbortError';reject(error)}));
+ const pending=f.node('#editor').onsubmit({preventDefault(){}});assert.equal(f.timers.size,1);[...f.timers.values()][0]();await pending;
+ assert.match(f.node('#formError').textContent,/刷新确认结果后重试/);assert.equal(f.node('#save').disabled,false);assert.equal(f.node('#connectionWebSockets').disabled,false);assert.equal(f.timers.size,0);
+});
+
+test('opening another editor prevents a late connection read from replacing its fields or save state',async()=>{
+ const f=fixture();let resolve;f.context.api=()=>new Promise(r=>resolve=r);await f.context.action('connectionLimits','router-one');
+ f.node('#cancel').onclick();f.context.openEditor('device',f.context.state.devices[0]);const fields=f.node('#fields').innerHTML;
+ assert.equal(f.node('#save').disabled,false);resolve(connectionSnapshot({limits:{webSockets:24,httpReserve:8}}));await new Promise(r=>setImmediate(r));
+ assert.equal(f.node('#fields').innerHTML,fields);assert.equal(f.node('#save').disabled,false);assert.equal(f.context.editing.type,'device');assert.equal(f.timers.size,0);
+});
+
+test('device management expansion survives refresh independently per device and resets for another login',()=>{
+ const f=fixture();f.context.state.devices.push({id:'other',name:'办公室',online:false,info:{}});
+ const first={dataset:{deviceManage:'router-one'},open:false,isConnected:true},second={dataset:{deviceManage:'other'},open:false,isConnected:true};let menus=[first,second];
+ f.node('#deviceCards').querySelectorAll=selector=>selector==='[data-device-manage]'?menus:[];f.context.deviceCards();
+ first.open=true;first.ontoggle();f.context.deviceCards();let html=f.node('#deviceCards').innerHTML;
+ assert.match(html,/data-device-manage="router-one" open/);assert.doesNotMatch(html,/data-device-manage="other" open/);
+ // Capture the native state even if the scheduled toggle event has not run.
+ second.open=true;f.context.renderWorkbench();f.context.deviceCards();html=f.node('#deviceCards').innerHTML;assert.match(html,/data-device-manage="other" open/);
+ first.open=false;first.ontoggle();f.context.deviceCards();assert.doesNotMatch(f.node('#deviceCards').innerHTML,/data-device-manage="router-one" open/);
+ first.open=true;first.ontoggle();menus=[];f.context.deviceCards();assert.match(f.node('#deviceCards').innerHTML,/data-device-manage="router-one" open/);
+ const staleToggle=first.ontoggle;f.context.authTransition++;menus=[first,second];f.context.deviceCards();staleToggle();
+ html=f.node('#deviceCards').innerHTML;assert.doesNotMatch(html,/data-device-manage="(?:router-one|other)" open/);assert.equal(f.eval('deviceManageOpen.size'),0);
+ f.eval("deviceManageOpen.add('other')");f.context.state.devices.splice(1);menus=[];f.context.deviceCards();assert.equal(f.eval("deviceManageOpen.has('other')"),false);
+});
+
+test('refresh restores a focused management action without moving focus across logins',()=>{
+ const f=fixture();let focused=0;
+ const action={dataset:{action:'connectionLimits'},disabled:false,focus(options){focused++;assert.equal(options.preventScroll,true)}};
+ const menu={dataset:{deviceManage:'router-one'},open:true,isConnected:true,querySelectorAll:()=>[action],querySelector:()=>({focus(){focused++}})};
+ f.node('#deviceCards').querySelectorAll=selector=>selector==='[data-device-manage]'?[menu]:[];
+ f.context.document.activeElement={dataset:{action:'connectionLimits'},closest:selector=>selector==='[data-device-manage]'?menu:null};
+ f.context.deviceCards();assert.equal(focused,1);assert.match(f.node('#deviceCards').innerHTML,/data-device-manage="router-one" open/);
+ f.context.authTransition++;f.context.deviceCards();assert.equal(focused,1);
 });

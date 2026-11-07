@@ -2,6 +2,7 @@
 const deviceRevealed=new Set(),deviceMapFilters=new Map(),deviceOperations=new Map();
 const deviceIPRevealed=new Map();
 const deviceHistories=new Map();
+const deviceManageOpen=new Set();
 const deviceHistoryPages=new Map(),deviceListPaging={page:0,size:10,signature:''};
 let deviceWorkspaceTransition=authTransition;
 function deviceRecovering(d){const at=Date.parse(d.lastDisconnectedAt);return !d.online&&Number.isFinite(at)&&Date.now()-at>=0&&Date.now()-at<30000}
@@ -49,6 +50,84 @@ function trafficHint(device=false){return `<p class="traffic-hint">${device?'设
 function deviceLatency(d){return d.online&&Number.isFinite(d.latencyMs)&&Date.now()-Date.parse(d.latencyAt)<90000?deviceLatencyText(d.latencyMs):'待检测'}
 function deviceInfoCell(label,value){return `<div><dt>${esc(label)}</dt><dd>${esc(value||'尚未上报')}</dd></div>`}
 function deviceButton(actionName,id,label,icon,extra=''){return `<button type="button" data-action="${actionName}" data-id="${esc(id)}" ${extra}>${uiIcon(icon)}${esc(label)}</button>`}
+function deviceCanManage(){return !(typeof memberPortal!=='undefined'&&memberPortal)&&state.account?.role!=='user'}
+function deviceManagePanel(d){return deviceCanManage()?`<details class="device-manage" data-device-manage="${esc(d.id)}" ${deviceManageOpen.has(d.id)?'open':''}><summary>${uiIcon('settings')}设备管理</summary><div>${deviceButton('rename',d.id,'编辑名称与备注','edit')}${deviceButton('connectionLimits',d.id,'连接设置','settings')}${deviceButton('reconnect',d.id,'重新连接','refresh',!d.online||deviceOperations.get(d.id)?.busy?'disabled':'')}${deviceButton('deleteDevice',d.id,'删除设备','trash','class="danger"')}</div></details>`:''}
+function rememberDeviceManagePanels(container){
+ if(deviceWorkspaceTransition!==authTransition||!deviceCanManage())return;
+ container?.querySelectorAll('[data-device-manage]').forEach(menu=>{if(menu.open)deviceManageOpen.add(menu.dataset.deviceManage);else deviceManageOpen.delete(menu.dataset.deviceManage)});
+}
+function deviceManageFocus(){
+ if(deviceWorkspaceTransition!==authTransition)return null;
+ const active=document.activeElement,menu=active?.closest?.('[data-device-manage]');
+ return menu?{id:menu.dataset.deviceManage,action:active.dataset?.action,owner:authTransition}:null;
+}
+function restoreDeviceManageFocus(focus){
+ if(!focus||focus.owner!==authTransition||!deviceCanManage())return;
+ const menu=[...$('#deviceCards').querySelectorAll('[data-device-manage]')].find(menu=>menu.dataset.deviceManage===focus.id);
+ if(!menu)return;
+ const target=focus.action?[...menu.querySelectorAll('[data-action]')].find(button=>button.dataset.action===focus.action&&!button.disabled):menu.querySelector('summary');
+ target?.focus({preventScroll:true});
+}
+function deviceConnectionLimits(d){const limits=d.connectionLimits||{};return {webSockets:limits.webSockets??8,httpReserve:limits.httpReserve??8}}
+function deviceConnectionLimitsError(limits){
+ if(!Number.isInteger(limits.webSockets)||limits.webSockets<1||limits.webSockets>124)return '实时连接上限需为 1–124 的整数。';
+ if(!Number.isInteger(limits.httpReserve)||limits.httpReserve<4||limits.httpReserve>64)return '网页保留连接需为 4–64 的整数。';
+ return limits.webSockets+limits.httpReserve>128?'实时连接与网页保留连接合计不能超过 128。':'';
+}
+function deviceConnectionNumber(value){return Number.isInteger(value)&&value>=0?value:0}
+function deviceConnectionUsage(d){
+ const c=d.connections||{},capacity=deviceConnectionNumber(c.capacity),online=d.online&&capacity>0;
+ return `<dl class="device-connection-usage"><div><dt>实时连接使用中</dt><dd>${online?deviceConnectionNumber(c.activeWebSockets)+' / '+deviceConnectionNumber(c.effectiveWebSockets):'—'}</dd></div><div><dt>网页连接使用中</dt><dd>${online?deviceConnectionNumber(c.activeHTTP):'—'}</dd></div><div><dt>当前网页保留</dt><dd>${online?deviceConnectionNumber(c.effectiveHTTPReserve)+' 条':'—'}</dd></div><div><dt>客户端总容量</dt><dd>${online?capacity+' 条':d.online?'等待上报':'设备离线'}</dd></div></dl>`;
+}
+function deviceConnectionLimitsNotice(d,limits){
+ const error=deviceConnectionLimitsError(limits);if(error)return error;
+ const c=d.connections||{},capacity=deviceConnectionNumber(c.capacity);
+ if(!d.online)return '设备上线后显示实际生效值；离线时也可以保存配置。';
+ if(!c.streaming)return '当前客户端不支持网页流式连接，请先更新插件。配置可以先保存。';
+ if(!capacity)return '正在等待客户端上报连接容量，请稍后刷新。';
+ if(limits.webSockets+limits.httpReserve>capacity)return `当前客户端总容量为 ${capacity} 条，超出部分需升级插件后生效；配置可以先保存。`;
+ return '保存后用于新建连接；降低上限会等待已有连接自然释放，不会强制断开面板。';
+}
+function deviceConnectionEditorCurrent(context){return editing===context&&context.owner===authTransition&&$('#modal').open&&deviceCanManage()&&state.devices.some(d=>d.id===context.item.id)}
+function deviceConnectionDraft(){const web=$('#connectionWebSockets').value.trim(),http=$('#connectionHTTPReserve').value.trim();return {webSockets:web===''?NaN:Number(web),httpReserve:http===''?NaN:Number(http)}}
+function deviceConnectionEditorPreview(context){
+ if(!deviceConnectionEditorCurrent(context))return;
+ const d=state.devices.find(d=>d.id===context.item.id),limits=deviceConnectionDraft();
+ $('#connectionLimitNotice').textContent=deviceConnectionLimitsNotice(d,limits);
+ $('#connectionLimitTotal').textContent=deviceConnectionLimitsError(limits)?'请填写有效数值':'合计 '+(limits.webSockets+limits.httpReserve)+' / 128';
+}
+function deviceConnectionEditorBusy(context,busy){
+ context.connectionBusy=busy;
+ for(const id of ['#connectionWebSockets','#connectionHTTPReserve','#connectionDefaults','#connectionMultiPanel','#connectionRefresh'])$(id).disabled=busy;
+ $('#save').disabled=busy||!context.connectionReady;$('#save').textContent=busy&&context.connectionSaving?'保存中…':'保存连接设置';
+}
+async function loadDeviceConnectionLimits(context,keepDraft=false){
+ if(!deviceConnectionEditorCurrent(context)||context.connectionBusy)return;
+ const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);context.connectionController=controller;deviceConnectionEditorBusy(context,true);$('#formError').textContent='';
+ try{
+  const result=await api('devices/'+encodeURIComponent(context.item.id)+'/connection-limits','GET',undefined,{signal:controller.signal});
+  if(!deviceConnectionEditorCurrent(context))return;
+  if(!result?.limits||deviceConnectionLimitsError(result.limits)||!result.connections)throw Error('连接设置返回异常，请重试。');
+  const d=state.devices.find(d=>d.id===context.item.id);d.connectionLimits=result.limits;d.connections=result.connections;
+  if(!keepDraft||!context.connectionReady){$('#connectionWebSockets').value=String(result.limits.webSockets);$('#connectionHTTPReserve').value=String(result.limits.httpReserve)}
+  context.connectionReady=true;$('#connectionUsage').innerHTML=deviceConnectionUsage(d);deviceConnectionEditorPreview(context);
+ }catch(error){if(deviceConnectionEditorCurrent(context))$('#formError').textContent=error.name==='AbortError'?'读取连接设置超时，请刷新重试。':error.message}
+ finally{clearTimeout(timer);controller.abort();if(deviceConnectionEditorCurrent(context))deviceConnectionEditorBusy(context,false)}
+}
+function openDeviceConnectionEditor(item){
+ if(!deviceCanManage()||!state.devices.some(d=>d.id===item.id))return;
+ previousDeviceEditor('connectionLimits',item);const context=editing;context.owner=authTransition;
+ $('#modal').classList.add('connection-limits-dialog');$('#modalTitle').textContent='连接设置 · '+item.name;$('#save').textContent='保存连接设置';
+ const limits=deviceConnectionLimits(item);
+ $('#fields').innerHTML=`<p class="device-connection-intro">控制这台设备的网页与实时面板并发。一个 MetaCubeXD 面板会使用多条实时连接，多个浏览器标签会共同占用额度。</p><div id="connectionUsage">${deviceConnectionUsage(item)}</div><div class="device-connection-fields"><label for="connectionWebSockets">实时连接上限<input id="connectionWebSockets" name="webSockets" type="number" required min="1" max="124" step="1" value="${esc(limits.webSockets)}"><small>用于实时流量、内存、连接列表等 WebSocket 数据。</small></label><label for="connectionHTTPReserve">网页保留连接<input id="connectionHTTPReserve" name="httpReserve" type="number" required min="4" max="64" step="1" value="${esc(limits.httpReserve)}"><small>为路由器后台和普通网页请求保留并发空间。</small></label></div><div class="device-connection-presets"><button type="button" id="connectionDefaults">恢复默认 8 + 8</button><button type="button" id="connectionMultiPanel">多面板 24 + 8</button><span id="connectionLimitTotal"></span></div><p class="device-connection-notice" id="connectionLimitNotice" role="status"></p><p class="device-connection-footnote">上方为当前实际用量；输入框为保存的目标值。升级插件后才能使用更高的客户端容量。此设置按设备保存，所有映射共享；SSH 和文件管理使用单独额度。</p><button type="button" class="device-connection-refresh" id="connectionRefresh">刷新连接用量</button>`;
+ const preset=(webSockets,httpReserve)=>{if(context.connectionBusy)return;$('#connectionWebSockets').value=String(webSockets);$('#connectionHTTPReserve').value=String(httpReserve);deviceConnectionEditorPreview(context)};
+ $('#connectionDefaults').onclick=()=>preset(8,8);$('#connectionMultiPanel').onclick=()=>preset(24,8);
+ $('#connectionWebSockets').oninput=$('#connectionHTTPReserve').oninput=()=>deviceConnectionEditorPreview(context);
+ $('#connectionRefresh').onclick=()=>loadDeviceConnectionLimits(context,true);
+ $('#cancel').onclick=()=>{context.connectionController?.abort();$('#modal').close()};
+ deviceConnectionEditorPreview(context);void loadDeviceConnectionLimits(context);
+}
+$('#modal').addEventListener?.('close',()=>{if(editing?.type==='connectionLimits'){editing.connectionController?.abort();$('#save').disabled=false;$('#save').textContent='保存'}$('#modal').classList.remove('connection-limits-dialog')});
 function devicePageWindow(total,paging){
  const pages=Math.max(1,Math.ceil(total/paging.size));
  paging.page=Math.max(0,Math.min(pages-1,paging.page));
@@ -149,8 +228,9 @@ function deviceMappingsPanel(d){
 }
 deviceCards=()=>{
  const container=$('#deviceCards');if(!container)return;
- const pagingFocus=devicePagingFocus();
- if(deviceWorkspaceTransition!==authTransition){deviceRevealed.clear();deviceIPRevealed.clear();deviceMapFilters.clear();expandedFeatures.clear();deviceOperations.clear();deviceHistories.clear();deviceHistoryPages.clear();Object.assign(deviceListPaging,{page:0,size:10,signature:''});deviceWorkspaceTransition=authTransition}
+ const pagingFocus=devicePagingFocus(),manageFocus=deviceManageFocus();rememberDeviceManagePanels(container);
+ if(deviceWorkspaceTransition!==authTransition){deviceRevealed.clear();deviceIPRevealed.clear();deviceMapFilters.clear();expandedFeatures.clear();deviceOperations.clear();deviceHistories.clear();deviceHistoryPages.clear();deviceManageOpen.clear();Object.assign(deviceListPaging,{page:0,size:10,signature:''});deviceWorkspaceTransition=authTransition}
+ const deviceIDs=new Set(state.devices.map(d=>d.id));for(const id of deviceManageOpen)if(!deviceIDs.has(id))deviceManageOpen.delete(id);
  const signature=JSON.stringify([query.toLowerCase(),filter]);
  if(deviceListPaging.signature!==signature){deviceListPaging.page=0;deviceListPaging.signature=signature}
  const matched=state.devices.filter(d=>{
@@ -161,13 +241,15 @@ deviceCards=()=>{
  container.innerHTML=devicePagerHTML('devices','',matched.length,deviceListPaging,'top')+(visible.map(d=>{
   const mappings=state.mappings.filter(m=>m.deviceId===d.id),operation=deviceOperations.get(d.id);
   const active=expandedFeatures.get(d.id),revealed=deviceRevealed.has(d.id);
-  return `<article class="device-card device-workspace-card ${d.pinned?'device-pinned':''}"><div class="device-head"><div class="device-icon" aria-hidden="true">${uiIcon('monitor')}</div><div class="device-info"><div class="device-title"><strong>${esc(d.name)}</strong><span class="pill ${d.online?'on':deviceRecovering(d)?'recovering':''}">${d.online?'在线':deviceRecovering(d)?'恢复中':'离线'}</span>${d.pinned?'<span class="device-pin-label">'+uiIcon('pin')+'置顶</span>':''}</div><div class="device-meta"><span class="device-id-meta">ID：<code>${esc(revealed?d.id:deviceMasked(d.id))}</code><button type="button" data-action="revealDevice" data-id="${esc(d.id)}" title="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-label="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-pressed="${revealed}">${uiIcon('eye')}</button><button type="button" data-copy="${esc(d.id)}" title="复制设备 ID" aria-label="复制设备 ID">${uiIcon('copy')}</button></span>${deviceNetworkMetadata(d)}<span>插件：${esc(d.packageVersion||d.version||'尚未上报')}</span><span>${d.online?'本次在线 '+esc(deviceDuration(d.connectedAt)):'最近连接 '+esc(deviceTime(d.lastConnectedAt))}</span></div>${deviceTrafficSummary(d)}${d.note?`<p class="device-saved-note">${esc(d.note)}</p>`:''}</div><div class="actions device-header-actions">${deviceButton('pinDevice',d.id,'','pin',`title="${d.pinned?'取消置顶':'置顶设备'}" aria-label="${d.pinned?'取消置顶':'置顶设备'}" aria-pressed="${Boolean(d.pinned)}"`)}${deviceButton('refreshDevice',d.id,operation?.kind==='refresh'&&operation.busy?'刷新中…':'刷新状态','refresh',`title="刷新此设备的连接状态" ${operation?.busy?'disabled':''} ${operation?.kind==='refresh'&&operation.busy?'aria-busy="true"':''}`)}${deviceButton('diagnoseDevice',d.id,'一键诊断','activity')}${pluginUpdateButton(d)}${deviceButton('rename',d.id,'编辑','edit')}</div></div><div class="device-tabs"><button type="button" class="feature-tab" data-feature="domains" data-device="${esc(d.id)}" aria-expanded="${active==='domains'}" aria-controls="domains-${esc(d.id)}">${uiIcon('globe')}访问域名（${mappings.length}）<i aria-hidden="true"></i></button><button type="button" class="feature-tab" data-feature="connection" data-device="${esc(d.id)}" aria-expanded="${active==='connection'}" aria-controls="connection-${esc(d.id)}">${uiIcon('activity')}连接详情<i aria-hidden="true"></i></button><button type="button" class="feature-tab" data-feature="history" data-device="${esc(d.id)}" aria-expanded="${active==='history'}" aria-controls="history-${esc(d.id)}">${uiIcon('history')}上下线记录<i aria-hidden="true"></i></button><span class="device-tab-summary">${d.online?'隧道延迟 '+esc(deviceLatency(d)):'等待设备连接'}</span></div><div class="device-body" id="domains-${esc(d.id)}" ${active==='domains'?'':'hidden'}>${deviceMappingsPanel(d)}</div><div class="device-body" id="connection-${esc(d.id)}" ${active==='connection'?'':'hidden'}>${deviceConnectionPanel(d)}</div><div class="device-body" id="history-${esc(d.id)}" ${active==='history'?'':'hidden'}>${deviceHistoryPanel(d)}</div>${operation&&active!=='connection'?`<p class="device-operation device-operation-footer ${operation.error?'error':''}" role="status">${esc(operation.text)}</p>`:''}<details class="device-manage"><summary>${uiIcon('settings')}设备管理</summary><div>${deviceButton('rename',d.id,'编辑名称与备注','edit')}${deviceButton('reconnect',d.id,'重新连接','refresh',!d.online||operation?.busy?'disabled':'')}${deviceButton('deleteDevice',d.id,'删除设备','trash','class="danger"')}</div></details></article>`;
+  return `<article class="device-card device-workspace-card ${d.pinned?'device-pinned':''}"><div class="device-head"><div class="device-icon" aria-hidden="true">${uiIcon('monitor')}</div><div class="device-info"><div class="device-title"><strong>${esc(d.name)}</strong><span class="pill ${d.online?'on':deviceRecovering(d)?'recovering':''}">${d.online?'在线':deviceRecovering(d)?'恢复中':'离线'}</span>${d.pinned?'<span class="device-pin-label">'+uiIcon('pin')+'置顶</span>':''}</div><div class="device-meta"><span class="device-id-meta">ID：<code>${esc(revealed?d.id:deviceMasked(d.id))}</code><button type="button" data-action="revealDevice" data-id="${esc(d.id)}" title="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-label="${revealed?'隐藏设备 ID':'显示设备 ID'}" aria-pressed="${revealed}">${uiIcon('eye')}</button><button type="button" data-copy="${esc(d.id)}" title="复制设备 ID" aria-label="复制设备 ID">${uiIcon('copy')}</button></span>${deviceNetworkMetadata(d)}<span>插件：${esc(d.packageVersion||d.version||'尚未上报')}</span><span>${d.online?'本次在线 '+esc(deviceDuration(d.connectedAt)):'最近连接 '+esc(deviceTime(d.lastConnectedAt))}</span></div>${deviceTrafficSummary(d)}${d.note?`<p class="device-saved-note">${esc(d.note)}</p>`:''}</div><div class="actions device-header-actions">${deviceButton('pinDevice',d.id,'','pin',`title="${d.pinned?'取消置顶':'置顶设备'}" aria-label="${d.pinned?'取消置顶':'置顶设备'}" aria-pressed="${Boolean(d.pinned)}"`)}${deviceButton('refreshDevice',d.id,operation?.kind==='refresh'&&operation.busy?'刷新中…':'刷新状态','refresh',`title="刷新此设备的连接状态" ${operation?.busy?'disabled':''} ${operation?.kind==='refresh'&&operation.busy?'aria-busy="true"':''}`)}${deviceButton('diagnoseDevice',d.id,'一键诊断','activity')}${pluginUpdateButton(d)}${deviceButton('rename',d.id,'编辑','edit')}</div></div><div class="device-tabs"><button type="button" class="feature-tab" data-feature="domains" data-device="${esc(d.id)}" aria-expanded="${active==='domains'}" aria-controls="domains-${esc(d.id)}">${uiIcon('globe')}访问域名（${mappings.length}）<i aria-hidden="true"></i></button><button type="button" class="feature-tab" data-feature="connection" data-device="${esc(d.id)}" aria-expanded="${active==='connection'}" aria-controls="connection-${esc(d.id)}">${uiIcon('activity')}连接详情<i aria-hidden="true"></i></button><button type="button" class="feature-tab" data-feature="history" data-device="${esc(d.id)}" aria-expanded="${active==='history'}" aria-controls="history-${esc(d.id)}">${uiIcon('history')}上下线记录<i aria-hidden="true"></i></button><span class="device-tab-summary">${d.online?'隧道延迟 '+esc(deviceLatency(d)):'等待设备连接'}</span></div><div class="device-body" id="domains-${esc(d.id)}" ${active==='domains'?'':'hidden'}>${deviceMappingsPanel(d)}</div><div class="device-body" id="connection-${esc(d.id)}" ${active==='connection'?'':'hidden'}>${deviceConnectionPanel(d)}</div><div class="device-body" id="history-${esc(d.id)}" ${active==='history'?'':'hidden'}>${deviceHistoryPanel(d)}</div>${operation&&active!=='connection'?`<p class="device-operation device-operation-footer ${operation.error?'error':''}" role="status">${esc(operation.text)}</p>`:''}${deviceManagePanel(d)}</article>`;
  }).join('')||'<div class="workbench-empty"><h2>暂无匹配设备</h2><p class="muted">可搜索设备名称、备注、设备 ID、IP 或映射地址。</p></div>')+(pages>1?devicePagerHTML('devices','',matched.length,deviceListPaging):'');
  if(typeof remoteDeviceTabs==='function')container.querySelectorAll('[data-feature="connection"]').forEach(button=>{const d=state.devices.find(x=>x.id===button.dataset.device);if(d)button.insertAdjacentHTML('afterend',remoteDeviceTabs(d))});
  container.querySelectorAll('[data-feature]').forEach(b=>b.onclick=()=>toggleFeature(b.dataset.device,b.dataset.feature));
  bindDeviceActions(container);
+ container.querySelectorAll('[data-device-manage]').forEach(menu=>{const owner=authTransition;menu.ontoggle=()=>{if(owner!==authTransition||menu.isConnected===false||!deviceCanManage())return;if(menu.open)deviceManageOpen.add(menu.dataset.deviceManage);else deviceManageOpen.delete(menu.dataset.deviceManage)}});
  bindDevicePagination(container);
  restoreDevicePagingFocus(pagingFocus);
+ restoreDeviceManageFocus(manageFocus);
  container.querySelectorAll('[data-mapping-search]').forEach(input=>input.oninput=()=>updateDeviceMappingFilter(input.dataset.mappingSearch,{query:input.value}));
  container.querySelectorAll('[data-mapping-status]').forEach(input=>input.onchange=()=>updateDeviceMappingFilter(input.dataset.mappingStatus,{status:input.value}));
  for(const d of visible){const h=deviceHistories.get(d.id);if(expandedFeatures.get(d.id)==='history'&&(!h||!h.loading&&Date.now()-(h.checkedUnix||0)>15000))void loadDeviceHistory(d.id)}
@@ -182,12 +264,14 @@ function updateDeviceMappingFilter(id,patch){
 }
 const previousDeviceWorkbench=renderWorkbench;
 renderWorkbench=()=>{
- const pagingFocus=devicePagingFocus(),focused=document.activeElement,searchDevice=focused?.dataset?.mappingSearch,selection=searchDevice?[focused.selectionStart,focused.selectionEnd]:null;
+ const pagingFocus=devicePagingFocus(),manageFocus=deviceManageFocus(),focused=document.activeElement,searchDevice=focused?.dataset?.mappingSearch,selection=searchDevice?[focused.selectionStart,focused.selectionEnd]:null;rememberDeviceManagePanels($('#deviceCards'));
  previousDeviceWorkbench();restoreDevicePagingFocus(pagingFocus);const select=$('#filter');if(select&&!select.querySelector('option[value="pinned"]')){const option=document.createElement('option');option.value='pinned';option.textContent='置顶设备';select.appendChild(option);select.value=filter}const search=$('#search');if(search){search.placeholder='搜索设备、备注、IP 或映射';search.setAttribute('aria-label',search.placeholder)}
+ restoreDeviceManageFocus(manageFocus);
  if(searchDevice){const input=[...$('#deviceCards').querySelectorAll('[data-mapping-search]')].find(x=>x.dataset.mappingSearch===searchDevice);if(input){input.focus();input.setSelectionRange(...selection)}}
 };
 action=async(a,id)=>{
  const d=state.devices.find(x=>x.id===id),m=state.mappings.find(x=>x.id===id);
+ if(a==='connectionLimits'){if(d&&deviceCanManage())openEditor('connectionLimits',d);return}
  if(a==='revealIP'&&d?.info?.peerIP){if(deviceIPRevealed.get(id)===d.info.peerIP)deviceIPRevealed.delete(id);else deviceIPRevealed.set(id,d.info.peerIP);deviceCards();return}
  if(a==='revealDevice'){if(deviceRevealed.has(id))deviceRevealed.delete(id);else deviceRevealed.add(id);deviceCards();return}
  if(a==='duplicate'&&m){const {id:oldID,host,...draft}=m;const domain=[...(state.domains||[])].sort((a,b)=>b.baseDomain.length-a.baseDomain.length).find(d=>host===d.baseDomain||host.endsWith('.'+d.baseDomain));openEditor('mapping',{...draft,host:'',_mappingDraft:{host:'',domainSuffix:domain?.baseDomain||customMappingDomain}});$('#modalTitle').textContent='复制新增映射';return}
@@ -229,10 +313,26 @@ action=async(a,id)=>{
  return previousDeviceAction(a,id);
 };
 openEditor=(type,item={})=>{
+ if(type==='connectionLimits'){openDeviceConnectionEditor(item);return}
+ $('#modal').classList.remove('connection-limits-dialog');$('#save').disabled=false;
  previousDeviceEditor(type,item);
  if(type==='device'&&item.id){$('#modalTitle').textContent='编辑设备';$('#fields').innerHTML=`<label>设备名称<input name="name" required maxlength="100" value="${esc(item.name)}"></label><label>设备备注<textarea name="note" maxlength="200" rows="3" placeholder="例如：家中主路由器、办公室 NAS">${esc(item.note||'')}</textarea></label><label class="check"><input name="pinned" type="checkbox" ${item.pinned?'checked':''}> 置顶这台设备</label><p class="muted">修改名称或备注会保留设备连接凭据与全部映射。</p>`}
 };
 $('#editor').onsubmit=async e=>{
+ if(editing?.type==='connectionLimits'){
+  e.preventDefault();const context=editing;if(!deviceConnectionEditorCurrent(context)||context.connectionBusy||!context.connectionReady)return;
+  const limits=deviceConnectionDraft(),error=deviceConnectionLimitsError(limits);$('#formError').textContent=error;if(error)return;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);context.connectionController=controller;context.connectionSaving=true;deviceConnectionEditorBusy(context,true);
+  try{
+   const result=await api('devices/'+encodeURIComponent(context.item.id)+'/connection-limits','PUT',limits,{signal:controller.signal});
+   if(!deviceConnectionEditorCurrent(context))return;
+   if(!result?.limits||deviceConnectionLimitsError(result.limits)||!result.connections)throw Error('连接设置返回异常，请刷新确认保存结果。');
+   const d=state.devices.find(d=>d.id===context.item.id);d.connectionLimits=result.limits;d.connections=result.connections;$('#modal').close();deviceCards();
+   try{await refresh();if(context.owner===authTransition)toast('连接设置已保存，新建连接使用新额度')}catch(error){if(context.owner===authTransition)toast('连接设置已保存；状态刷新失败，可稍后刷新。')}
+  }catch(error){if(deviceConnectionEditorCurrent(context))$('#formError').textContent=error.name==='AbortError'?'保存请求超时，请刷新确认结果后重试。':error.message}
+  finally{clearTimeout(timer);controller.abort();context.connectionSaving=false;if(deviceConnectionEditorCurrent(context))deviceConnectionEditorBusy(context,false)}
+  return;
+ }
  if(editing?.type!=='device'||!editing.item.id)return previousDeviceSubmit(e);
  e.preventDefault();const context=editing,transition=authTransition;$('#save').disabled=true;
  try{const f=new FormData(e.target);await api('devices/'+encodeURIComponent(context.item.id),'PUT',{name:f.get('name'),note:f.get('note'),pinned:f.has('pinned')});if(editing!==context||transition!==authTransition)return;$('#modal').close();await refresh();toast('设备已保存')}

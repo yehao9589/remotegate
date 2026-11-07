@@ -19,17 +19,18 @@ import (
 )
 
 type Device struct {
-	Note               string     `json:"note,omitempty"`
-	Pinned             bool       `json:"pinned,omitempty"`
-	Info               DeviceInfo `json:"info"`
-	LastConnectedAt    time.Time  `json:"lastConnectedAt,omitempty"`
-	LastDisconnectedAt time.Time  `json:"lastDisconnectedAt,omitempty"`
-	PackageVersion     string     `json:"packageVersion,omitempty"`
-	Version            string     `json:"version,omitempty"`
-	ID                 string     `json:"id"`
-	Name               string     `json:"name"`
-	TokenHash          string     `json:"tokenHash"`
-	CreatedAt          time.Time  `json:"createdAt"`
+	ConnectionLimits   ConnectionLimits `json:"connectionLimits,omitempty"`
+	Note               string           `json:"note,omitempty"`
+	Pinned             bool             `json:"pinned,omitempty"`
+	Info               DeviceInfo       `json:"info"`
+	LastConnectedAt    time.Time        `json:"lastConnectedAt,omitempty"`
+	LastDisconnectedAt time.Time        `json:"lastDisconnectedAt,omitempty"`
+	PackageVersion     string           `json:"packageVersion,omitempty"`
+	Version            string           `json:"version,omitempty"`
+	ID                 string           `json:"id"`
+	Name               string           `json:"name"`
+	TokenHash          string           `json:"tokenHash"`
+	CreatedAt          time.Time        `json:"createdAt"`
 }
 
 type Mapping struct {
@@ -79,6 +80,11 @@ func Open(path string) (*Store, error) {
 		return nil, errors.New("invalid state file")
 	}
 	migrated := false
+	for _, d := range s.state.Devices {
+		if err := d.ConnectionLimits.WithDefaults().Validate(); err != nil {
+			return nil, err
+		}
+	}
 	for i := range s.state.Mappings {
 		if s.state.Mappings[i].AccessMode == "" {
 			s.state.Mappings[i].AccessMode = "admin"

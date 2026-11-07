@@ -28,6 +28,7 @@ type Client struct {
 	CanRecoverUpdate        bool
 	CanStreamHTTP           bool
 	CanCancelHTTP           bool
+	httpStreamCapacity      int
 	conn                    *websocket.Conn
 	writeMu                 contextMutex
 	pending                 sync.Map
@@ -65,6 +66,7 @@ type Hub struct {
 	changed      chan struct{}
 	waiting      int
 	httpWaiting  int
+	httpLimits   func(string) HTTPStreamLimits
 	pingInterval time.Duration
 	pongWait     time.Duration
 	writeWait    time.Duration
@@ -90,7 +92,14 @@ func (h *Hub) Disconnect(id string, since ...time.Time) {
 }
 
 func (h *Hub) Attach(deviceID, name, version string, conn *websocket.Conn, updater ...bool) *Client {
-	c := &Client{DeviceID: deviceID, Name: name, Version: version, Since: time.Now().UTC(), conn: conn}
+	return h.AttachWithHTTPCapacity(deviceID, name, version, conn, protocol.MaxHTTPStreams, updater...)
+}
+
+func (h *Hub) AttachWithHTTPCapacity(deviceID, name, version string, conn *websocket.Conn, capacity int, updater ...bool) *Client {
+	if capacity < protocol.MaxHTTPStreams || capacity > protocol.MaxHTTPStreamCapacity {
+		capacity = protocol.MaxHTTPStreams
+	}
+	c := &Client{DeviceID: deviceID, Name: name, Version: version, Since: time.Now().UTC(), conn: conn, httpStreamCapacity: capacity}
 	if h.record != nil {
 		c.record = func(mapping string, up, down uint64) { h.record(deviceID, mapping, up, down) }
 	}
@@ -377,6 +386,7 @@ func (h *Hub) requestTo(ctx context.Context, c *Client, msg protocol.Message, ma
 }
 
 type Status struct {
+	Connections             HTTPStreamUsage
 	DeviceID, Name, Version string
 	Since                   time.Time
 	CanUpdate               bool
@@ -399,6 +409,8 @@ func (h *Hub) Statuses() map[string]Status {
 			status.LatencyMs = &ms
 		}
 		c.metricsMu.Unlock()
+		out[id] = status
+		status.Connections = streamUsage(c, h.httpLimits)
 		out[id] = status
 	}
 	return out

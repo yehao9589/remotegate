@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -121,6 +122,7 @@ func runSession(ctx context.Context, cfg Config, serverDial dialContextFunc, sta
 	q.Set("version", buildinfo.Version())
 	q.Set("info", "1")
 	q.Set("http_stream", "1")
+	q.Set("http_stream_capacity", strconv.Itoa(protocol.MaxHTTPStreamCapacity))
 	q.Set("cancel_http", "1")
 	if remoteTransportAllowed(cfg) {
 		q.Set("remote", "1")

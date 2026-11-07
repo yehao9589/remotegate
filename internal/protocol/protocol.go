@@ -8,7 +8,13 @@ const MaxBodyBytes = 16 << 20
 const MaxMessageBytes = ((MaxBodyBytes + 2) / 3 * 4) + (1 << 20)
 const MaxStreamBytes = 32 << 10
 const MaxDeviceStreams = 4
+
+// MaxHTTPStreams remains the default and the capacity of older agents.
 const MaxHTTPStreams = 16
+const DefaultWebSocketStreams = 8
+
+// MaxHTTPStreamCapacity bounds configurable capacity on newer agents.
+const MaxHTTPStreamCapacity = 128
 const StreamWindowBytes = 4 * MaxStreamBytes
 
 type Message struct {

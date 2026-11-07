@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -133,6 +134,12 @@ func main() {
 }
 
 func (a *app) routes() http.Handler {
+	if a.hub != nil && a.store != nil {
+		a.hub.SetHTTPStreamLimitsLookup(func(id string) hub.HTTPStreamLimits {
+			limits := a.store.DeviceConnectionLimits(id)
+			return hub.HTTPStreamLimits{WebSockets: limits.WebSockets, HTTPReserve: limits.HTTPReserve}
+		})
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/auth/status", a.authStatus)
 	mux.HandleFunc("/api/auth/setup", a.authSetup)
@@ -381,7 +388,8 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(protocol.MaxMessageBytes)
-	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1", r.URL.Query().Get("update_recovery") == "1", r.URL.Query().Get("http_stream") == "1", r.URL.Query().Get("cancel_http") == "1")
+	capacity, _ := strconv.Atoi(r.URL.Query().Get("http_stream_capacity"))
+	c := a.hub.AttachWithHTTPCapacity(id, d.Name, r.URL.Query().Get("version"), conn, capacity, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1", r.URL.Query().Get("update_recovery") == "1", r.URL.Query().Get("http_stream") == "1", r.URL.Query().Get("cancel_http") == "1")
 	if err := a.store.RecordConnection(id, c.Since, info); err != nil {
 		log.Printf("device connection information failed: %v", err)
 	}
@@ -492,6 +500,10 @@ func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 func (a *app) deviceByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/admin/devices/")
 	if deviceID, operation, ok := strings.Cut(id, "/"); ok {
+		if operation == "connection-limits" {
+			a.deviceConnectionLimits(w, r, deviceID)
+			return
+		}
 		if operation == "status" {
 			a.refreshDeviceStatus(w, r, deviceID)
 			return

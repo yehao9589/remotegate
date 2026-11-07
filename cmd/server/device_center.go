@@ -15,20 +15,22 @@ import (
 
 type deviceView struct {
 	config.Device
-	Online          bool          `json:"online"`
-	ConnectedAt     time.Time     `json:"connectedAt,omitempty"`
-	CanUpdate       bool          `json:"canUpdate"`
-	CanRemote       bool          `json:"canRemote"`
-	CanManageUpdate bool          `json:"canManageUpdate"`
-	LastActiveAt    time.Time     `json:"lastActiveAt,omitempty"`
-	LatencyAt       time.Time     `json:"latencyAt,omitempty"`
-	LatencyMs       *int64        `json:"latencyMs,omitempty"`
-	Network         deviceNetwork `json:"network"`
+	Connections     hub.HTTPStreamUsage `json:"connections"`
+	Online          bool                `json:"online"`
+	ConnectedAt     time.Time           `json:"connectedAt,omitempty"`
+	CanUpdate       bool                `json:"canUpdate"`
+	CanRemote       bool                `json:"canRemote"`
+	CanManageUpdate bool                `json:"canManageUpdate"`
+	LastActiveAt    time.Time           `json:"lastActiveAt,omitempty"`
+	LatencyAt       time.Time           `json:"latencyAt,omitempty"`
+	LatencyMs       *int64              `json:"latencyMs,omitempty"`
+	Network         deviceNetwork       `json:"network"`
 }
 
 func (a *app) viewDevice(d config.Device, s hub.Status, online bool) deviceView {
 	d.TokenHash = ""
-	return deviceView{Device: d, Online: online, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, CanRemote: s.CanRemote, CanManageUpdate: s.CanManageUpdate, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)}
+	d.ConnectionLimits = d.ConnectionLimits.WithDefaults()
+	return deviceView{Device: d, Connections: s.Connections, Online: online, ConnectedAt: s.Since, CanUpdate: s.CanUpdate, CanRemote: s.CanRemote, CanManageUpdate: s.CanManageUpdate, LastActiveAt: s.LastActiveAt, LatencyAt: s.LatencyAt, LatencyMs: s.LatencyMs, Network: a.operators.Lookup(d.Info.PeerIP)}
 }
 
 func (a *app) deviceConnectionEvents(w http.ResponseWriter, r *http.Request, id string) {

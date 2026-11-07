@@ -58,14 +58,14 @@ func (b *Bridge) Handle(msg protocol.Message) bool {
 				count++
 			}
 		}
-		valid := !duplicate && ((!web && b.enabled && len(msg.ID) == 36 && strings.HasPrefix(msg.ID, "tcp:") && count < protocol.MaxDeviceStreams) || (web && b.httpDial != nil && len(msg.ID) == 37 && strings.HasPrefix(msg.ID, "http:") && count < protocol.MaxHTTPStreams))
+		valid := !duplicate && ((!web && b.enabled && len(msg.ID) == 36 && strings.HasPrefix(msg.ID, "tcp:") && count < protocol.MaxDeviceStreams) || (web && b.httpDial != nil && len(msg.ID) == 37 && strings.HasPrefix(msg.ID, "http:") && count < protocol.MaxHTTPStreamCapacity))
 		if !valid {
 			b.mu.Unlock()
 			status := 0
 			message := "远程连接未启用或连接数量已达上限"
 			if web {
 				message = "网页连接未启用或连接数量已达上限"
-				if b.httpDial != nil && !duplicate && count >= protocol.MaxHTTPStreams {
+				if b.httpDial != nil && !duplicate && count >= protocol.MaxHTTPStreamCapacity {
 					status = 503
 				}
 			}

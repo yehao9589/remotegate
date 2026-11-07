@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,9 @@ func TestIdleAgentStopsWhenContextIsCancelled(t *testing.T) {
 		upgrader := websocket.Upgrader{}
 		if q := r.URL.Query(); q.Get("info") != "1" || q.Get("os") != runtime.GOOS || q.Get("arch") != runtime.GOARCH {
 			t.Error("agent did not report actual platform")
+		}
+		if q := r.URL.Query(); q.Get("http_stream") != "1" || q.Get("http_stream_capacity") != strconv.Itoa(protocol.MaxHTTPStreamCapacity) {
+			t.Error("agent did not report its bounded HTTP stream capacity")
 		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {

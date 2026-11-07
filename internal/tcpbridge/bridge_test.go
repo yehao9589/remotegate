@@ -3,11 +3,13 @@ package tcpbridge
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +34,83 @@ func TestTCPBridgePrivateTargetsAndExplicitOptIn(t *testing.T) {
 	bridge.Handle(protocol.Message{Type: "tcp-open", ID: "tcp:00000000000000000000000000000000", Target: "127.0.0.1:22"})
 	if reply.Error == "" || len(bridge.streams) != 0 {
 		t.Fatal("disabled bridge opened a connection")
+	}
+}
+
+func TestHTTPBridgeCapacityIsBoundedAndReleased(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	replies := make(chan protocol.Message, 2*protocol.MaxHTTPStreamCapacity)
+	var dials atomic.Int32
+	var peersMu sync.Mutex
+	var peers []net.Conn
+	bridge := New(ctx, false, func(msg protocol.Message) error {
+		replies <- msg
+		return nil
+	}, func(context.Context, string) (net.Conn, error) {
+		conn, peer := net.Pipe()
+		dials.Add(1)
+		peersMu.Lock()
+		peers = append(peers, peer)
+		peersMu.Unlock()
+		return conn, nil
+	})
+	t.Cleanup(func() {
+		cancel()
+		bridge.Close()
+		peersMu.Lock()
+		defer peersMu.Unlock()
+		for _, peer := range peers {
+			peer.Close()
+		}
+	})
+	id := func(n int) string { return fmt.Sprintf("http:%032x", n) }
+	open := func(n int) protocol.Message {
+		t.Helper()
+		if !bridge.Handle(protocol.Message{Type: "http-open", ID: id(n), Target: "http://127.0.0.1"}) {
+			t.Fatal("HTTP stream was not handled")
+		}
+		select {
+		case reply := <-replies:
+			if reply.Type != "response" || reply.ID != id(n) {
+				t.Fatalf("unexpected stream response: %#v", reply)
+			}
+			return reply
+		case <-time.After(time.Second):
+			t.Fatal("HTTP stream did not return an open result")
+			return protocol.Message{}
+		}
+	}
+	// The server chooses the quota; a newer agent must support more than the
+	// legacy 16 streams while still enforcing an absolute allocation limit.
+	for n := 0; n < protocol.MaxHTTPStreamCapacity; n++ {
+		if reply := open(n); reply.Error != "" {
+			t.Fatalf("stream %d was refused: %s", n, reply.Error)
+		}
+	}
+	for n := protocol.MaxHTTPStreamCapacity; n < protocol.MaxHTTPStreamCapacity+16; n++ {
+		if reply := open(n); reply.Status != http.StatusServiceUnavailable || reply.Error == "" {
+			t.Fatalf("over-capacity stream was not refused: %#v", reply)
+		}
+	}
+	if got := dials.Load(); got != int32(protocol.MaxHTTPStreamCapacity) {
+		t.Fatalf("refused streams allocated target connections: %d", got)
+	}
+	bridge.mu.Lock()
+	active := len(bridge.streams)
+	bridge.mu.Unlock()
+	if active != protocol.MaxHTTPStreamCapacity {
+		t.Fatalf("unexpected active stream count: %d", active)
+	}
+	bridge.Handle(protocol.Message{Type: "tcp-close", ID: id(0)})
+	if reply := open(protocol.MaxHTTPStreamCapacity + 16); reply.Error != "" {
+		t.Fatalf("closed stream did not release its capacity: %s", reply.Error)
+	}
+	bridge.Close()
+	bridge.mu.Lock()
+	active = len(bridge.streams)
+	bridge.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("bridge shutdown left %d streams allocated", active)
 	}
 }
 
