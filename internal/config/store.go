@@ -19,17 +19,18 @@ import (
 )
 
 type Device struct {
-	Note               string     `json:"note,omitempty"`
-	Pinned             bool       `json:"pinned,omitempty"`
-	Info               DeviceInfo `json:"info"`
-	LastConnectedAt    time.Time  `json:"lastConnectedAt,omitempty"`
-	LastDisconnectedAt time.Time  `json:"lastDisconnectedAt,omitempty"`
-	PackageVersion     string     `json:"packageVersion,omitempty"`
-	Version            string     `json:"version,omitempty"`
-	ID                 string     `json:"id"`
-	Name               string     `json:"name"`
-	TokenHash          string     `json:"tokenHash"`
-	CreatedAt          time.Time  `json:"createdAt"`
+	ConnectionLimits   ConnectionLimits `json:"connectionLimits,omitempty"`
+	Note               string           `json:"note,omitempty"`
+	Pinned             bool             `json:"pinned,omitempty"`
+	Info               DeviceInfo       `json:"info"`
+	LastConnectedAt    time.Time        `json:"lastConnectedAt,omitempty"`
+	LastDisconnectedAt time.Time        `json:"lastDisconnectedAt,omitempty"`
+	PackageVersion     string           `json:"packageVersion,omitempty"`
+	Version            string           `json:"version,omitempty"`
+	ID                 string           `json:"id"`
+	Name               string           `json:"name"`
+	TokenHash          string           `json:"tokenHash"`
+	CreatedAt          time.Time        `json:"createdAt"`
 }
 
 type Mapping struct {
@@ -49,12 +50,13 @@ type Mapping struct {
 var mappingHostPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type State struct {
-	Alerts           []Alert                      `json:"alerts,omitempty"`
-	ConnectionEvents map[string][]ConnectionEvent `json:"connectionEvents,omitempty"`
-	Domain           DomainSettings               `json:"domain"`
-	Domains          []DomainSettings             `json:"domains,omitempty"`
-	Devices          []Device                     `json:"devices"`
-	Mappings         []Mapping                    `json:"mappings"`
+	DefaultConnectionLimits ConnectionLimits             `json:"defaultConnectionLimits,omitempty"`
+	Alerts                  []Alert                      `json:"alerts,omitempty"`
+	ConnectionEvents        map[string][]ConnectionEvent `json:"connectionEvents,omitempty"`
+	Domain                  DomainSettings               `json:"domain"`
+	Domains                 []DomainSettings             `json:"domains,omitempty"`
+	Devices                 []Device                     `json:"devices"`
+	Mappings                []Mapping                    `json:"mappings"`
 }
 
 type Store struct {
@@ -79,6 +81,14 @@ func Open(path string) (*Store, error) {
 		return nil, errors.New("invalid state file")
 	}
 	migrated := false
+	if err := s.state.DefaultConnectionLimits.WithDefaults().Validate(); err != nil {
+		return nil, err
+	}
+	for _, d := range s.state.Devices {
+		if err := d.ConnectionLimits.WithDefaults().Validate(); err != nil {
+			return nil, err
+		}
+	}
 	for i := range s.state.Mappings {
 		if s.state.Mappings[i].AccessMode == "" {
 			s.state.Mappings[i].AccessMode = "admin"
@@ -99,7 +109,7 @@ func Open(path string) (*Store, error) {
 func (s *Store) Snapshot() State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := State{Domain: s.state.Domain, Domains: append([]DomainSettings(nil), s.state.Domains...), Devices: make([]Device, len(s.state.Devices)), Mappings: make([]Mapping, len(s.state.Mappings))}
+	out := State{DefaultConnectionLimits: s.state.DefaultConnectionLimits.WithDefaults(), Domain: s.state.Domain, Domains: append([]DomainSettings(nil), s.state.Domains...), Devices: make([]Device, len(s.state.Devices)), Mappings: make([]Mapping, len(s.state.Mappings))}
 	out.Domain = cloneDomain(out.Domain)
 	for i := range out.Domains {
 		out.Domains[i] = cloneDomain(out.Domains[i])
@@ -140,6 +150,7 @@ func (s *Store) createDevice(name string, pending bool) (Device, string, error) 
 	d := Device{ID: id, Name: name, TokenHash: hash(token), CreatedAt: time.Now().UTC()}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	d.ConnectionLimits = s.state.DefaultConnectionLimits.WithDefaults()
 	if pending {
 		if s.pending == nil {
 			s.pending = make(map[string]Device)

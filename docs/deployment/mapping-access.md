@@ -27,6 +27,7 @@ HTTPS 负责传输加密；“需要后台登录”决定谁可以通过 RemoteG
 - 公网保护必须使用 HTTPS，证书及反向代理继续按现有部署提供。此功能无需路由器插件升级。
 - 本机 `localhost`、`*.localhost` 与回环地址预览允许 HTTP；公网 HTTP 映射会暂停访问并提示配置 HTTPS，也可由管理员明确改为公开访问。
 - 优先通过 `PUBLIC_URL=https://gate.example.com` 或 `CONSOLE_HOST=gate.example.com` 指定后台认证地址，不含后台路径。已有反代须保留正确的 Host 和 HTTPS 协议信息。
+- 反代应保留受保护映射的 `Cache-Control: no-store`。使用宝塔时，按[缓存配置说明](baota.md#保留-remotegate-的缓存响应头)检查静态文件规则。
 - 未配置上述地址时，管理员首次通过 HTTPS 登录后台、加载设备列表后，会将当前地址绑定为已有映射的认证入口。绑定完成前映射拒绝访问，避免认证地址不明时开放内网。
 
 不更改已有宝塔站点配置或证书。若现有反代和证书已经支持该映射，保持原样即可。

@@ -240,11 +240,18 @@ func (a *app) accessOwnerValid(owner [32]byte) (time.Time, bool) {
 	}
 	return expires, true
 }
-func accessCookieNames(m config.Mapping) (string, string) {
+func accessSessionCookieName(m config.Mapping) string {
 	if m.PublicScheme == "https" {
-		return mappingAccessCookie, mappingStateCookie
+		return mappingAccessCookie
 	}
-	return mappingAccessHTTPCookie, mappingStateHTTPCookie
+	return mappingAccessHTTPCookie
+}
+
+func accessStateCookieName(m config.Mapping, requestID string) string {
+	if m.PublicScheme == "https" {
+		return mappingStateCookie + "_" + requestID
+	}
+	return mappingStateHTTPCookie + "_" + requestID
 }
 func setMappingCookie(w http.ResponseWriter, m config.Mapping, name, value string, expires time.Time) {
 	seconds := int(time.Until(expires).Seconds())
@@ -293,6 +300,10 @@ func (a *app) mappingAccessHandler(next http.Handler) http.Handler {
 			if m.AccessMode != "public" && !a.requireMappingAccess(w, r, m) {
 				return
 			}
+			if strings.HasPrefix(r.URL.Path, browserActivityPath) {
+				a.browserActivityHTTP(w, r, m)
+				return
+			}
 			if websocket.IsWebSocketUpgrade(r) {
 				a.proxyMappingWebSocket(w, r, m)
 				return
@@ -320,6 +331,21 @@ func (a *app) requireMappingAccess(w http.ResponseWriter, r *http.Request, m con
 		return false
 	}
 	if !accessTransport(w, r, origin) {
+		return false
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/ui/metacubexd/sw.js" && r.Header.Get("Service-Worker") == "script" {
+		// Old MetaCubeXD workers serve the cached dashboard before the browser
+		// can reach mapping authentication. Worker updates must work even when
+		// the mapping session has expired, so serve only a static retirement script.
+		accessNoStore(w)
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		_, _ = fmt.Fprint(w, `self.addEventListener('install', event => {
+  event.waitUntil(self.skipWaiting());
+});
+self.addEventListener('activate', event => {
+  event.waitUntil(self.registration.unregister());
+});
+`)
 		return false
 	}
 	if a.mappingSessionValid(r, m, console) {
@@ -361,7 +387,7 @@ func (a *app) requireMappingAccess(w http.ResponseWriter, r *http.Request, m con
 	return false
 }
 func (a *app) mappingSessionValid(r *http.Request, m config.Mapping, console *url.URL) bool {
-	name, _ := accessCookieNames(m)
+	name := accessSessionCookieName(m)
 	cookie, err := r.Cookie(name)
 	if err != nil || !validAccessToken(cookie.Value) {
 		return false
@@ -437,18 +463,28 @@ func (a *app) startMappingAccess(w http.ResponseWriter, r *http.Request, m confi
 		return
 	}
 	expires := time.Now().Add(5 * time.Minute)
+	scope := accessScope(m, console)
 	manager := a.mappingAccessManager()
 	manager.mu.Lock()
 	manager.pruneLocked(time.Now())
+	if previous := r.URL.Query().Get("retry"); previous != "" {
+		challenge, found := manager.challenges[previous]
+		if !found || challenge.Scope != scope {
+			manager.mu.Unlock()
+			accessError(w, 403, "原验证请求已失效，请从原访问地址重新打开", "")
+			return
+		}
+		path = challenge.ReturnPath
+	}
 	if len(manager.challenges) >= mappingAccessLimit {
 		manager.mu.Unlock()
 		accessError(w, 429, "验证请求过多，请稍后重试", origin.String()+"/")
 		return
 	}
-	manager.challenges[id] = accessChallenge{MappingID: m.ID, Scope: accessScope(m, console), ReturnPath: path, Verifier: sha256.Sum256([]byte(verifier)), Expires: expires}
+	manager.challenges[id] = accessChallenge{MappingID: m.ID, Scope: scope, ReturnPath: path, Verifier: sha256.Sum256([]byte(verifier)), Expires: expires}
 	manager.mu.Unlock()
-	_, name := accessCookieNames(m)
-	setMappingCookie(w, m, name, verifier, expires)
+	// Concurrent navigations each need their own browser verifier.
+	setMappingCookie(w, m, accessStateCookieName(m, id), verifier, expires)
 	http.Redirect(w, r, console.String()+mappingAccessPath+"authorize?request="+id, http.StatusFound)
 }
 func (a *app) authorizeMappingAccess(w http.ResponseWriter, r *http.Request) {
@@ -511,10 +547,8 @@ func (a *app) authorizeMappingAccess(w http.ResponseWriter, r *http.Request) {
 }
 func (a *app) completeMappingAccess(w http.ResponseWriter, r *http.Request, m config.Mapping, origin, console *url.URL) {
 	id, code := r.URL.Query().Get("request"), r.URL.Query().Get("code")
-	_, stateName := accessCookieNames(m)
-	cookie, err := r.Cookie(stateName)
-	if !validAccessToken(id) || !validAccessToken(code) || err != nil || !validAccessToken(cookie.Value) {
-		accessError(w, 403, "浏览器验证状态缺失或失效，请重新验证", origin.String()+"/")
+	if !validAccessToken(id) {
+		accessError(w, 403, "原验证请求已失效，请从原访问地址重新打开", "")
 		return
 	}
 	manager := a.mappingAccessManager()
@@ -522,21 +556,32 @@ func (a *app) completeMappingAccess(w http.ResponseWriter, r *http.Request, m co
 	manager.pruneLocked(time.Now())
 	challenge, challengeOK := manager.challenges[id]
 	grant, codeOK := manager.codes[code]
-	verifier := sha256.Sum256([]byte(cookie.Value))
-	if !challengeOK || !codeOK || grant.Request != id || challenge.MappingID != m.ID || challenge.Scope != accessScope(m, console) || subtle.ConstantTimeCompare(verifier[:], challenge.Verifier[:]) != 1 {
-		manager.mu.Unlock()
-		accessError(w, 403, "验证凭证无效、已使用或属于其他浏览器", origin.String()+"/")
+	manager.mu.Unlock()
+	if !challengeOK || challenge.Scope != accessScope(m, console) {
+		accessError(w, 403, "原验证请求已失效，请从原访问地址重新打开", "")
 		return
 	}
-	manager.mu.Unlock()
+	// Keep the original path and query on the server until the new verification succeeds.
+	retry := origin.String() + mappingAccessPath + "start?retry=" + id
+	stateName := accessStateCookieName(m, id)
+	cookie, err := r.Cookie(stateName)
+	if !validAccessToken(code) || err != nil || !validAccessToken(cookie.Value) {
+		accessError(w, 403, "浏览器验证状态缺失或失效，请重新验证", retry)
+		return
+	}
+	verifier := sha256.Sum256([]byte(cookie.Value))
+	if !codeOK || grant.Request != id || subtle.ConstantTimeCompare(verifier[:], challenge.Verifier[:]) != 1 {
+		accessError(w, 403, "验证凭证无效、已使用或属于其他浏览器", retry)
+		return
+	}
 	expires, valid := a.accessOwnerValid(grant.Owner)
 	if !valid || !a.auth.ownerAllows(grant.Owner, m.DeviceID, "view") {
-		accessError(w, 403, "后台登录已失效，请重新登录", origin.String()+"/")
+		accessError(w, 403, "后台登录已失效，请重新登录", retry)
 		return
 	}
 	token := accessToken()
 	if token == "" {
-		accessError(w, 503, "暂时无法完成验证", origin.String()+"/")
+		accessError(w, 503, "暂时无法完成验证", retry)
 		return
 	}
 	manager.mu.Lock()
@@ -544,34 +589,40 @@ func (a *app) completeMappingAccess(w http.ResponseWriter, r *http.Request, m co
 	// Consume both values atomically: concurrent callbacks cannot reuse a grant.
 	if _, ok := manager.challenges[id]; !ok {
 		manager.mu.Unlock()
-		accessError(w, 403, "验证凭证已使用", origin.String()+"/")
+		accessError(w, 403, "原验证请求已失效，请从原访问地址重新打开", "")
 		return
 	}
 	if _, ok := manager.codes[code]; !ok {
 		manager.mu.Unlock()
-		accessError(w, 403, "验证凭证已使用", origin.String()+"/")
+		accessError(w, 403, "验证凭证已使用或失效，请重新验证", retry)
 		return
 	}
 	if len(manager.sessions) >= mappingAccessLimit {
 		manager.mu.Unlock()
-		accessError(w, 429, "访问会话已达上限，请稍后再试", origin.String()+"/")
+		accessError(w, 429, "访问会话已达上限，请稍后再试", retry)
 		return
 	}
 	delete(manager.challenges, id)
 	delete(manager.codes, code)
 	manager.sessions[sha256.Sum256([]byte(token))] = mappingSession{Scope: challenge.Scope, Owner: grant.Owner, Expires: expires}
 	manager.mu.Unlock()
-	name, _ := accessCookieNames(m)
-	setMappingCookie(w, m, name, token, expires)
+	setMappingCookie(w, m, accessSessionCookieName(m), token, expires)
 	http.SetCookie(w, &http.Cookie{Name: stateName, Value: "", Path: "/", HttpOnly: true, Secure: m.PublicScheme == "https", SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	http.Redirect(w, r, origin.String()+challenge.ReturnPath, http.StatusFound)
 }
 
 func reservedMappingCookie(name string) bool {
-	return name == adminCookie || name == httpAdminCookie || name == mappingAccessCookie || name == mappingAccessHTTPCookie || name == mappingStateCookie || name == mappingStateHTTPCookie
+	switch name {
+	case adminCookie, httpAdminCookie, mappingAccessCookie, mappingAccessHTTPCookie, mappingStateCookie, mappingStateHTTPCookie:
+		return true
+	}
+	return strings.HasPrefix(name, mappingStateCookie+"_") || strings.HasPrefix(name, mappingStateHTTPCookie+"_")
 }
 func mappingProxyHeaders(r *http.Request) map[string][]string {
 	header := r.Header.Clone()
+	if browserHTMLRequest(r) {
+		header.Del("Accept-Encoding")
+	}
 	header.Del("Cookie")
 	copyRequest := &http.Request{Header: header}
 	for _, cookie := range r.Cookies() {

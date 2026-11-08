@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,39 +32,42 @@ import (
 var webFS embed.FS
 
 type app struct {
-	mailMu            sync.Mutex
-	mail              *notificationMailer
-	mailErr           error
-	certs             *certificateManager
-	certMu            sync.Mutex
-	certManagers      map[string]*certificateManager
-	certDir           string
-	httpsAddress      string
-	httpsError        string
-	httpsServer       *http.Server
-	httpsSettings     httpsSettings
-	httpsSettingsPath string
-	store             *config.Store
-	hub               *hub.Hub
-	traffic           *traffic.Store
-	adminUser         string
-	adminPass         string
-	auth              *adminManager
-	consoleHost       string
-	publicURL         *url.URL
-	updateMu          sync.Mutex
-	deviceUpdates     map[string]pluginUpdateView
-	updatePackage     *verifiedUpdatePackage
-	operators         *operatorResolver
-	remoteMu          sync.Mutex
-	remote            *remoteManager
-	centerMu          sync.Mutex
-	center            *packageCenter
-	centerErr         error
-	mappingMu         sync.Mutex
-	mappingAccess     *mappingAccessManager
-	releaseMu         sync.Mutex
-	releases          *releaseChecker
+	activityPollInterval time.Duration
+	activityMu           sync.Mutex
+	activities           map[[32]byte]browserActivity
+	mailMu               sync.Mutex
+	mail                 *notificationMailer
+	mailErr              error
+	certs                *certificateManager
+	certMu               sync.Mutex
+	certManagers         map[string]*certificateManager
+	certDir              string
+	httpsAddress         string
+	httpsError           string
+	httpsServer          *http.Server
+	httpsSettings        httpsSettings
+	httpsSettingsPath    string
+	store                *config.Store
+	hub                  *hub.Hub
+	traffic              *traffic.Store
+	adminUser            string
+	adminPass            string
+	auth                 *adminManager
+	consoleHost          string
+	publicURL            *url.URL
+	updateMu             sync.Mutex
+	deviceUpdates        map[string]pluginUpdateView
+	updatePackage        *verifiedUpdatePackage
+	operators            *operatorResolver
+	remoteMu             sync.Mutex
+	remote               *remoteManager
+	centerMu             sync.Mutex
+	center               *packageCenter
+	centerErr            error
+	mappingMu            sync.Mutex
+	mappingAccess        *mappingAccessManager
+	releaseMu            sync.Mutex
+	releases             *releaseChecker
 }
 
 func main() {
@@ -133,12 +138,19 @@ func main() {
 }
 
 func (a *app) routes() http.Handler {
+	if a.hub != nil && a.store != nil {
+		a.hub.SetHTTPStreamLimitsLookup(func(id string) hub.HTTPStreamLimits {
+			limits := a.store.DeviceConnectionLimits(id)
+			return hub.HTTPStreamLimits{WebSockets: limits.WebSockets, HTTPReserve: limits.HTTPReserve}
+		})
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/auth/status", a.authStatus)
 	mux.HandleFunc("/api/auth/setup", a.authSetup)
 	mux.HandleFunc("/api/auth/login", a.authLogin)
 	mux.HandleFunc("/api/auth/logout", a.authLogout)
 	mux.HandleFunc("/api/admin/security", a.admin(a.securitySettings))
+	mux.HandleFunc("/api/admin/connection-limits", a.admin(a.globalConnectionLimits))
 	mux.HandleFunc("/api/admin/users", a.admin(a.usersHTTP))
 	mux.HandleFunc("/api/admin/mail", a.admin(a.mailHTTP))
 	mux.HandleFunc("/api/admin/mail/preview", a.admin(a.mailPreviewHTTP))
@@ -353,8 +365,9 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, resp.Error, http.StatusBadGateway)
 		return
 	}
-	writeMappedResponseHeaders(w, r, mapping, resp.Headers, resp.Status)
-	_, _ = w.Write(resp.Body)
+	response := &http.Response{StatusCode: resp.Status, Header: http.Header(resp.Headers), Body: io.NopCloser(bytes.NewReader(resp.Body))}
+	a.prepareBrowserActivity(r, mapping, response)
+	writeMappedHTTPStream(w, r, mapping, response)
 }
 
 var upgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096, CheckOrigin: func(*http.Request) bool { return true }}
@@ -381,7 +394,8 @@ func (a *app) connectAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(protocol.MaxMessageBytes)
-	c := a.hub.Attach(id, d.Name, r.URL.Query().Get("version"), conn, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1", r.URL.Query().Get("update_recovery") == "1", r.URL.Query().Get("http_stream") == "1", r.URL.Query().Get("cancel_http") == "1")
+	capacity, _ := strconv.Atoi(r.URL.Query().Get("http_stream_capacity"))
+	c := a.hub.AttachWithHTTPCapacity(id, d.Name, r.URL.Query().Get("version"), conn, capacity, r.URL.Query().Get("updater") == "1", r.URL.Query().Get("remote") == "1", r.URL.Query().Get("update_tools") == "1", r.URL.Query().Get("update_recovery") == "1", r.URL.Query().Get("http_stream") == "1", r.URL.Query().Get("cancel_http") == "1")
 	if err := a.store.RecordConnection(id, c.Since, info); err != nil {
 		log.Printf("device connection information failed: %v", err)
 	}
@@ -492,6 +506,10 @@ func (a *app) devices(w http.ResponseWriter, r *http.Request) {
 func (a *app) deviceByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/admin/devices/")
 	if deviceID, operation, ok := strings.Cut(id, "/"); ok {
+		if operation == "connection-limits" {
+			a.deviceConnectionLimits(w, r, deviceID)
+			return
+		}
 		if operation == "status" {
 			a.refreshDeviceStatus(w, r, deviceID)
 			return

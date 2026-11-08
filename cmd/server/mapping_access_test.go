@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -104,6 +105,43 @@ func TestMappingAccessProtectsAllPathsAndRequiresAnActualMappingSession(t *testi
 	// accidentally return the RemoteGate management API on a mapped domain.
 	requireStatus(t, accessCall(f.app, "GET", "https://router.example.com/api/admin/state", visitor), 502)
 }
+func TestMappingAccessRetiresLegacyXDWorkerWithoutAuthorizingPanel(t *testing.T) {
+	f := newAccessFixture(t)
+	public := f.mapping
+	public.ID = ""
+	public.Host = "public.example.com"
+	public.AccessMode = "public"
+	if _, err := f.app.store.PutMapping(public); err != nil {
+		t.Fatal(err)
+	}
+	const protected = "https://router.example.com"
+	const worker = "/ui/metacubexd/sw.js"
+	for _, tc := range []struct {
+		name, method, address, workerHeader, accept string
+		status                                      int
+	}{
+		{"worker update", "GET", protected + worker, "script", "*/*", 200},
+		{"direct script URL", "GET", protected + worker, "", "text/html", 302},
+		{"different worker", "GET", protected + "/sw.js", "script", "*/*", 302},
+		{"panel navigation", "GET", protected + "/ui/metacubexd/", "", "text/html", 302},
+		{"version probe", "GET", protected + "/version", "", "application/json", 401},
+		{"non-GET", "POST", protected + worker, "script", "*/*", 401},
+		{"public mapping", "GET", "https://public.example.com" + worker, "script", "*/*", 502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(tc.method, tc.address, nil)
+			r.Header.Set("Service-Worker", tc.workerHeader)
+			r.Header.Set("Accept", tc.accept)
+			w := httptest.NewRecorder()
+			f.app.routes().ServeHTTP(w, r)
+			requireStatus(t, w, tc.status)
+			if tc.status == 200 && (w.Header().Get("Content-Type") != "text/javascript; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), "self.registration.unregister()")) {
+				t.Fatal("Expected a non-cacheable worker that unregisters itself")
+			}
+		})
+	}
+}
+
 func TestMappingAccessLoginContinuationAndBrowserBoundOneTimeCode(t *testing.T) {
 	f := newAccessFixture(t)
 	authorize, state := beginAccess(t, f)
@@ -130,6 +168,85 @@ func TestMappingAccessLoginContinuationAndBrowserBoundOneTimeCode(t *testing.T) 
 		t.Fatal("Callback must not be cached or leak its ticket")
 	}
 }
+
+func TestMappingAccessRetryReturnsToOriginalPage(t *testing.T) {
+	f := newAccessFixture(t)
+	authorize, oldState := beginAccess(t, f)
+	w := accessCall(f.app, "GET", authorize, f.parent)
+	requireStatus(t, w, 302)
+	callback := w.Header().Get("Location")
+	callbackURL, err := url.Parse(callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := "https://router.example.com" + mappingAccessPath + "start?retry=" + callbackURL.Query().Get("request")
+	w = accessCall(f.app, "GET", callback)
+	requireStatus(t, w, 403)
+	if !strings.Contains(w.Body.String(), `href="`+retry+`"`) || strings.Contains(w.Body.String(), "tab=settings") || len(w.Result().Cookies()) != 0 {
+		t.Fatal("Failed callback should offer a retry without disclosing the original URL or granting access")
+	}
+
+	w = accessCall(f.app, "GET", retry)
+	requireStatus(t, w, 302)
+	newAuthorize := w.Header().Get("Location")
+	newState := w.Result().Cookies()[0]
+	if newAuthorize == authorize || newState.Value == oldState.Value {
+		t.Fatal("Retry should start a fresh browser verification")
+	}
+	requireStatus(t, accessCall(f.app, "GET", callback, newState), 403)
+	w = accessCall(f.app, "GET", newAuthorize, f.parent)
+	requireStatus(t, w, 302)
+	w = accessCall(f.app, "GET", w.Header().Get("Location"), newState)
+	requireStatus(t, w, 302)
+	if got := w.Header().Get("Location"); got != "https://router.example.com/private?tab=settings" {
+		t.Fatalf("Retry returned to %q instead of the original page", got)
+	}
+}
+
+func TestMappingAccessConcurrentNavigationsKeepTheirBrowserState(t *testing.T) {
+	f := newAccessFixture(t)
+	visitor := completeAccess(t, f)
+	m := f.mapping
+	m.ID = ""
+	m.Host = "dashboard.example.com"
+	if _, err := f.app.store.PutMapping(m); err != nil {
+		t.Fatal(err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parse := func(address string) *url.URL {
+		t.Helper()
+		u, err := url.Parse(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	jar.SetCookies(parse("https://console.example.com/"), []*http.Cookie{f.parent})
+	jar.SetCookies(parse("https://router.example.com/"), []*http.Cookie{visitor})
+	follow := func(address string) string {
+		t.Helper()
+		u := parse(address)
+		w := accessCall(f.app, "GET", address, jar.Cookies(u)...)
+		requireStatus(t, w, 302)
+		jar.SetCookies(u, w.Result().Cookies())
+		return w.Header().Get("Location")
+	}
+	panel := "https://dashboard.example.com/ui/metacubexd/"
+	firstAuthorize := follow(follow(panel))
+	secondAuthorize := follow(follow(panel + "?tab=second"))
+	first := follow(firstAuthorize)
+	second := follow(secondAuthorize)
+	if got := follow(second); got != panel+"?tab=second" {
+		t.Fatalf("Second tab returned to %q", got)
+	}
+	if got := follow(first); got != panel {
+		t.Fatalf("First tab returned to %q", got)
+	}
+}
+
 func TestMappingSessionRevokesOnLogoutExpiryAndMappingChange(t *testing.T) {
 	for _, change := range []string{"logout", "logout-after-second-login", "expiry", "mapping", "permissions", "password"} {
 		t.Run(change, func(t *testing.T) {
@@ -248,13 +365,15 @@ func TestMappingProxyNeverForwardsGatewayCredentials(t *testing.T) {
 	r.AddCookie(&http.Cookie{Name: adminCookie, Value: "administrator"})
 	r.AddCookie(&http.Cookie{Name: mappingAccessCookie, Value: "gateway"})
 	r.AddCookie(&http.Cookie{Name: mappingStateCookie, Value: "nonce"})
+	challengeCookie := accessStateCookieName(config.Mapping{PublicScheme: "https"}, strings.Repeat("a", 64))
+	r.AddCookie(&http.Cookie{Name: challengeCookie, Value: "challenge-nonce"})
 	r.AddCookie(&http.Cookie{Name: "sysauth", Value: "luci-session"})
 	r.Header.Set("Authorization", "Basic app-credentials")
 	h := http.Header(mappingProxyHeaders(r))
 	if h.Get("Cookie") != "sysauth=luci-session" || h.Get("Authorization") != "Basic app-credentials" {
 		t.Fatal(h)
 	}
-	for _, name := range []string{adminCookie, httpAdminCookie, mappingAccessCookie, mappingStateCookie, mappingAccessHTTPCookie, mappingStateHTTPCookie} {
+	for _, name := range []string{adminCookie, httpAdminCookie, mappingAccessCookie, mappingStateCookie, mappingAccessHTTPCookie, mappingStateHTTPCookie, challengeCookie} {
 		if mappingProxyCookie(name + "=evil; Path=/; Secure") {
 			t.Fatal("Reserved response cookie accepted", name)
 		}

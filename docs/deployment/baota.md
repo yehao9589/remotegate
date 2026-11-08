@@ -67,6 +67,7 @@ HTTPS_LISTEN_ADDR=
 | 代理路径 | `/` |
 | 目标 URL | `http://127.0.0.1:18088` |
 | 公网 HTTPS 端口 | `443` |
+| 反代缓存 | 关闭 |
 | WebSocket | 保留 Upgrade、Connection 和 HTTP/1.1 转发配置 |
 
 为了让多个映射域名都能正常访问，将 **RemoteGate 对应站点**反代中已有的 Host 行替换为下方内容，并设置协议头，不重复添加相同配置：
@@ -74,6 +75,17 @@ HTTPS_LISTEN_ADDR=
 ```nginx
 proxy_set_header Host $http_host;
 proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+### 保留 RemoteGate 的缓存响应头
+
+关闭反代缓存后，检查宝塔生成的 RemoteGate 反代配置。若静态文件分支还包含 `expires 1m;`，在原位置将它改为 `expires off;`。这能让浏览器收到 RemoteGate 为受保护映射设置的 `Cache-Control: no-store`。宝塔重建反代后，检查这条规则是否重新生成。
+
+如果 OpenClash 打开 MetaCubeXD 时提示“后端不可达”，可用下列命令检查受保护的 XD 映射。把示例域名换成 XD 的公网访问域名。包含旧版 XD 缓存兼容修复的服务端应返回 `200` 和 `Cache-Control: no-store`。
+
+```sh
+curl -sS -D - -o /dev/null -H 'Service-Worker: script' \
+  https://xd.gate.example.com/ui/metacubexd/sw.js
 ```
 
 这里只配置 RemoteGate 对应站点，其他网站保持原样。18088 只供服务器本机反代使用，不用对公网开放，也不用额外开放 8443。

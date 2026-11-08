@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -99,9 +100,13 @@ func TestMappedHTTPStreamFlushesPreservesLoginAndKeepsAccessProtection(t *testin
 	}
 }
 
-func attachMappedStreamFixture(t *testing.T, a *app, server *httptest.Server, id, token string) context.Context {
+func attachMappedStreamFixture(t *testing.T, a *app, server *httptest.Server, id, token string, capacity ...int) context.Context {
 	t.Helper()
-	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect?device_id="+id+"&token="+token+"&http_stream=1", nil)
+	extra := ""
+	if len(capacity) > 0 {
+		extra = "&http_stream_capacity=" + strconv.Itoa(capacity[0])
+	}
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect?device_id="+id+"&token="+token+"&http_stream=1"+extra, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

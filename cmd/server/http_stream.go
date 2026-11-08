@@ -30,6 +30,7 @@ func (a *app) proxyStreamHTTP(w http.ResponseWriter, r *http.Request, m config.M
 		http.Error(w, "网页连接未完成，请稍后重试", code)
 		return
 	}
+	a.prepareBrowserActivity(r, m, resp)
 	writeMappedHTTPStream(w, r, m, resp)
 }
 

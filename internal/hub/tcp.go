@@ -25,9 +25,6 @@ const (
 	streamWebSocket
 )
 
-// Reserve at least half of the agent's HTTP slots for ordinary page requests.
-const maxWebSocketStreams = protocol.MaxHTTPStreams / 2
-
 func (a tunnelAddr) Network() string { return "remotegate" }
 func (a tunnelAddr) String() string  { return string(a) }
 
@@ -58,6 +55,7 @@ func (h *Hub) OpenTCP(ctx context.Context, deviceID, target string) (net.Conn, e
 func (h *Hub) openStream(ctx context.Context, deviceID, target string, streamType streamKind) (net.Conn, error) {
 	h.mu.RLock()
 	c := h.clients[deviceID]
+	lookup := h.httpLimits
 	h.mu.RUnlock()
 	if c == nil {
 		return nil, ErrOffline
@@ -70,10 +68,16 @@ func (h *Hub) openStream(ctx context.Context, deviceID, target string, streamTyp
 		return nil, errors.New("请升级插件，并在路由器插件中启用 SSH / 文件管理")
 	}
 	count, limit, prefix, kind := &c.streamCount, protocol.MaxDeviceStreams, "tcp:", "tcp-open"
+	limits := streamLimits(c, lookup)
 	if web {
-		count, limit, prefix, kind = &c.webCount, protocol.MaxHTTPStreams, "http:", "http-open"
+		count, limit, prefix, kind = &c.webCount, limits.WebSockets+limits.HTTPReserve, "http:", "http-open"
+		if !upgrade {
+			// Lowering the WebSocket quota does not terminate existing sockets.
+			// Keep the HTTP reserve available alongside those surviving sockets.
+			limit = min(normalizedHTTPStreamCapacity(c.httpStreamCapacity), max(limits.WebSockets, int(c.webSocketCount.Load()))+limits.HTTPReserve)
+		}
 	}
-	if upgrade && c.webSocketCount.Add(1) > maxWebSocketStreams {
+	if upgrade && c.webSocketCount.Add(1) > int32(limits.WebSockets) {
 		c.webSocketCount.Add(-1)
 		return nil, ErrWebSocketBusy
 	}
