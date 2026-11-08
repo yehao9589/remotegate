@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +37,11 @@ func TestHostRequestTravelsThroughAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
+	// The HTTP upgrade can complete before connectAgent attaches the device.
+	// Wait for readiness rather than relying on scheduler timing under -race.
+	if err := a.hub.WaitOnline(context.Background(), d.ID, time.Second); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -79,6 +85,9 @@ func TestMaximumHTTPBodyTravelsThroughAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
+	if err := a.hub.WaitOnline(context.Background(), d.ID, time.Second); err != nil {
+		t.Fatal(err)
+	}
 	conn.SetReadLimit(protocol.MaxMessageBytes)
 	result := make(chan error, 1)
 	go func() {
