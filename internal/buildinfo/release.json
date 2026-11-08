@@ -1,5 +1,5 @@
 {
-  "version": "0.1.21",
-  "title": "网页实时连接与插件升级兼容",
-  "packageRevision": 2
+  "version": "0.1.22",
+  "title": "网页闲置保护与连接管理",
+  "packageRevision": 1
 }

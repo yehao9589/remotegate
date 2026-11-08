@@ -30,6 +30,78 @@ func limitsCall(a *app, id, method, body, origin string, cookie *http.Cookie) *h
 	return w
 }
 
+func globalLimitsCall(a *app, method, body, origin string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, "http://console.localhost/api/admin/connection-limits", strings.NewReader(body))
+	if a.auth != nil {
+		r.Header.Set("X-Admin-Entry", a.auth.entryPath())
+	}
+	if cookie != nil {
+		r.AddCookie(cookie)
+	}
+	if origin != "" {
+		r.Header.Set("Origin", origin)
+	}
+	w := httptest.NewRecorder()
+	a.routes().ServeHTTP(w, r)
+	return w
+}
+
+func TestGlobalConnectionLimitsDefaultAndAllDevicesRequireAdministrator(t *testing.T) {
+	a := freshAuthApp(t)
+	login := authCall(a, "/api/auth/setup", setupBody, "", nil)
+	requireStatus(t, login, 200)
+	admin := login.Result().Cookies()[0]
+	one, token, _ := a.store.CreateDevice("one")
+	two, _, _ := a.store.CreateDevice("offline other page")
+	if err := a.store.SetDeviceConnectionLimits(two.ID, config.ConnectionLimits{WebSockets: 12, HTTPReserve: 4}); err != nil {
+		t.Fatal(err)
+	}
+	createRegular(t, a, "member", []deviceGrant{{DeviceID: one.ID}})
+	member := regularCookie(t, a, "member")
+	const body = `{"limits":{"webSockets":24,"httpReserve":8},"applyToAll":true}`
+	server := agentTestServer(t, a)
+	attachMappedStreamFixture(t, a, server, one.ID, token, 128)
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		requireStatus(t, globalLimitsCall(a, method, body, "", nil), 401)
+		requireStatus(t, globalLimitsCall(a, method, body, "", member), 401)
+	}
+	requireStatus(t, globalLimitsCall(a, http.MethodPut, body, "https://foreign.example", admin), 403)
+	requireStatus(t, globalLimitsCall(a, http.MethodPost, body, "", admin), 405)
+	for _, bad := range []string{`{}`, `{"limits":{"webSockets":24}}`, `{"limits":{"webSockets":124,"httpReserve":8}}`, `{"limits":{"webSockets":24,"httpReserve":8},"applyToAll":"yes"}`, body + ` {}`, `{"limits":{"webSockets":24,"httpReserve":8},"deviceIds":[]}`} {
+		requireStatus(t, globalLimitsCall(a, http.MethodPut, bad, "", admin), 400)
+	}
+	before := globalLimitsCall(a, http.MethodGet, "", "", admin)
+	requireStatus(t, before, 200)
+	var settings config.ConnectionLimitSettings
+	if err := json.Unmarshal(before.Body.Bytes(), &settings); err != nil || settings.DeviceCount != 2 || settings.Defaults != config.DefaultConnectionLimits() {
+		t.Fatal(settings, err)
+	}
+	onlyDefault := globalLimitsCall(a, http.MethodPut, `{"limits":{"webSockets":16,"httpReserve":8},"applyToAll":false}`, "", admin)
+	requireStatus(t, onlyDefault, 200)
+	if a.store.DeviceConnectionLimits(one.ID) != config.DefaultConnectionLimits() || a.store.DeviceConnectionLimits(two.ID) != (config.ConnectionLimits{WebSockets: 12, HTTPReserve: 4}) {
+		t.Fatal("defaults modified existing devices")
+	}
+	if a.hub.Statuses()[one.ID].Connections.EffectiveWebSockets != 8 {
+		t.Fatal("saving defaults changed the connected device's quota")
+	}
+	bulk := globalLimitsCall(a, http.MethodPut, body, "", admin)
+	requireStatus(t, bulk, 200)
+	if err := json.Unmarshal(bulk.Body.Bytes(), &settings); err != nil || settings.AppliedCount != 2 || settings.DeviceCount != 2 {
+		t.Fatal(settings, err)
+	}
+	for _, id := range []string{one.ID, two.ID} {
+		if a.store.DeviceConnectionLimits(id) != (config.ConnectionLimits{WebSockets: 24, HTTPReserve: 8}) {
+			t.Fatal("bulk missed device", id)
+		}
+	}
+	if a.hub.Statuses()[one.ID].Connections.EffectiveWebSockets != 24 {
+		t.Fatal("bulk limits did not apply to the connected device")
+	}
+	if strings.Contains(bulk.Body.String(), token) || strings.Contains(bulk.Body.String(), one.TokenHash) {
+		t.Fatal("global response exposed credentials")
+	}
+}
+
 func TestDeviceConnectionLimitsAPIRequiresAdministratorAndPersists(t *testing.T) {
 	a := freshAuthApp(t)
 	login := authCall(a, "/api/auth/setup", setupBody, "", nil)

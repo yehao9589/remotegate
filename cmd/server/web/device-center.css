@@ -63,6 +63,7 @@
 .pill.recovering{color:#9b762f;background:#fff7e5}.pill.recovering:before{background:#c19a4b}
 
 /* Per-device targets stay distinct from the connected client's effective capacity. */
+.device-idle-fields{margin-top:18px}.device-idle-fields select{width:100%;box-sizing:border-box;margin:0;font-size:13px;min-height:40px}
 #modal.connection-limits-dialog{width:min(650px,calc(100vw - 32px));box-sizing:border-box;max-height:calc(100dvh - 40px);overflow:auto}
 .connection-limits-dialog h2{font-size:20px;margin:0 0 12px;overflow-wrap:anywhere}
 .device-connection-intro{font-size:12px;line-height:1.8;color:#7a8aa2;margin:0 0 20px}
@@ -73,4 +74,6 @@
 .device-connection-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.device-connection-fields label{display:flex;flex-direction:column;gap:8px;margin:0;color:#5c7192;font-size:12px}.device-connection-fields input{width:100%;box-sizing:border-box;margin:0;font-size:16px;font-variant-numeric:tabular-nums}.device-connection-fields small{font-size:11px;line-height:1.7;color:#92a0b5;font-weight:400}
 .device-connection-presets{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:17px}.device-connection-presets button,.device-connection-refresh{font-size:11px;padding:7px 10px;background:white}.device-connection-presets span{margin-left:auto;font-size:11px;color:#8595ae;font-variant-numeric:tabular-nums}
 .device-connection-notice{font-size:12px;line-height:1.8;padding:12px 14px;background:#f1f6ff;border:1px solid #e0e9fa;border-radius:9px;color:#6381ab;margin:18px 0 12px}.device-connection-footnote{font-size:11px;line-height:1.8;color:#92a0b5;margin:0 0 12px}.connection-limits-dialog .dialogactions{margin-top:20px;display:flex;gap:10px;justify-content:flex-end}
+.global-connection-entry{white-space:nowrap}.workbench-tools .global-connection-entry .ui-icon{width:15px;height:15px;vertical-align:middle;margin-right:5px}
+.global-connection-limits-dialog .global-connection-apply{display:flex;align-items:flex-start;gap:10px;margin:20px 0 0;padding:12px 14px;border:1px solid #e1e8f4;border-radius:9px;background:#f8faff;color:#5d7295;line-height:1.7;font-size:12px}.global-connection-apply input[type=checkbox]{flex:none;display:block;width:15px;height:15px;padding:0;margin:3px 0 0;accent-color:#506be1}.global-connection-apply:has(input:checked){border-color:#e8cf9f;background:#fff9ee;color:#967035}.global-connection-scope{margin:9px 2px 0;color:#8293ac;font-size:11px;line-height:1.8}.global-connection-limits-dialog .device-connection-notice{margin-top:16px}
 @media(max-width:480px){#modal.connection-limits-dialog{padding:22px 18px;max-height:calc(100dvh - 24px)}.device-connection-fields{grid-template-columns:1fr;gap:18px}.device-connection-usage>div{padding:11px}.device-connection-usage dd{font-size:16px}.device-connection-presets span{width:100%;margin:3px 0 0}.connection-limits-dialog .dialogactions button{padding:9px 12px;font-size:12px}}

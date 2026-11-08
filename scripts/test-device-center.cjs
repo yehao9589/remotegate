@@ -1,12 +1,12 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 function fixture(){
- const nodes=new Map(),requests=[],baseActions=[],opened=[],timers=new Map();let timer=0,confirm=true;
+ const nodes=new Map(),requests=[],baseActions=[],opened=[],confirmations=[],timers=new Map();let timer=0,confirm=true;
  const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  function node(id){if(!nodes.has(id)){const listeners=new Map();nodes.set(id,{innerHTML:'',textContent:'',disabled:false,hidden:false,open:false,value:'',classList:{add(){},remove(){},toggle(){}},querySelectorAll(){return []},querySelector(){return null},setAttribute(){},appendChild(){},addEventListener(type,fn){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(fn)},showModal(){this.open=true},close(){this.open=false;for(const fn of listeners.get('close')||[])fn()},focus(){},setSelectionRange(){}})}return nodes.get(id)}
- const context=vm.createContext({console,Map,Set,Date,Number,String,URL,AbortController,encodeURIComponent,authTransition:1,customMappingDomain:'__custom__',location:{host:'console.example.com'},query:'',filter:'',editing:null,state:{devices:[{id:'router-one',name:'主路由器',online:true,version:'0.1.3',connectedAt:new Date(Date.now()-65000).toISOString(),info:{}}],mappings:[{id:'map-one',deviceId:'router-one',host:'service.example.com',target:'http://192.168.1.1:80',note:'管理页',enabled:true,publicScheme:'https',publicPort:443}]},$:node,esc,uiIcon:()=>'',expandedFeatures:new Map(),renderWorkbench(){},render(){context.deviceCards()},deviceCards(){},mappingRow:m=>'<tr><td>'+esc(m.host)+'</td><td><button class="danger" data-action="deleteMapping">删除</button></td></tr>',pluginUpdateButton:()=>'',toggleFeature(){},action:async(a,id)=>{baseActions.push({a,id})},openEditor:(type,item)=>{opened.push({type,item});context.editing={type,item};node('#modal').showModal()},copyText:async()=>{},toast(){},refresh:async()=>{},api:async(path,method,body,options)=>{requests.push({path,method,body,options});return {latencyMs:27,checkedAt:new Date().toISOString()}},confirm:()=>confirm,setTimeout:fn=>{timers.set(++timer,fn);return timer},clearTimeout:id=>timers.delete(id),document:{activeElement:null,getElementById:node,createElement:()=>node('option')},FormData:class{constructor(){this.fields=new Map([['name','新名称'],['note','路由器备注'],['pinned','on']])}get(k){return this.fields.get(k)}has(k){return this.fields.has(k)}}});
+ const context=vm.createContext({console,Map,Set,Date,Number,String,URL,AbortController,encodeURIComponent,authTransition:1,customMappingDomain:'__custom__',location:{host:'console.example.com'},query:'',filter:'',editing:null,state:{devices:[{id:'router-one',name:'主路由器',online:true,version:'0.1.3',connectedAt:new Date(Date.now()-65000).toISOString(),info:{}}],mappings:[{id:'map-one',deviceId:'router-one',host:'service.example.com',target:'http://192.168.1.1:80',note:'管理页',enabled:true,publicScheme:'https',publicPort:443}]},$:node,esc,uiIcon:()=>'',expandedFeatures:new Map(),renderWorkbench(){},render(){context.deviceCards()},deviceCards(){},mappingRow:m=>'<tr><td>'+esc(m.host)+'</td><td><button class="danger" data-action="deleteMapping">删除</button></td></tr>',pluginUpdateButton:()=>'',toggleFeature(){},action:async(a,id)=>{baseActions.push({a,id})},openEditor:(type,item)=>{opened.push({type,item});context.editing={type,item};node('#modal').showModal()},copyText:async()=>{},toast(){},refresh:async()=>{},api:async(path,method,body,options)=>{requests.push({path,method,body,options});return {latencyMs:27,checkedAt:new Date().toISOString()}},confirm:message=>{confirmations.push(message);return confirm},setTimeout:fn=>{timers.set(++timer,fn);return timer},clearTimeout:id=>timers.delete(id),document:{activeElement:null,getElementById:node,createElement:()=>node('option')},FormData:class{constructor(){this.fields=new Map([['name','新名称'],['note','路由器备注'],['pinned','on']])}get(k){return this.fields.get(k)}has(k){return this.fields.has(k)}}});
  node('#editor').onsubmit=async()=>{};
  vm.runInContext(fs.readFileSync('cmd/server/web/device-center.js','utf8'),context);
- return {context,node,requests,baseActions,opened,timers,confirm:value=>confirm=value,eval:code=>vm.runInContext(code,context)};
+ return {context,node,requests,baseActions,opened,confirmations,timers,confirm:value=>confirm=value,eval:code=>vm.runInContext(code,context)};
 }
 test('cards mask IDs, show honest legacy information and escape device notes',()=>{
  const f=fixture();f.context.state.devices[0].note='<img src=x onerror=alert(1)>';f.context.deviceCards();
@@ -348,4 +348,101 @@ test('refresh restores a focused management action without moving focus across l
  f.context.document.activeElement={dataset:{action:'connectionLimits'},closest:selector=>selector==='[data-device-manage]'?menu:null};
  f.context.deviceCards();assert.equal(focused,1);assert.match(f.node('#deviceCards').innerHTML,/data-device-manage="router-one" open/);
  f.context.authTransition++;f.context.deviceCards();assert.equal(focused,1);
+});
+
+async function globalConnectionEditor(f,defaults={webSockets:8,httpReserve:8},deviceCount=25){
+ f.context.api=async(path,method,body)=>{f.requests.push({path,method,body});return {defaults,deviceCount}};
+ f.context.openEditor('globalConnectionLimits');await new Promise(resolve=>setImmediate(resolve));
+}
+
+test('global connection settings entry appears beside add device only for administrators',()=>{
+ const f=fixture(),insertions=[];f.node('#addDevice').insertAdjacentHTML=(where,html)=>insertions.push({where,html});
+ f.context.renderWorkbench();assert.equal(insertions.length,1);assert.equal(insertions[0].where,'beforebegin');assert.match(insertions[0].html,/id="globalConnectionLimits"[^>]*>全局连接设置/);
+ f.node('globalConnectionLimits').isConnected=true;f.context.renderWorkbench();assert.equal(insertions.length,1);
+ let removed=0;f.node('globalConnectionLimits').remove=()=>removed++;f.context.state.account={role:'user'};f.context.renderWorkbench();
+ assert.equal(insertions.length,1);assert.equal(removed,1);f.context.openEditor('globalConnectionLimits');assert.equal(f.requests.length,0);assert.equal(f.opened.length,0);
+});
+
+test('global editor reads server defaults and all-device count independently of the current filter',async()=>{
+ const f=fixture();f.context.query='no matches';f.context.filter='no';await globalConnectionEditor(f,{webSockets:24,httpReserve:8},57);
+ assert.deepEqual(f.requests.map(r=>[r.path,r.method]),[['connection-limits','GET']]);assert.equal(f.node('#modalTitle').textContent,'全局连接设置');
+ assert.equal(f.node('#connectionWebSockets').value,'24');assert.equal(f.node('#globalConnectionApplyAll').checked,false);assert.equal(f.node('#save').disabled,false);
+ assert.match(f.node('#fields').innerHTML,/初始值 8 \+ 8/);assert.doesNotMatch(f.node('#fields').innerHTML,/恢复默认/);
+ assert.match(f.node('#globalConnectionScope').textContent,/57 台现有设备继续使用各自设置/);assert.match(f.node('#globalConnectionApplyLabel').textContent,/全部 57 台/);
+ assert.equal(f.node('#save').textContent,'保存默认设置');assert.equal(f.timers.size,0);
+});
+
+test('saving defaults uses one global PUT without changing existing custom quotas',async()=>{
+ const f=fixture();f.context.state.devices[0].connectionLimits={webSockets:12,httpReserve:12};await globalConnectionEditor(f);
+ f.node('#connectionMultiPanel').onclick();assert.equal(f.requests.length,1);let refreshes=0;f.context.refresh=async()=>refreshes++;
+ f.context.api=async(path,method,body)=>{f.requests.push({path,method,body});return {defaults:body.limits,deviceCount:25,appliedCount:0}};
+ await f.node('#editor').onsubmit({preventDefault(){}});
+ assert.deepEqual(JSON.parse(JSON.stringify(f.requests.at(-1))),{path:'connection-limits',method:'PUT',body:{limits:{webSockets:24,httpReserve:8},applyToAll:false}});
+ assert.equal(f.requests.length,2);assert.equal(f.confirmations.length,0);assert.equal(f.context.state.devices[0].connectionLimits.webSockets,12);
+ assert.equal(refreshes,1);assert.equal(f.node('#modal').open,false);assert.equal(f.node('#save').disabled,false);assert.equal(f.timers.size,0);
+});
+
+test('global apply confirms the server total and submits one atomic request covering offline and filtered devices',async()=>{
+ const f=fixture();f.context.state.devices.push({id:'other',name:'办公室',online:false,connectionLimits:{webSockets:5,httpReserve:4}});f.context.query='主路由器';f.context.filter='yes';await globalConnectionEditor(f,{webSockets:8,httpReserve:8},57);
+ f.node('#connectionMultiPanel').onclick();f.node('#globalConnectionApplyAll').checked=true;f.node('#globalConnectionApplyAll').onchange();
+ assert.match(f.node('#globalConnectionScope').textContent,/全部 57 台/);assert.match(f.node('#globalConnectionScope').textContent,/离线、其他分页和筛选外/);assert.equal(f.node('#save').textContent,'保存并应用到全部设备');
+ f.context.api=async(path,method,body)=>{f.requests.push({path,method,body});return {defaults:body.limits,deviceCount:57,appliedCount:57}};
+ await f.node('#editor').onsubmit({preventDefault(){}});
+ assert.equal(f.confirmations.length,1);assert.match(f.confirmations[0],/当前共 57 台/);assert.match(f.confirmations[0],/覆盖各自设置/);
+ assert.deepEqual(JSON.parse(JSON.stringify(f.requests.at(-1).body)),{limits:{webSockets:24,httpReserve:8},applyToAll:true});assert.equal(f.requests.length,2);
+ assert.ok(f.context.state.devices.every(d=>d.connectionLimits.webSockets===24));assert.ok(f.requests.every(r=>r.path==='connection-limits'));assert.equal(f.timers.size,0);
+});
+
+test('canceling global overwrite keeps the draft and sends no mutation request',async()=>{
+ const f=fixture();await globalConnectionEditor(f);f.node('#connectionMultiPanel').onclick();f.node('#globalConnectionApplyAll').checked=true;f.node('#globalConnectionApplyAll').onchange();f.confirm(false);
+ await f.node('#editor').onsubmit({preventDefault(){}});
+ assert.equal(f.requests.length,1);assert.equal(f.node('#connectionWebSockets').value,'24');assert.equal(f.node('#globalConnectionApplyAll').checked,true);assert.equal(f.node('#modal').open,true);assert.equal(f.node('#save').disabled,false);
+ f.node('#cancel').onclick();assert.equal(f.requests.length,1);assert.equal(f.node('#modal').open,false);assert.equal(f.timers.size,0);
+});
+
+test('global save requires a successful defaults read and validates limits before confirmation',async()=>{
+ const f=fixture();let resolve;f.context.api=(path,method)=>{f.requests.push({path,method});return new Promise(r=>resolve=r)};
+ f.context.openEditor('globalConnectionLimits');assert.equal(f.node('#save').disabled,true);await f.node('#editor').onsubmit({preventDefault(){}});assert.equal(f.requests.length,1);
+ resolve({defaults:{webSockets:8,httpReserve:8},deviceCount:25});await new Promise(r=>setImmediate(r));
+ f.node('#globalConnectionApplyAll').checked=true;f.node('#connectionWebSockets').value='124';f.node('#connectionHTTPReserve').value='8';await f.node('#editor').onsubmit({preventDefault(){}});
+ assert.match(f.node('#formError').textContent,/不能超过 128/);assert.equal(f.requests.length,1);assert.equal(f.confirmations.length,0);assert.equal(f.timers.size,0);
+});
+
+test('global defaults read can retry and refresh count without discarding edits or resetting apply scope',async()=>{
+ const f=fixture();f.context.api=async()=>{throw Error('读取失败')};f.context.openEditor('globalConnectionLimits');await new Promise(r=>setImmediate(r));
+ assert.equal(f.node('#save').disabled,true);assert.match(f.node('#formError').textContent,/读取失败/);assert.equal(f.node('#connectionRefresh').disabled,false);
+ f.context.api=async()=>({defaults:{webSockets:12,httpReserve:8},deviceCount:42});await f.node('#connectionRefresh').onclick();assert.equal(f.node('#connectionWebSockets').value,'12');
+ f.node('#connectionMultiPanel').onclick();f.node('#globalConnectionApplyAll').checked=true;f.context.api=async()=>({defaults:{webSockets:16,httpReserve:8},deviceCount:43});await f.node('#connectionRefresh').onclick();
+ assert.equal(f.node('#connectionWebSockets').value,'24');assert.equal(f.node('#globalConnectionApplyAll').checked,true);assert.match(f.node('#globalConnectionApplyLabel').textContent,/全部 43 台/);
+ assert.equal(f.timers.size,0);
+});
+
+test('global save failures and timeout preserve the draft and permit retry without changing devices',async()=>{
+ const f=fixture();f.context.state.devices[0].connectionLimits={webSockets:8,httpReserve:8};await globalConnectionEditor(f);f.node('#connectionMultiPanel').onclick();f.node('#globalConnectionApplyAll').checked=true;
+ f.context.api=async()=>{throw Error('保存失败')};await f.node('#editor').onsubmit({preventDefault(){}});
+ assert.equal(f.node('#modal').open,true);assert.match(f.node('#formError').textContent,/保存失败/);assert.equal(f.node('#globalConnectionApplyAll').checked,true);assert.equal(f.node('#save').disabled,false);assert.equal(f.context.state.devices[0].connectionLimits.webSockets,8);
+ f.context.api=async(path,method,body,options)=>new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>{const error=Error('aborted');error.name='AbortError';reject(error)}));
+ const pending=f.node('#editor').onsubmit({preventDefault(){}});assert.equal(f.timers.size,1);[...f.timers.values()][0]();await pending;
+ assert.match(f.node('#formError').textContent,/刷新确认结果/);assert.equal(f.node('#connectionWebSockets').value,'24');assert.equal(f.node('#save').disabled,false);assert.equal(f.timers.size,0);
+});
+
+test('global requests ignore late responses after logout and prevent duplicate submissions',async()=>{
+ const f=fixture();f.context.state.devices[0].connectionLimits={webSockets:8,httpReserve:8};await globalConnectionEditor(f);f.node('#connectionMultiPanel').onclick();f.node('#globalConnectionApplyAll').checked=true;
+ let resolve,calls=0;f.context.api=()=>{calls++;return new Promise(r=>resolve=r)};
+ const pending=f.node('#editor').onsubmit({preventDefault(){}});await f.node('#editor').onsubmit({preventDefault(){}});assert.equal(calls,1);
+ f.context.authTransition++;f.node('#modal').close();resolve({defaults:{webSockets:24,httpReserve:8},deviceCount:25,appliedCount:25});await pending;
+ assert.equal(f.context.state.devices[0].connectionLimits.webSockets,8);assert.equal(f.timers.size,0);
+ const next=fixture();let readResolve;next.context.api=()=>new Promise(r=>readResolve=r);next.context.openEditor('globalConnectionLimits');next.node('#cancel').onclick();next.context.openEditor('device',next.context.state.devices[0]);const fields=next.node('#fields').innerHTML;
+ readResolve({defaults:{webSockets:24,httpReserve:8},deviceCount:57});await new Promise(r=>setImmediate(r));assert.equal(next.node('#fields').innerHTML,fields);assert.equal(next.context.editing.type,'device');assert.equal(next.timers.size,0);
+});
+
+
+test('page inactivity limits persist in single-device and global settings',async()=>{
+ const f=fixture();await connectionEditor(f);f.node('#connectionIdleMinutes').value='5';f.node('#connectionBackgroundMinutes').value='2';
+ await f.node('#editor').onsubmit({preventDefault(){}});let saved=f.requests.find(r=>r.method==='PUT');assert.equal(saved.body.idleMinutes,5);assert.equal(saved.body.backgroundMinutes,2);
+ const g=fixture();await globalConnectionEditor(g);g.node('#connectionIdleMinutes').value='-1';g.node('#connectionBackgroundMinutes').value='5';
+ await g.node('#editor').onsubmit({preventDefault(){}});saved=g.requests.find(r=>r.method==='PUT');assert.equal(saved.body.limits.idleMinutes,-1);assert.equal(saved.body.limits.backgroundMinutes,5);
+});
+test('idle policy validation rejects invalid intervals without saving',async()=>{
+ const f=fixture();await connectionEditor(f);f.node('#connectionIdleMinutes').value='241';await f.node('#editor').onsubmit({preventDefault(){}});assert.match(f.node('#formError').textContent,/240/);assert.equal(f.requests.filter(r=>r.method==='PUT').length,0);
 });

@@ -70,6 +70,8 @@ function restoreDeviceManageFocus(focus){
 }
 function deviceConnectionLimits(d){const limits=d.connectionLimits||{};return {webSockets:limits.webSockets??8,httpReserve:limits.httpReserve??8}}
 function deviceConnectionLimitsError(limits){
+	if(limits.idleMinutes!==undefined&&(!Number.isInteger(limits.idleMinutes)||limits.idleMinutes < -1||limits.idleMinutes>240))return '无操作暂停时间最多为 240 分钟。';
+	if(limits.backgroundMinutes!==undefined&&(!Number.isInteger(limits.backgroundMinutes)||limits.backgroundMinutes < -1||limits.backgroundMinutes>60))return '后台暂停时间最多为 60 分钟。';
  if(!Number.isInteger(limits.webSockets)||limits.webSockets<1||limits.webSockets>124)return '实时连接上限需为 1–124 的整数。';
  if(!Number.isInteger(limits.httpReserve)||limits.httpReserve<4||limits.httpReserve>64)return '网页保留连接需为 4–64 的整数。';
  return limits.webSockets+limits.httpReserve>128?'实时连接与网页保留连接合计不能超过 128。':'';
@@ -89,7 +91,12 @@ function deviceConnectionLimitsNotice(d,limits){
  return '保存后用于新建连接；降低上限会等待已有连接自然释放，不会强制断开面板。';
 }
 function deviceConnectionEditorCurrent(context){return editing===context&&context.owner===authTransition&&$('#modal').open&&deviceCanManage()&&state.devices.some(d=>d.id===context.item.id)}
-function deviceConnectionDraft(){const web=$('#connectionWebSockets').value.trim(),http=$('#connectionHTTPReserve').value.trim();return {webSockets:web===''?NaN:Number(web),httpReserve:http===''?NaN:Number(http)}}
+function deviceActivityFields(limits={}){
+ const select=(id,label,value,choices,description)=>`<label>${label}<select id="${id}">${[[0,id==='connectionIdleMinutes'?'15 分钟（默认）':'1 分钟（默认）'],...choices.map(n=>[n,n+' 分钟']),[-1,'关闭自动暂停']].map(([n,text])=>`<option value="${n}" ${n===(value||0)?'selected':''}>${text}</option>`).join('')}</select><small>${description}</small></label>`;
+ return `<div class="device-connection-fields device-idle-fields">${select('connectionIdleMinutes','前台无操作后暂停',limits.idleMinutes,[5,10,15,30,60,120,240],'按点击、滚动和键盘操作计时，持续推送的数据不会续时。')}${select('connectionBackgroundMinutes','切到后台后暂停',limits.backgroundMinutes,[1,2,5,10,30,60],'暂停实时数据和自动重连，点击“继续查看”恢复。')}</div>`;
+}
+function deviceActivityValues(limits){for(const [id,value] of [['#connectionIdleMinutes',limits.idleMinutes||0],['#connectionBackgroundMinutes',limits.backgroundMinutes||0]]){const select=$(id);if(!select.querySelector?.(`option[value="${Number(value)}"]`))select.insertAdjacentHTML?.('beforeend',`<option value="${Number(value)}">${Number(value)} 分钟</option>`);select.value=String(value)}}
+function deviceConnectionDraft(){const web=$('#connectionWebSockets').value.trim(),http=$('#connectionHTTPReserve').value.trim(),idle=Number($('#connectionIdleMinutes').value||0),background=Number($('#connectionBackgroundMinutes').value||0);return {webSockets:web===''?NaN:Number(web),httpReserve:http===''?NaN:Number(http),...(idle?{idleMinutes:idle}:{}),...(background?{backgroundMinutes:background}:{})}}
 function deviceConnectionEditorPreview(context){
  if(!deviceConnectionEditorCurrent(context))return;
  const d=state.devices.find(d=>d.id===context.item.id),limits=deviceConnectionDraft();
@@ -98,7 +105,7 @@ function deviceConnectionEditorPreview(context){
 }
 function deviceConnectionEditorBusy(context,busy){
  context.connectionBusy=busy;
- for(const id of ['#connectionWebSockets','#connectionHTTPReserve','#connectionDefaults','#connectionMultiPanel','#connectionRefresh'])$(id).disabled=busy;
+ for(const id of ['#connectionWebSockets','#connectionHTTPReserve','#connectionIdleMinutes','#connectionBackgroundMinutes','#connectionDefaults','#connectionMultiPanel','#connectionRefresh'])$(id).disabled=busy;
  $('#save').disabled=busy||!context.connectionReady;$('#save').textContent=busy&&context.connectionSaving?'保存中…':'保存连接设置';
 }
 async function loadDeviceConnectionLimits(context,keepDraft=false){
@@ -109,7 +116,7 @@ async function loadDeviceConnectionLimits(context,keepDraft=false){
   if(!deviceConnectionEditorCurrent(context))return;
   if(!result?.limits||deviceConnectionLimitsError(result.limits)||!result.connections)throw Error('连接设置返回异常，请重试。');
   const d=state.devices.find(d=>d.id===context.item.id);d.connectionLimits=result.limits;d.connections=result.connections;
-  if(!keepDraft||!context.connectionReady){$('#connectionWebSockets').value=String(result.limits.webSockets);$('#connectionHTTPReserve').value=String(result.limits.httpReserve)}
+  if(!keepDraft||!context.connectionReady){$('#connectionWebSockets').value=String(result.limits.webSockets);$('#connectionHTTPReserve').value=String(result.limits.httpReserve);deviceActivityValues(result.limits)}
   context.connectionReady=true;$('#connectionUsage').innerHTML=deviceConnectionUsage(d);deviceConnectionEditorPreview(context);
  }catch(error){if(deviceConnectionEditorCurrent(context))$('#formError').textContent=error.name==='AbortError'?'读取连接设置超时，请刷新重试。':error.message}
  finally{clearTimeout(timer);controller.abort();if(deviceConnectionEditorCurrent(context))deviceConnectionEditorBusy(context,false)}
@@ -119,15 +126,76 @@ function openDeviceConnectionEditor(item){
  previousDeviceEditor('connectionLimits',item);const context=editing;context.owner=authTransition;
  $('#modal').classList.add('connection-limits-dialog');$('#modalTitle').textContent='连接设置 · '+item.name;$('#save').textContent='保存连接设置';
  const limits=deviceConnectionLimits(item);
- $('#fields').innerHTML=`<p class="device-connection-intro">控制这台设备的网页与实时面板并发。一个 MetaCubeXD 面板会使用多条实时连接，多个浏览器标签会共同占用额度。</p><div id="connectionUsage">${deviceConnectionUsage(item)}</div><div class="device-connection-fields"><label for="connectionWebSockets">实时连接上限<input id="connectionWebSockets" name="webSockets" type="number" required min="1" max="124" step="1" value="${esc(limits.webSockets)}"><small>用于实时流量、内存、连接列表等 WebSocket 数据。</small></label><label for="connectionHTTPReserve">网页保留连接<input id="connectionHTTPReserve" name="httpReserve" type="number" required min="4" max="64" step="1" value="${esc(limits.httpReserve)}"><small>为路由器后台和普通网页请求保留并发空间。</small></label></div><div class="device-connection-presets"><button type="button" id="connectionDefaults">恢复默认 8 + 8</button><button type="button" id="connectionMultiPanel">多面板 24 + 8</button><span id="connectionLimitTotal"></span></div><p class="device-connection-notice" id="connectionLimitNotice" role="status"></p><p class="device-connection-footnote">上方为当前实际用量；输入框为保存的目标值。升级插件后才能使用更高的客户端容量。此设置按设备保存，所有映射共享；SSH 和文件管理使用单独额度。</p><button type="button" class="device-connection-refresh" id="connectionRefresh">刷新连接用量</button>`;
+ $('#fields').innerHTML=`<p class="device-connection-intro">控制这台设备的网页与实时面板并发。一个 MetaCubeXD 面板会使用多条实时连接，多个浏览器标签会共同占用额度。</p><div id="connectionUsage">${deviceConnectionUsage(item)}</div><div class="device-connection-fields"><label for="connectionWebSockets">实时连接上限<input id="connectionWebSockets" name="webSockets" type="number" required min="1" max="124" step="1" value="${esc(limits.webSockets)}"><small>用于实时流量、内存、连接列表等 WebSocket 数据。</small></label><label for="connectionHTTPReserve">网页保留连接<input id="connectionHTTPReserve" name="httpReserve" type="number" required min="4" max="64" step="1" value="${esc(limits.httpReserve)}"><small>为路由器后台和普通网页请求保留并发空间。</small></label></div>${deviceActivityFields(limits)}<div class="device-connection-presets"><button type="button" id="connectionDefaults">初始值 8 + 8</button><button type="button" id="connectionMultiPanel">多面板 24 + 8</button><span id="connectionLimitTotal"></span></div><p class="device-connection-notice" id="connectionLimitNotice" role="status"></p><p class="device-connection-footnote">上方为当前实际用量；输入框为保存的目标值。升级插件后才能使用更高的客户端容量。此设置按设备保存，所有映射共享；SSH 和文件管理使用单独额度。</p><button type="button" class="device-connection-refresh" id="connectionRefresh">刷新连接用量</button>`;
  const preset=(webSockets,httpReserve)=>{if(context.connectionBusy)return;$('#connectionWebSockets').value=String(webSockets);$('#connectionHTTPReserve').value=String(httpReserve);deviceConnectionEditorPreview(context)};
  $('#connectionDefaults').onclick=()=>preset(8,8);$('#connectionMultiPanel').onclick=()=>preset(24,8);
- $('#connectionWebSockets').oninput=$('#connectionHTTPReserve').oninput=()=>deviceConnectionEditorPreview(context);
+ $('#connectionWebSockets').oninput=$('#connectionHTTPReserve').oninput=$('#connectionIdleMinutes').onchange=$('#connectionBackgroundMinutes').onchange=()=>deviceConnectionEditorPreview(context);
  $('#connectionRefresh').onclick=()=>loadDeviceConnectionLimits(context,true);
  $('#cancel').onclick=()=>{context.connectionController?.abort();$('#modal').close()};
  deviceConnectionEditorPreview(context);void loadDeviceConnectionLimits(context);
 }
-$('#modal').addEventListener?.('close',()=>{if(editing?.type==='connectionLimits'){editing.connectionController?.abort();$('#save').disabled=false;$('#save').textContent='保存'}$('#modal').classList.remove('connection-limits-dialog')});
+function globalConnectionEditorCurrent(context){return editing===context&&context.owner===authTransition&&$('#modal').open&&deviceCanManage()}
+function globalConnectionPreview(context){
+ if(!globalConnectionEditorCurrent(context))return;
+ const limits=deviceConnectionDraft(),error=deviceConnectionLimitsError(limits),all=$('#globalConnectionApplyAll').checked,count=context.deviceCount;
+ $('#connectionLimitTotal').textContent=error?'请填写有效数值':'合计 '+(limits.webSockets+limits.httpReserve)+' / 128';
+ $('#globalConnectionApplyLabel').textContent=context.connectionReady?`同时应用到全部 ${count} 台现有设备（覆盖各自设置）`:'同时应用到所有现有设备（覆盖各自设置）';
+ $('#globalConnectionScope').textContent=!context.connectionReady?'正在读取默认额度和全部设备数量…':all?`将覆盖全部 ${count} 台现有设备的设置，包含离线、其他分页和筛选外的设备；新增设备也使用此默认值。`:`仅改变之后新增设备的默认额度；${count} 台现有设备继续使用各自设置。`;
+ $('#connectionLimitNotice').textContent=error||'保存的额度仍受各设备客户端容量限制；旧插件需升级后才能使用更高容量。降低额度不会强制断开已有连接。';
+ $('#save').textContent=context.connectionSaving?'保存中…':all?'保存并应用到全部设备':'保存默认设置';
+}
+function globalConnectionEditorBusy(context,busy){
+ context.connectionBusy=busy;
+ for(const id of ['#connectionWebSockets','#connectionHTTPReserve','#connectionIdleMinutes','#connectionBackgroundMinutes','#connectionDefaults','#connectionMultiPanel','#connectionRefresh'])$(id).disabled=busy;
+ $('#globalConnectionApplyAll').disabled=busy||!context.connectionReady;$('#save').disabled=busy||!context.connectionReady;globalConnectionPreview(context);
+}
+async function loadGlobalConnectionLimits(context,keepDraft=false){
+ if(!globalConnectionEditorCurrent(context)||context.connectionBusy)return;
+ const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);context.connectionController=controller;globalConnectionEditorBusy(context,true);$('#formError').textContent='';
+ try{
+  const result=await api('connection-limits','GET',undefined,{signal:controller.signal});
+  if(!globalConnectionEditorCurrent(context))return;
+  if(!result?.defaults||deviceConnectionLimitsError(result.defaults)||!Number.isInteger(result.deviceCount)||result.deviceCount<0)throw Error('全局连接设置返回异常，请刷新重试。');
+  if(!keepDraft||!context.connectionReady){$('#connectionWebSockets').value=String(result.defaults.webSockets);$('#connectionHTTPReserve').value=String(result.defaults.httpReserve);deviceActivityValues(result.defaults)}
+  context.deviceCount=result.deviceCount;context.connectionReady=true;globalConnectionPreview(context);
+ }catch(error){if(globalConnectionEditorCurrent(context))$('#formError').textContent=error.name==='AbortError'?'读取全局连接设置超时，请刷新重试。':error.message}
+ finally{clearTimeout(timer);controller.abort();if(globalConnectionEditorCurrent(context))globalConnectionEditorBusy(context,false)}
+}
+function openGlobalConnectionEditor(){
+ if(!deviceCanManage())return;
+ previousDeviceEditor('globalConnectionLimits',{});const context=editing;context.owner=authTransition;
+ $('#modal').classList.add('connection-limits-dialog','global-connection-limits-dialog');$('#modalTitle').textContent='全局连接设置';
+ $('#fields').innerHTML=`<p class="device-connection-intro">设置新增设备的默认额度，也可一次应用到全部现有设备。一个 MetaCubeXD 面板会使用多条实时连接。</p><div class="device-connection-fields"><label for="connectionWebSockets">实时连接上限<input id="connectionWebSockets" name="webSockets" type="number" required min="1" max="124" step="1" value="8"><small>实时流量、内存和连接列表等 WebSocket 数据。</small></label><label for="connectionHTTPReserve">网页保留连接<input id="connectionHTTPReserve" name="httpReserve" type="number" required min="4" max="64" step="1" value="8"><small>为路由器后台和普通网页保留并发空间。</small></label></div>${deviceActivityFields()}<div class="device-connection-presets"><button type="button" id="connectionDefaults">初始值 8 + 8</button><button type="button" id="connectionMultiPanel">多面板 24 + 8</button><span id="connectionLimitTotal"></span></div><label class="global-connection-apply"><input type="checkbox" id="globalConnectionApplyAll"><span id="globalConnectionApplyLabel">同时应用到所有现有设备（覆盖各自设置）</span></label><p class="global-connection-scope" id="globalConnectionScope" role="status"></p><p class="device-connection-notice" id="connectionLimitNotice"></p><p class="device-connection-footnote">设备卡片中的「连接设置」仍可单独调整。所有映射共享各自设备额度，SSH 和文件管理使用单独额度。</p><button type="button" class="device-connection-refresh" id="connectionRefresh">刷新默认值与设备数量</button>`;
+ $('#globalConnectionApplyAll').checked=false;
+ const preset=(webSockets,httpReserve)=>{if(context.connectionBusy)return;$('#connectionWebSockets').value=String(webSockets);$('#connectionHTTPReserve').value=String(httpReserve);globalConnectionPreview(context)};
+ $('#connectionDefaults').onclick=()=>preset(8,8);$('#connectionMultiPanel').onclick=()=>preset(24,8);
+ $('#connectionWebSockets').oninput=$('#connectionHTTPReserve').oninput=$('#connectionIdleMinutes').onchange=$('#connectionBackgroundMinutes').onchange=$('#globalConnectionApplyAll').onchange=()=>globalConnectionPreview(context);
+ $('#connectionRefresh').onclick=()=>loadGlobalConnectionLimits(context,true);$('#cancel').onclick=()=>{context.connectionController?.abort();$('#modal').close()};
+ globalConnectionPreview(context);void loadGlobalConnectionLimits(context);
+}
+function renderGlobalConnectionEntry(){
+ const existing=document.getElementById('globalConnectionLimits');
+ if(!deviceCanManage()){existing?.remove?.();return}
+ if(!existing?.isConnected)$('#addDevice')?.insertAdjacentHTML?.('beforebegin','<button type="button" id="globalConnectionLimits" class="global-connection-entry">'+uiIcon('settings')+'全局连接设置</button>');
+ const button=$('#globalConnectionLimits');if(button)button.onclick=()=>openEditor('globalConnectionLimits');
+}
+async function saveGlobalConnectionLimits(e){
+ e.preventDefault();const context=editing;if(!globalConnectionEditorCurrent(context)||context.connectionBusy||!context.connectionReady)return;
+ const limits=deviceConnectionDraft(),error=deviceConnectionLimitsError(limits),applyToAll=$('#globalConnectionApplyAll').checked;$('#formError').textContent=error;if(error)return;
+ if(applyToAll&&!confirm(`将实时连接上限 ${limits.webSockets} 条、网页保留 ${limits.httpReserve} 条应用到全部现有设备？当前共 ${context.deviceCount} 台，包含离线、其他分页和筛选外设备，将覆盖各自设置，并保存为新增设备默认值。`))return;
+ if(!globalConnectionEditorCurrent(context))return;
+ const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);context.connectionController=controller;context.connectionSaving=true;globalConnectionEditorBusy(context,true);
+ try{
+  const result=await api('connection-limits','PUT',{limits,applyToAll},{signal:controller.signal});
+  if(!globalConnectionEditorCurrent(context))return;
+  if(!result?.defaults||deviceConnectionLimitsError(result.defaults)||!Number.isInteger(result.deviceCount)||result.deviceCount<0||!Number.isInteger(result.appliedCount)||result.appliedCount<0)throw Error('保存结果返回异常，请刷新确认设置。');
+  if(applyToAll)state.devices.forEach(d=>{d.connectionLimits={...result.defaults}});
+  $('#modal').close();deviceCards();const saved=applyToAll?'默认额度已保存，并应用到 '+result.appliedCount+' 台设备':'新增设备默认额度已保存';
+  try{await refresh();if(context.owner===authTransition)toast(saved)}catch(error){if(context.owner===authTransition)toast(saved+'；状态刷新失败，可稍后刷新。')}
+ }catch(error){if(globalConnectionEditorCurrent(context))$('#formError').textContent=error.name==='AbortError'?'保存请求超时，请刷新确认结果后重试。':error.message}
+ finally{clearTimeout(timer);controller.abort();context.connectionSaving=false;if(globalConnectionEditorCurrent(context))globalConnectionEditorBusy(context,false)}
+}
+$('#modal').addEventListener?.('close',()=>{if(['connectionLimits','globalConnectionLimits'].includes(editing?.type)){editing.connectionController?.abort();$('#save').disabled=false;$('#save').textContent='保存'}$('#modal').classList.remove('connection-limits-dialog','global-connection-limits-dialog')});
 function devicePageWindow(total,paging){
  const pages=Math.max(1,Math.ceil(total/paging.size));
  paging.page=Math.max(0,Math.min(pages-1,paging.page));
@@ -266,6 +334,7 @@ const previousDeviceWorkbench=renderWorkbench;
 renderWorkbench=()=>{
  const pagingFocus=devicePagingFocus(),manageFocus=deviceManageFocus(),focused=document.activeElement,searchDevice=focused?.dataset?.mappingSearch,selection=searchDevice?[focused.selectionStart,focused.selectionEnd]:null;rememberDeviceManagePanels($('#deviceCards'));
  previousDeviceWorkbench();restoreDevicePagingFocus(pagingFocus);const select=$('#filter');if(select&&!select.querySelector('option[value="pinned"]')){const option=document.createElement('option');option.value='pinned';option.textContent='置顶设备';select.appendChild(option);select.value=filter}const search=$('#search');if(search){search.placeholder='搜索设备、备注、IP 或映射';search.setAttribute('aria-label',search.placeholder)}
+ renderGlobalConnectionEntry();
  restoreDeviceManageFocus(manageFocus);
  if(searchDevice){const input=[...$('#deviceCards').querySelectorAll('[data-mapping-search]')].find(x=>x.dataset.mappingSearch===searchDevice);if(input){input.focus();input.setSelectionRange(...selection)}}
 };
@@ -313,12 +382,14 @@ action=async(a,id)=>{
  return previousDeviceAction(a,id);
 };
 openEditor=(type,item={})=>{
+ if(type==='globalConnectionLimits'){openGlobalConnectionEditor();return}
  if(type==='connectionLimits'){openDeviceConnectionEditor(item);return}
- $('#modal').classList.remove('connection-limits-dialog');$('#save').disabled=false;
+ $('#modal').classList.remove('connection-limits-dialog','global-connection-limits-dialog');$('#save').disabled=false;
  previousDeviceEditor(type,item);
  if(type==='device'&&item.id){$('#modalTitle').textContent='编辑设备';$('#fields').innerHTML=`<label>设备名称<input name="name" required maxlength="100" value="${esc(item.name)}"></label><label>设备备注<textarea name="note" maxlength="200" rows="3" placeholder="例如：家中主路由器、办公室 NAS">${esc(item.note||'')}</textarea></label><label class="check"><input name="pinned" type="checkbox" ${item.pinned?'checked':''}> 置顶这台设备</label><p class="muted">修改名称或备注会保留设备连接凭据与全部映射。</p>`}
 };
 $('#editor').onsubmit=async e=>{
+ if(editing?.type==='globalConnectionLimits')return saveGlobalConnectionLimits(e);
  if(editing?.type==='connectionLimits'){
   e.preventDefault();const context=editing;if(!deviceConnectionEditorCurrent(context)||context.connectionBusy||!context.connectionReady)return;
   const limits=deviceConnectionDraft(),error=deviceConnectionLimitsError(limits);$('#formError').textContent=error;if(error)return;

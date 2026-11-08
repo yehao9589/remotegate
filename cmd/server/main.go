@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -31,39 +32,42 @@ import (
 var webFS embed.FS
 
 type app struct {
-	mailMu            sync.Mutex
-	mail              *notificationMailer
-	mailErr           error
-	certs             *certificateManager
-	certMu            sync.Mutex
-	certManagers      map[string]*certificateManager
-	certDir           string
-	httpsAddress      string
-	httpsError        string
-	httpsServer       *http.Server
-	httpsSettings     httpsSettings
-	httpsSettingsPath string
-	store             *config.Store
-	hub               *hub.Hub
-	traffic           *traffic.Store
-	adminUser         string
-	adminPass         string
-	auth              *adminManager
-	consoleHost       string
-	publicURL         *url.URL
-	updateMu          sync.Mutex
-	deviceUpdates     map[string]pluginUpdateView
-	updatePackage     *verifiedUpdatePackage
-	operators         *operatorResolver
-	remoteMu          sync.Mutex
-	remote            *remoteManager
-	centerMu          sync.Mutex
-	center            *packageCenter
-	centerErr         error
-	mappingMu         sync.Mutex
-	mappingAccess     *mappingAccessManager
-	releaseMu         sync.Mutex
-	releases          *releaseChecker
+	activityPollInterval time.Duration
+	activityMu           sync.Mutex
+	activities           map[[32]byte]browserActivity
+	mailMu               sync.Mutex
+	mail                 *notificationMailer
+	mailErr              error
+	certs                *certificateManager
+	certMu               sync.Mutex
+	certManagers         map[string]*certificateManager
+	certDir              string
+	httpsAddress         string
+	httpsError           string
+	httpsServer          *http.Server
+	httpsSettings        httpsSettings
+	httpsSettingsPath    string
+	store                *config.Store
+	hub                  *hub.Hub
+	traffic              *traffic.Store
+	adminUser            string
+	adminPass            string
+	auth                 *adminManager
+	consoleHost          string
+	publicURL            *url.URL
+	updateMu             sync.Mutex
+	deviceUpdates        map[string]pluginUpdateView
+	updatePackage        *verifiedUpdatePackage
+	operators            *operatorResolver
+	remoteMu             sync.Mutex
+	remote               *remoteManager
+	centerMu             sync.Mutex
+	center               *packageCenter
+	centerErr            error
+	mappingMu            sync.Mutex
+	mappingAccess        *mappingAccessManager
+	releaseMu            sync.Mutex
+	releases             *releaseChecker
 }
 
 func main() {
@@ -146,6 +150,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/api/auth/login", a.authLogin)
 	mux.HandleFunc("/api/auth/logout", a.authLogout)
 	mux.HandleFunc("/api/admin/security", a.admin(a.securitySettings))
+	mux.HandleFunc("/api/admin/connection-limits", a.admin(a.globalConnectionLimits))
 	mux.HandleFunc("/api/admin/users", a.admin(a.usersHTTP))
 	mux.HandleFunc("/api/admin/mail", a.admin(a.mailHTTP))
 	mux.HandleFunc("/api/admin/mail/preview", a.admin(a.mailPreviewHTTP))
@@ -360,8 +365,9 @@ func (a *app) root(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, resp.Error, http.StatusBadGateway)
 		return
 	}
-	writeMappedResponseHeaders(w, r, mapping, resp.Headers, resp.Status)
-	_, _ = w.Write(resp.Body)
+	response := &http.Response{StatusCode: resp.Status, Header: http.Header(resp.Headers), Body: io.NopCloser(bytes.NewReader(resp.Body))}
+	a.prepareBrowserActivity(r, mapping, response)
+	writeMappedHTTPStream(w, r, mapping, response)
 }
 
 var upgrader = websocket.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096, CheckOrigin: func(*http.Request) bool { return true }}

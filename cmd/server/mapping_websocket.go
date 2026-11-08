@@ -14,6 +14,15 @@ import (
 )
 
 func (a *app) proxyMappingWebSocket(w http.ResponseWriter, r *http.Request, mapping config.Mapping) {
+	activityToken := r.URL.Query().Get(browserActivityQuery)
+	if activityToken != "" {
+		if !a.browserActivityValid(activityToken, mapping) {
+			accessNoStore(w)
+			http.Error(w, "页面已暂停，请点击继续查看", http.StatusGone)
+			return
+		}
+		r = withoutActivityQuery(r)
+	}
 	if r.Method != http.MethodGet || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 		http.Error(w, "无效的 WebSocket 握手请求", http.StatusBadRequest)
 		return
@@ -68,7 +77,14 @@ func (a *app) proxyMappingWebSocket(w http.ResponseWriter, r *http.Request, mapp
 	go func() { _, _ = io.Copy(mappedSocketWriter{conn}, backend); done <- struct{}{} }()
 
 	// A long-lived connection must stop after the mapping or its access changes.
-	checkAccess := time.NewTicker(15 * time.Second)
+	interval := 15 * time.Second
+	if activityToken != "" {
+		interval = 5 * time.Second
+		if a.activityPollInterval > 0 {
+			interval = a.activityPollInterval
+		}
+	}
+	checkAccess := time.NewTicker(interval)
 	defer checkAccess.Stop()
 	for {
 		select {
@@ -77,6 +93,9 @@ func (a *app) proxyMappingWebSocket(w http.ResponseWriter, r *http.Request, mapp
 		case <-done:
 			return
 		case <-checkAccess.C:
+			if activityToken != "" && !a.browserActivityValid(activityToken, mapping) {
+				return
+			}
 			if !a.mappingWebSocketAllowed(r, mapping) {
 				return
 			}

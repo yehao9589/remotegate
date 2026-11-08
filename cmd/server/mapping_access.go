@@ -300,6 +300,10 @@ func (a *app) mappingAccessHandler(next http.Handler) http.Handler {
 			if m.AccessMode != "public" && !a.requireMappingAccess(w, r, m) {
 				return
 			}
+			if strings.HasPrefix(r.URL.Path, browserActivityPath) {
+				a.browserActivityHTTP(w, r, m)
+				return
+			}
 			if websocket.IsWebSocketUpgrade(r) {
 				a.proxyMappingWebSocket(w, r, m)
 				return
@@ -616,6 +620,9 @@ func reservedMappingCookie(name string) bool {
 }
 func mappingProxyHeaders(r *http.Request) map[string][]string {
 	header := r.Header.Clone()
+	if browserHTMLRequest(r) {
+		header.Del("Accept-Encoding")
+	}
 	header.Del("Cookie")
 	copyRequest := &http.Request{Header: header}
 	for _, cookie := range r.Cookies() {
